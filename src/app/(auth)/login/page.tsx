@@ -20,7 +20,13 @@ export default function LoginPage() {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
 
     if (error) {
-      setError('Неверный email или пароль')
+      if (error.message === 'Invalid login credentials') {
+        setError('Неверный email или пароль')
+      } else if (error.message === 'Email not confirmed') {
+        setError('Email не подтверждён. Проверьте почту.')
+      } else {
+        setError(error.message)
+      }
       setLoading(false)
       return
     }
