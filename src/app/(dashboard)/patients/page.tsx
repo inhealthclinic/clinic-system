@@ -1,169 +1,141 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { PermissionGuard } from '@/components/shared/PermissionGuard'
-import type { Patient } from '@/types/app'
+import type { Patient } from '@/types'
 
-const STATUS_LABELS: Record<string, string> = {
-  new: 'Новый', active: 'Активный', in_treatment: 'На лечении',
-  completed: 'Завершён', lost: 'Потерян', vip: 'VIP'
+const STATUS_LABEL: Record<string, string> = {
+  new: 'Новый',
+  active: 'Активный',
+  in_treatment: 'На лечении',
+  completed: 'Завершён',
+  lost: 'Потерян',
+  vip: 'VIP',
 }
-const STATUS_COLORS: Record<string, string> = {
+
+const STATUS_COLOR: Record<string, string> = {
   new: 'bg-gray-100 text-gray-600',
   active: 'bg-blue-100 text-blue-700',
   in_treatment: 'bg-green-100 text-green-700',
   completed: 'bg-purple-100 text-purple-700',
-  lost: 'bg-red-100 text-red-500',
-  vip: 'bg-amber-100 text-amber-700',
+  lost: 'bg-red-100 text-red-600',
+  vip: 'bg-yellow-100 text-yellow-700',
 }
 
 export default function PatientsPage() {
-  const router = useRouter()
-  const supabase = createClient()
+  const [patients, setPatients] = useState<Patient[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [total, setTotal] = useState(0)
 
-  const [patients,  setPatients]  = useState<Patient[]>([])
-  const [search,    setSearch]    = useState('')
-  const [statusFilter, setStatusFilter] = useState<string>('all')
-  const [page,      setPage]      = useState(0)
-  const [total,     setTotal]     = useState(0)
-  const [loading,   setLoading]   = useState(false)
-  const PER_PAGE = 25
-
-  const load = useCallback(async () => {
+  const load = useCallback(async (q: string) => {
     setLoading(true)
-    let q = supabase
+    const supabase = createClient()
+    let query = supabase
       .from('patients')
       .select('*', { count: 'exact' })
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
-      .range(page * PER_PAGE, (page + 1) * PER_PAGE - 1)
+      .limit(50)
 
-    if (search.length >= 2) {
-      q = q.or(`full_name.ilike.%${search}%,iin.ilike.%${search}%`)
+    if (q.trim()) {
+      query = query.ilike('full_name', `%${q}%`)
     }
-    if (statusFilter !== 'all') q = q.eq('status', statusFilter)
 
-    const { data, count } = await q
-    setPatients(data || [])
-    setTotal(count || 0)
+    const { data, count } = await query
+    setPatients(data ?? [])
+    setTotal(count ?? 0)
     setLoading(false)
-  }, [search, statusFilter, page])
+  }, [])
 
-  useEffect(() => { setPage(0) }, [search, statusFilter])
-  useEffect(() => { load() }, [load])
-
-  const totalPages = Math.ceil(total / PER_PAGE)
+  useEffect(() => {
+    const t = setTimeout(() => load(search), 300)
+    return () => clearTimeout(t)
+  }, [search, load])
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      {/* Шапка */}
+    <div className="max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Пациенты</h1>
-          <p className="text-gray-400 text-sm mt-0.5">Всего: {total.toLocaleString()}</p>
+          <h2 className="text-lg font-semibold text-gray-900">Пациенты</h2>
+          <p className="text-sm text-gray-400">{total} записей</p>
         </div>
-        <PermissionGuard permission="patients:create">
-          <button onClick={() => router.push('/patients/new')}
-            className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700">
-            + Новый пациент
-          </button>
-        </PermissionGuard>
+        <Link
+          href="/patients/new"
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        >
+          + Новый пациент
+        </Link>
       </div>
 
-      {/* Поиск + фильтры */}
-      <div className="flex gap-3 mb-4">
-        <div className="flex-1 relative">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Поиск по имени, телефону, ИИН..."
-            className="w-full border border-gray-200 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          />
-        </div>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-          className="border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-          <option value="all">Все статусы</option>
-          {Object.entries(STATUS_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>{v}</option>
-          ))}
-        </select>
+      <div className="mb-4">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Поиск по имени или телефону..."
+          className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+        />
       </div>
 
-      {/* Таблица */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 border-b border-gray-100">
-              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Пациент</th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Телефон</th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Статус</th>
-              <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Баланс</th>
-              <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Долг</th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Добавлен</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {loading ? (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">Загрузка...</td></tr>
-            ) : patients.length === 0 ? (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">Пациенты не найдены</td></tr>
-            ) : patients.map(p => (
-              <tr key={p.id} onClick={() => router.push(`/patients/${p.id}`)}
-                className="hover:bg-blue-50/30 cursor-pointer transition-colors">
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 text-xs font-bold shrink-0">
-                      {p.full_name.charAt(0)}
-                    </div>
-                    <div>
-                      <p className="font-medium text-gray-900 flex items-center gap-1">
-                        {p.full_name}
-                        {p.is_vip && <span className="text-amber-400 text-xs">★</span>}
-                      </p>
-                      <p className="text-xs text-gray-400">{p.patient_number}</p>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-gray-600">{p.phones?.[0] || '—'}</td>
-                <td className="px-4 py-3">
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[p.status]}`}>
-                    {STATUS_LABELS[p.status]}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-right">
-                  {p.balance_amount > 0 ? (
-                    <span className="text-green-600 font-medium">{p.balance_amount.toLocaleString()} ₸</span>
-                  ) : <span className="text-gray-300">—</span>}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  {p.debt_amount > 0 ? (
-                    <span className="text-red-500 font-medium">{p.debt_amount.toLocaleString()} ₸</span>
-                  ) : <span className="text-gray-300">—</span>}
-                </td>
-                <td className="px-4 py-3 text-gray-400 text-xs">
-                  {new Date(p.created_at).toLocaleDateString('ru', { day: 'numeric', month: 'short', year: '2-digit' })}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-
-        {/* Пагинация */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
-            <p className="text-xs text-gray-400">
-              {page * PER_PAGE + 1}–{Math.min((page + 1) * PER_PAGE, total)} из {total}
-            </p>
-            <div className="flex gap-2">
-              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
-                className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm disabled:opacity-40">←</button>
-              <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
-                className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm disabled:opacity-40">→</button>
-            </div>
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
+        ) : patients.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-400">
+            {search ? 'Ничего не найдено' : 'Пациентов пока нет'}
           </div>
+        ) : (
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-100 bg-gray-50">
+                <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Пациент</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Телефон</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Статус</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Баланс</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Карта</th>
+              </tr>
+            </thead>
+            <tbody>
+              {patients.map((p) => (
+                <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                  <td className="px-5 py-4">
+                    <Link href={`/patients/${p.id}`} className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-xs flex-shrink-0">
+                        {p.full_name[0]}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900 hover:text-blue-600">
+                          {p.full_name}
+                        </p>
+                        {p.birth_date && (
+                          <p className="text-xs text-gray-400">
+                            {new Date(p.birth_date).toLocaleDateString('ru-RU')}
+                          </p>
+                        )}
+                      </div>
+                    </Link>
+                  </td>
+                  <td className="px-5 py-4 text-sm text-gray-600">{p.phones[0] ?? '—'}</td>
+                  <td className="px-5 py-4">
+                    <span className={`text-xs font-medium px-2 py-1 rounded-full ${STATUS_COLOR[p.status]}`}>
+                      {STATUS_LABEL[p.status]}
+                    </span>
+                  </td>
+                  <td className="px-5 py-4 text-sm text-gray-600">
+                    {p.balance_amount > 0 && (
+                      <span className="text-green-600">+{p.balance_amount.toLocaleString('ru-RU')} ₸</span>
+                    )}
+                    {p.debt_amount > 0 && (
+                      <span className="text-red-500">-{p.debt_amount.toLocaleString('ru-RU')} ₸</span>
+                    )}
+                    {p.balance_amount === 0 && p.debt_amount === 0 && '—'}
+                  </td>
+                  <td className="px-5 py-4 text-xs text-gray-400">{p.patient_number ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>

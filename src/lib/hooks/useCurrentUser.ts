@@ -1,67 +1,53 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
-import type { UserProfile } from '@/types/app'
 
 export function useCurrentUser() {
-  const { setUser, clearUser, user, isLoading } = useAuthStore()
+  const { user, profile, isLoading, setUser, setProfile, setLoading } = useAuthStore()
+  const initialized = useRef(false)
 
   useEffect(() => {
+    if (initialized.current) return
+    initialized.current = true
+
     const supabase = createClient()
 
-    async function loadUser() {
-      const { data: { user: authUser } } = await supabase.auth.getUser()
-      if (!authUser) { clearUser(); return }
-
-      // Загружаем профиль + роль + права
-      const { data: profile } = await supabase
-        .from('user_profiles')
-        .select(`
-          *,
-          role:roles(
-            *,
-            permissions:role_permissions(
-              permission:permissions(module, action)
-            )
-          )
-        `)
-        .eq('id', authUser.id)
-        .single()
-
-      if (!profile) { clearUser(); return }
-
-      // Нормализуем права роли
-      const rolePermissions = (profile.role.permissions || []).map(
-        (rp: any) => `${rp.permission.module}:${rp.permission.action}`
-      )
-
-      const userProfile: UserProfile = {
-        ...profile,
-        full_name: `${profile.first_name} ${profile.last_name}`,
-        role: {
-          ...profile.role,
-          permissions: rolePermissions,
-        },
-        extra_permissions: profile.extra_permissions || [],
-        denied_permissions: profile.denied_permissions || [],
+    // Initial session check
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      setUser(session?.user ?? null)
+      if (session?.user) {
+        const { data } = await supabase
+          .from('user_profiles')
+          .select('*, role:roles(id, slug, name, color, max_discount_percent)')
+          .eq('id', session.user.id)
+          .single()
+        setProfile(data ?? null)
       }
+      setLoading(false)
+    })
 
-      setUser(userProfile)
-    }
-
-    loadUser()
-
+    // Subscribe to auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event) => {
-        if (event === 'SIGNED_OUT') clearUser()
-        if (event === 'SIGNED_IN')  loadUser()
+      async (event, session) => {
+        setUser(session?.user ?? null)
+        if (session?.user) {
+          const { data } = await supabase
+            .from('user_profiles')
+            .select('*, role:roles(id, slug, name, color, max_discount_percent)')
+            .eq('id', session.user.id)
+            .single()
+          setProfile(data ?? null)
+        } else {
+          setProfile(null)
+        }
+        setLoading(false)
       }
     )
 
     return () => subscription.unsubscribe()
   }, [])
 
-  return { user, isLoading }
+  return { user, profile, isLoading }
 }

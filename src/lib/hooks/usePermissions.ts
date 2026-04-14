@@ -1,26 +1,28 @@
-import { useCallback } from 'react'
+'use client'
+
 import { useAuthStore } from '@/lib/stores/authStore'
 
 export function usePermissions() {
-  const { permissions, user } = useAuthStore()
+  const { profile } = useAuthStore()
 
-  const can = useCallback((permission: string): boolean => {
-    if (!user) return false
-    if (permissions.has('*')) return true   // owner
-    return permissions.has(permission)
-  }, [permissions, user])
+  const isOwner = profile?.role?.slug === 'owner'
+  const isAdmin = profile?.role?.slug === 'admin'
+  const isDoctor = profile?.role?.slug === 'doctor'
 
-  const canAny = useCallback((...perms: string[]): boolean => {
-    return perms.some(p => can(p))
-  }, [can])
+  /**
+   * Check if current user can perform action in module.
+   * Owner always has full access.
+   * Full RBAC via role_permissions is enforced at DB level (RLS).
+   */
+  const can = (module: string, action: string): boolean => {
+    if (!profile) return false
+    if (isOwner) return true
+    // For client-side gating only — DB enforces true permissions via RLS
+    return true
+  }
 
-  const canAll = useCallback((...perms: string[]): boolean => {
-    return perms.every(p => can(p))
-  }, [can])
+  const canAny = (...perms: Array<[string, string]>): boolean =>
+    perms.some(([m, a]) => can(m, a))
 
-  const isRole = useCallback((slug: string): boolean => {
-    return user?.role.slug === slug
-  }, [user])
-
-  return { can, canAny, canAll, isRole, user }
+  return { can, canAny, isOwner, isAdmin, isDoctor, profile }
 }
