@@ -14,39 +14,38 @@ export function useCurrentUser() {
 
     const supabase = createClient()
 
-    // Initial session check
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      setUser(session?.user ?? null)
-      if (session?.user) {
+    // Timeout: если сессия не получена за 3с — считаем, что не авторизован
+    const timeout = setTimeout(() => {
+      setLoading(false)
+    }, 3000)
+
+    const resolve = async (userId: string | undefined) => {
+      clearTimeout(timeout)
+      if (userId) {
         const { data } = await supabase
           .from('user_profiles')
           .select('*, role:roles(id, slug, name, color, max_discount_percent)')
-          .eq('id', session.user.id)
+          .eq('id', userId)
           .single()
         setProfile(data ?? null)
+      } else {
+        setProfile(null)
       }
       setLoading(false)
-    })
+    }
 
-    // Subscribe to auth changes
+    // Слушаем auth — INITIAL_SESSION срабатывает немедленно из localStorage
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
+      (event, session) => {
         setUser(session?.user ?? null)
-        if (session?.user) {
-          const { data } = await supabase
-            .from('user_profiles')
-            .select('*, role:roles(id, slug, name, color, max_discount_percent)')
-            .eq('id', session.user.id)
-            .single()
-          setProfile(data ?? null)
-        } else {
-          setProfile(null)
-        }
-        setLoading(false)
+        resolve(session?.user?.id)
       }
     )
 
-    return () => subscription.unsubscribe()
+    return () => {
+      clearTimeout(timeout)
+      subscription.unsubscribe()
+    }
   }, [])
 
   return { user, profile, isLoading }

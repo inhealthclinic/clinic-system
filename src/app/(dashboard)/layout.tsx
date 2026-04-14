@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
@@ -10,6 +10,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { isLoading, user } = useCurrentUser()
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      router.push('/login')
+    }
+  }, [isLoading, user, router])
 
   if (isLoading) {
     return (
@@ -24,10 +30,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     )
   }
 
-  if (!user) {
-    router.push('/login')
-    return null
-  }
+  if (!user) return null
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
