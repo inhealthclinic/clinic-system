@@ -19,7 +19,7 @@ const STATUS_COLOR: Record<string, string> = {
 export default function SchedulePage() {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [appointments, setAppointments] = useState<Appointment[]>([])
-  const [doctors, setDoctors] = useState<Doctor[]>([])
+  const [doctors, setDoctors] = useState<Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color' | 'consultation_duration'>[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
