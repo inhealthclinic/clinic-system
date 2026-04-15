@@ -62,10 +62,13 @@ export type Appointment = {
   patient_id: string | null
   doctor_id: string
   service_id: string | null
-  start_at: string
-  end_at: string
-  status: 'scheduled' | 'confirmed' | 'arrived' | 'in_visit' | 'completed' | 'no_show' | 'cancelled'
+  date: string          // DATE  e.g. "2026-04-15"
+  time_start: string    // TIME  e.g. "09:00:00"
+  time_end: string      // TIME  e.g. "09:30:00"
+  duration_min: number
+  status: 'pending' | 'confirmed' | 'arrived' | 'rescheduled' | 'cancelled' | 'no_show' | 'completed'
   is_walkin: boolean
+  source: 'admin' | 'online' | 'whatsapp' | 'phone'
   notes: string | null
   patient?: Pick<Patient, 'id' | 'full_name' | 'phones'>
   doctor?: Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color'>
