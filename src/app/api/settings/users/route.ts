@@ -2,15 +2,31 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
 export async function POST(req: NextRequest) {
-  // Lazy init — не инициализируем на уровне модуля, чтобы не падать при сборке
-  const adminClient = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  )
-
   try {
-    const { first_name, last_name, email, password, role_slug } = await req.json()
+    // Проверяем наличие service role key до любых запросов
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!serviceKey) {
+      return NextResponse.json(
+        { error: 'Сервер не настроен: отсутствует SUPABASE_SERVICE_ROLE_KEY' },
+        { status: 503 }
+      )
+    }
+
+    const adminClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      serviceKey,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    )
+
+    // Парсим тело — оборачиваем отдельно чтобы дать понятную ошибку
+    let body: Record<string, string>
+    try {
+      body = await req.json()
+    } catch {
+      return NextResponse.json({ error: 'Неверный формат запроса' }, { status: 400 })
+    }
+
+    const { first_name, last_name, email, password, role_slug } = body
 
     // Валидация
     if (!first_name || !last_name || !email || !password || !role_slug) {
@@ -28,16 +44,19 @@ export async function POST(req: NextRequest) {
     })
 
     if (authError) {
-      if (authError.message.includes('already registered')) {
-        return NextResponse.json({ error: 'Пользователь с таким email уже существует' }, { status: 409 })
+      const msg = authError.message.toLowerCase()
+      if (msg.includes('already registered') || msg.includes('already been registered')) {
+        return NextResponse.json(
+          { error: 'Пользователь с таким email уже существует' },
+          { status: 409 }
+        )
       }
       return NextResponse.json({ error: authError.message }, { status: 400 })
     }
 
     const userId = authData.user.id
 
-    // 2. Получаем clinic_id и role_id из контекста вызывающего пользователя
-    //    (используем anon-токен из заголовка Authorization)
+    // 2. Получаем clinic_id вызывающего пользователя
     const authHeader = req.headers.get('authorization')
     const anonClient = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -51,7 +70,6 @@ export async function POST(req: NextRequest) {
       .single()
 
     if (profileError || !callerProfile) {
-      // Откатываем созданного пользователя
       await adminClient.auth.admin.deleteUser(userId)
       return NextResponse.json({ error: 'Нет прав для создания сотрудников' }, { status: 403 })
     }
@@ -74,14 +92,7 @@ export async function POST(req: NextRequest) {
     // 4. Создаём user_profile
     const { data: profile, error: insertError } = await adminClient
       .from('user_profiles')
-      .insert({
-        id: userId,
-        clinic_id,
-        role_id: role.id,
-        first_name,
-        last_name,
-        is_active: true,
-      })
+      .insert({ id: userId, clinic_id, role_id: role.id, first_name, last_name, is_active: true })
       .select()
       .single()
 
@@ -91,6 +102,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ user: profile }, { status: 201 })
+
   } catch (err) {
     console.error('POST /api/settings/users:', err)
     return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 })

@@ -84,10 +84,11 @@ export default function UsersPage() {
       body: JSON.stringify(form),
     })
 
-    const json = await res.json()
+    let json: { error?: string; user?: unknown } = {}
+    try { json = await res.json() } catch { /* пустое тело */ }
 
     if (!res.ok) {
-      setError(json.error ?? 'Ошибка при сохранении')
+      setError(json.error ?? `Ошибка сервера (${res.status})`)
       setSaving(false)
       return
     }
