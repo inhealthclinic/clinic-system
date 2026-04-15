@@ -31,6 +31,14 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   const [doctors, setDoctors] = useState<DoctorRow[]>([])
   const [patients, setPatients] = useState<{ id: string; full_name: string; phones: string[] }[]>([])
   const [patientSearch, setPatientSearch] = useState('')
+  const [selectedPatientName, setSelectedPatientName] = useState('')
+  const [selectedPatientPhone, setSelectedPatientPhone] = useState('')
+
+  // New patient registration inline
+  const [showNewPatient, setShowNewPatient] = useState(false)
+  const [newPatient, setNewPatient] = useState({ full_name: '', phone: '', gender: 'other' as 'male' | 'female' | 'other', birth_date: '' })
+  const [registeringPatient, setRegisteringPatient] = useState(false)
+
   const [form, setForm] = useState({
     doctor_id: '',
     patient_id: '',
@@ -77,18 +85,39 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
   }
 
-  const selectedPatient = patients.find(p => p.id === form.patient_id)
+  const registerNewPatient = async () => {
+    if (!newPatient.full_name.trim()) return
+    setRegisteringPatient(true)
+    const { data: pat, error: pErr } = await supabase.from('patients').insert({
+      clinic_id: clinicId,
+      full_name: newPatient.full_name.trim(),
+      phones: newPatient.phone.trim() ? [newPatient.phone.trim()] : [],
+      gender: newPatient.gender,
+      birth_date: newPatient.birth_date || null,
+      status: 'new',
+      is_vip: false,
+      balance_amount: 0,
+      debt_amount: 0,
+      tags: [],
+    }).select('id, full_name, phones').single()
+    setRegisteringPatient(false)
+    if (pErr || !pat) { setError(pErr?.message ?? 'Ошибка регистрации'); return }
+    setForm(f => ({ ...f, patient_id: pat.id }))
+    setSelectedPatientName(pat.full_name)
+    setSelectedPatientPhone(pat.phones?.[0] ?? '')
+    setShowNewPatient(false)
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!form.patient_id) { setError('Выберите пациента'); return }
+    if (!form.patient_id) { setError('Выберите или зарегистрируйте пациента'); return }
     if (!form.doctor_id)  { setError('Выберите врача'); return }
     setError('')
     setSaving(true)
 
     const timeEnd = calcEnd(form.time_start, duration)
 
-    // Check for overlapping appointments for same doctor
+    // Check for overlapping appointments for same doctor (rule A1)
     const timeEndForCheck = calcEnd(form.time_start, duration) + ':00'
     const { data: conflicts } = await supabase
       .from('appointments')
@@ -121,7 +150,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
 
     if (err) { setError(err.message); setSaving(false); return }
 
-    // Auto-create open visit
+    // Auto-create open visit (rule A5)
     await supabase.from('visits').insert({
       clinic_id: clinicId,
       patient_id: form.patient_id,
@@ -140,7 +169,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10">
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h3 className="text-base font-semibold text-gray-900">Новая запись</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
@@ -151,55 +180,124 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Patient */}
-          <div className="relative">
+          {/* Patient search / select / register */}
+          <div>
             <label className={labelCls}>Пациент <span className="text-red-400">*</span></label>
+
             {form.patient_id ? (
-              <div className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2.5">
+              /* Selected state */
+              <div className="flex items-center justify-between border border-green-200 bg-green-50 rounded-lg px-3 py-2.5">
                 <div>
-                  <p className="text-sm font-medium text-gray-900">{selectedPatient?.full_name ?? patientSearch}</p>
-                  {selectedPatient?.phones?.[0] && (
-                    <p className="text-xs text-gray-400">{selectedPatient.phones[0]}</p>
-                  )}
+                  <p className="text-sm font-medium text-gray-900">{selectedPatientName}</p>
+                  {selectedPatientPhone && <p className="text-xs text-gray-400">{selectedPatientPhone}</p>}
                 </div>
                 <button
                   type="button"
-                  onClick={() => setForm(f => ({ ...f, patient_id: '' }))}
+                  onClick={() => { setForm(f => ({ ...f, patient_id: '' })); setPatientSearch(''); setShowNewPatient(false) }}
                   className="text-gray-400 hover:text-gray-600 text-xs ml-2"
                 >
                   ✕
                 </button>
               </div>
             ) : (
-              <>
-                <input
-                  className={inputCls}
-                  placeholder="Поиск по имени..."
-                  value={patientSearch}
-                  onChange={e => setPatientSearch(e.target.value)}
-                  autoFocus
-                />
-                {patients.length > 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 max-h-48 overflow-y-auto">
-                    {patients.map(p => (
+              <div className="space-y-2">
+                {/* Search input */}
+                <div className="relative">
+                  <input
+                    className={inputCls}
+                    placeholder="Поиск по имени или телефону..."
+                    value={patientSearch}
+                    onChange={e => { setPatientSearch(e.target.value); setShowNewPatient(false) }}
+                    autoFocus
+                  />
+                  {/* Dropdown results */}
+                  {patientSearch.length >= 2 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 overflow-hidden">
+                      {patients.map(p => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setForm(f => ({ ...f, patient_id: p.id }))
+                            setSelectedPatientName(p.full_name)
+                            setSelectedPatientPhone(p.phones?.[0] ?? '')
+                          }}
+                          className="w-full text-left px-4 py-2.5 hover:bg-blue-50 transition-colors border-b border-gray-50 last:border-0"
+                        >
+                          <p className="text-sm font-medium text-gray-900">{p.full_name}</p>
+                          {p.phones?.[0] && <p className="text-xs text-gray-400">{p.phones[0]}</p>}
+                        </button>
+                      ))}
+                      {/* Register new patient option */}
                       <button
-                        key={p.id}
                         type="button"
-                        onClick={() => { setForm(f => ({ ...f, patient_id: p.id })); setPatientSearch(p.full_name) }}
-                        className="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors"
+                        onClick={() => setShowNewPatient(v => !v)}
+                        className="w-full text-left px-4 py-2.5 bg-blue-50 hover:bg-blue-100 transition-colors flex items-center gap-2"
                       >
-                        <p className="text-sm font-medium text-gray-900">{p.full_name}</p>
-                        {p.phones?.[0] && <p className="text-xs text-gray-400">{p.phones[0]}</p>}
+                        <span className="text-blue-600 font-bold text-base leading-none">+</span>
+                        <span className="text-sm text-blue-600 font-medium">
+                          {patients.length === 0
+                            ? `Зарегистрировать «${patientSearch}»`
+                            : 'Зарегистрировать нового пациента'}
+                        </span>
                       </button>
-                    ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* New patient inline form */}
+                {showNewPatient && (
+                  <div className="border border-blue-200 rounded-xl p-4 bg-blue-50/50 space-y-3">
+                    <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Регистрация нового пациента</p>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 block mb-1">ФИО <span className="text-red-400">*</span></label>
+                      <input
+                        className={inputCls}
+                        placeholder="Айгерим Бекова"
+                        value={newPatient.full_name}
+                        onChange={e => setNewPatient(p => ({ ...p, full_name: e.target.value }))}
+                        autoFocus
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 block mb-1">Телефон</label>
+                        <input
+                          className={inputCls}
+                          placeholder="+7 700 000 0000"
+                          value={newPatient.phone}
+                          onChange={e => setNewPatient(p => ({ ...p, phone: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-600 block mb-1">Пол</label>
+                        <select className={inputCls} value={newPatient.gender}
+                          onChange={e => setNewPatient(p => ({ ...p, gender: e.target.value as 'male' | 'female' | 'other' }))}>
+                          <option value="female">Женский</option>
+                          <option value="male">Мужской</option>
+                          <option value="other">Не указан</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 block mb-1">Дата рождения</label>
+                      <input type="date" className={inputCls} value={newPatient.birth_date}
+                        onChange={e => setNewPatient(p => ({ ...p, birth_date: e.target.value }))} />
+                    </div>
+                    <div className="flex gap-2 pt-1">
+                      <button type="button" onClick={() => setShowNewPatient(false)}
+                        className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2 text-xs font-medium hover:bg-white">
+                        Отмена
+                      </button>
+                      <button type="button" onClick={registerNewPatient}
+                        disabled={registeringPatient || !newPatient.full_name.trim()}
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-2 text-xs font-medium">
+                        {registeringPatient ? 'Создание...' : '✓ Зарегистрировать'}
+                      </button>
+                    </div>
                   </div>
                 )}
-                {patientSearch.length >= 2 && patients.length === 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 px-4 py-3">
-                    <p className="text-sm text-gray-400">Ничего не найдено</p>
-                  </div>
-                )}
-              </>
+              </div>
             )}
           </div>
 
@@ -432,6 +530,7 @@ export default function SchedulePage() {
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [selected, setSelected] = useState<Appointment | null>(null)
+  const [search, setSearch] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -500,23 +599,63 @@ export default function SchedulePage() {
         </button>
       </div>
 
+      {/* Search bar */}
+      <div className="relative mb-4">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24"
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+          <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Поиск по имени пациента или врача..."
+          className="w-full pl-9 pr-10 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+        />
+        {search && (
+          <button onClick={() => setSearch('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+          </button>
+        )}
+      </div>
+
       {/* List */}
       <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
-        ) : appointments.length === 0 ? (
-          <div className="p-12 text-center">
-            <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-            >
-              + Создать первую запись
-            </button>
-          </div>
-        ) : (
+        ) : (() => {
+          const filtered = appointments.filter(a => {
+            if (!search.trim()) return true
+            const q = search.toLowerCase()
+            const patName = (a.patient?.full_name ?? '').toLowerCase()
+            const doc = a.doctor as { last_name: string; first_name: string } | undefined
+            const docName = doc ? `${doc.last_name} ${doc.first_name}`.toLowerCase() : ''
+            return patName.includes(q) || docName.includes(q)
+          })
+
+          if (appointments.length === 0) return (
+            <div className="p-12 text-center">
+              <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
+              <button onClick={() => setShowCreate(true)}
+                className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+                + Создать первую запись
+              </button>
+            </div>
+          )
+
+          if (filtered.length === 0) return (
+            <div className="p-8 text-center text-sm text-gray-400">
+              Ничего не найдено по запросу «{search}»
+            </div>
+          )
+
+          return (
           <div className="divide-y divide-gray-50">
-            {appointments.map(a => {
+            {filtered.map(a => {
               const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
               const doctor = a.doctor as { last_name: string; first_name: string; color: string } | undefined
               return (
@@ -551,7 +690,8 @@ export default function SchedulePage() {
               )
             })}
           </div>
-        )}
+          )
+        })()}
       </div>
 
       {showCreate && clinicId && (

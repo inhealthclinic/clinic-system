@@ -1,36 +1,66 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
-const LEADS_STAGES = [
-  { key: 'new',         label: 'Новый' },
-  { key: 'in_progress', label: 'В работе' },
-  { key: 'contact',     label: 'Связались' },
-  { key: 'booked',      label: 'Записан' },
+const DEFAULT_LEADS_STAGES = [
+  { key: 'new',         label: 'Неразобранное', color: '#94a3b8' },
+  { key: 'in_progress', label: 'В работе',       color: '#3b82f6' },
+  { key: 'contact',     label: 'Касание',        color: '#f59e0b' },
+  { key: 'booked',      label: 'Записан',        color: '#10b981' },
 ]
 
-const MEDICAL_STAGES = [
-  { key: 'booked',    label: 'Записан' },
-  { key: 'confirmed', label: 'Подтверждён' },
-  { key: 'arrived',   label: 'Пришёл' },
-  { key: 'in_visit',  label: 'На приёме' },
-  { key: 'completed', label: 'Завершён' },
-  { key: 'follow_up', label: 'Follow-up' },
+const DEFAULT_MEDICAL_STAGES = [
+  { key: 'checkup',              label: 'Чек-ап',                             color: '#6366f1' },
+  { key: 'tirzepatide_service',  label: 'Запись на услугу тирзепатид',        color: '#8b5cf6' },
+  { key: 'primary_scheduled',   label: 'Назначена первичная консультация',   color: '#3b82f6' },
+  { key: 'no_show',              label: 'Не пришел',                          color: '#ef4444' },
+  { key: 'primary_done',        label: 'Проведена первичная консультация',   color: '#10b981' },
+  { key: 'secondary_scheduled', label: 'Назначена вторичная консультация',   color: '#06b6d4' },
+  { key: 'secondary_done',      label: 'Проведена вторичная консультация',   color: '#0891b2' },
+  { key: 'deciding',            label: 'Принимают решение',                  color: '#f59e0b' },
+  { key: 'treatment',           label: 'Лечение',                            color: '#84cc16' },
+  { key: 'tirzepatide_tx',      label: 'Лечение тирзепатид',                 color: '#22c55e' },
+  { key: 'control_tests',       label: 'Контрольные анализы',                color: '#14b8a6' },
+  { key: 'people',              label: 'Люди',                               color: '#a78bfa' },
+  { key: 'success',             label: 'Успешно реализована',                color: '#16a34a' },
+  { key: 'failed',              label: 'Не реализована',                     color: '#dc2626' },
+  { key: 'closed',              label: 'Закрыто',                            color: '#6b7280' },
 ]
 
-const SOURCES = [
-  { value: 'instagram', label: 'Instagram' },
-  { value: 'whatsapp',  label: 'WhatsApp' },
-  { value: 'target',    label: 'Таргет' },
-  { value: 'referral',  label: 'Рекомендация' },
-  { value: 'organic',   label: 'Органика' },
-  { value: 'repeat',    label: 'Повторный' },
-  { value: 'other',     label: 'Другое' },
-]
+const DEFAULT_SOURCES = ['Таргет', 'Instagram', 'WhatsApp', 'Рекомендация', 'Сайт', '2GIS']
+
+// ─── settings (localStorage) ─────────────────────────────────────────────────
+
+const SETTINGS_KEY = 'crm_settings'
+
+interface CrmSettings {
+  leads_stages:   { key: string; label: string; color: string }[]
+  medical_stages: { key: string; label: string; color: string }[]
+  sources: string[]
+}
+
+function loadSettings(): CrmSettings {
+  if (typeof window === 'undefined') return {
+    leads_stages: DEFAULT_LEADS_STAGES,
+    medical_stages: DEFAULT_MEDICAL_STAGES,
+    sources: DEFAULT_SOURCES,
+  }
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY)
+    if (!raw) return { leads_stages: DEFAULT_LEADS_STAGES, medical_stages: DEFAULT_MEDICAL_STAGES, sources: DEFAULT_SOURCES }
+    const parsed = JSON.parse(raw) as Partial<CrmSettings>
+    return {
+      leads_stages:   parsed.leads_stages   ?? DEFAULT_LEADS_STAGES,
+      medical_stages: parsed.medical_stages ?? DEFAULT_MEDICAL_STAGES,
+      sources:        parsed.sources        ?? DEFAULT_SOURCES,
+    }
+  } catch { return { leads_stages: DEFAULT_LEADS_STAGES, medical_stages: DEFAULT_MEDICAL_STAGES, sources: DEFAULT_SOURCES } }
+}
 
 const LOST_REASONS = [
   { value: 'expensive', label: 'Дорого' },
@@ -81,12 +111,198 @@ interface Interaction {
   created_at: string
 }
 
+interface Stage { key: string; label: string; color: string }
+
+// ─── TransferModal ────────────────────────────────────────────────────────────
+
+function TransferModal({ deal, medicalStages, clinicId, onClose, onTransferred }: {
+  deal: DealRow
+  medicalStages: Stage[]
+  clinicId: string
+  onClose: () => void
+  onTransferred: () => void
+}) {
+  const supabase = createClient()
+  const [targetStage, setTargetStage] = useState(medicalStages[0]?.key ?? 'checkup')
+  const [saving, setSaving] = useState(false)
+
+  const handleTransfer = async () => {
+    setSaving(true)
+    await supabase.from('deals').update({
+      funnel: 'medical',
+      stage: targetStage,
+    }).eq('id', deal.id)
+    setSaving(false)
+    onTransferred()
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 z-10">
+        <h3 className="text-base font-semibold text-gray-900 mb-1">Перевод в медицинскую воронку</h3>
+        <p className="text-sm text-gray-400 mb-4">{deal.patient?.full_name}</p>
+
+        <p className="text-xs font-medium text-gray-500 mb-2">Этап назначения</p>
+        <div className="space-y-1.5 max-h-64 overflow-y-auto mb-5">
+          {medicalStages.map(s => (
+            <label key={s.key} className="flex items-center gap-3 cursor-pointer rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors">
+              <input
+                type="radio"
+                name="target_stage"
+                value={s.key}
+                checked={targetStage === s.key}
+                onChange={() => setTargetStage(s.key)}
+                className="w-4 h-4"
+              />
+              <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: s.color }} />
+              <span className="text-sm text-gray-700">{s.label}</span>
+            </label>
+          ))}
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-50"
+          >
+            Отмена
+          </button>
+          <button
+            onClick={handleTransfer}
+            disabled={saving}
+            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium"
+          >
+            {saving ? 'Перевод...' : '→ Перевести'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── QuickAddForm ─────────────────────────────────────────────────────────────
+
+function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
+  stageKey: string
+  clinicId: string
+  sources: string[]
+  onCreated: () => void
+  onCancel: () => void
+}) {
+  const supabase = createClient()
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [source, setSource] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) return
+    setSaving(true)
+    try {
+      const { data: patient } = await supabase
+        .from('patients')
+        .insert({
+          clinic_id: clinicId,
+          full_name: name.trim(),
+          phones: phone.trim() ? [phone.trim()] : [],
+          gender: 'other',
+          status: 'new',
+          is_vip: false,
+          balance_amount: 0,
+          debt_amount: 0,
+          tags: [],
+        })
+        .select('id')
+        .single()
+
+      if (!patient) { setSaving(false); return }
+
+      const { data: deal } = await supabase
+        .from('deals')
+        .insert({
+          clinic_id: clinicId,
+          patient_id: patient.id,
+          funnel: 'leads',
+          stage: stageKey,
+          source: source || null,
+          priority: 'warm',
+        })
+        .select('id')
+        .single()
+
+      if (deal) {
+        const due = new Date()
+        due.setHours(due.getHours() + 1)
+        await supabase.from('tasks').insert({
+          clinic_id: clinicId,
+          title: `Позвонить: ${name.trim()}`,
+          type: 'call',
+          priority: 'high',
+          status: 'new',
+          patient_id: patient.id,
+          due_at: due.toISOString(),
+        })
+      }
+      onCreated()
+    } catch {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="bg-white rounded-lg border border-blue-200 p-3 shadow-sm space-y-2">
+      <input
+        autoFocus
+        value={name}
+        onChange={e => setName(e.target.value)}
+        placeholder="Имя *"
+        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      />
+      <input
+        value={phone}
+        onChange={e => setPhone(e.target.value)}
+        placeholder="Телефон"
+        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      />
+      <select
+        value={source}
+        onChange={e => setSource(e.target.value)}
+        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+      >
+        <option value="">Источник</option>
+        {sources.map(s => <option key={s} value={s}>{s}</option>)}
+      </select>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="flex-1 border border-gray-200 text-gray-500 rounded-lg py-1.5 text-xs font-medium hover:bg-gray-50"
+        >
+          Отмена
+        </button>
+        <button
+          type="submit"
+          disabled={saving || !name.trim()}
+          className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-1.5 text-xs font-medium"
+        >
+          {saving ? '...' : 'Добавить'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
 // ─── DealCard ────────────────────────────────────────────────────────────────
 
-function DealCard({ deal, onDragStart, onClick }: {
+function DealCard({ deal, sources, onDragStart, onClick, onTransfer }: {
   deal: DealRow
+  sources: string[]
   onDragStart: (id: string) => void
   onClick: (deal: DealRow) => void
+  onTransfer?: (deal: DealRow) => void
 }) {
   const p = PRIORITY_STYLE[deal.priority] ?? PRIORITY_STYLE.warm
   return (
@@ -108,37 +324,53 @@ function DealCard({ deal, onDragStart, onClick }: {
         <p className="text-xs text-gray-400 mb-1">{deal.patient.phones[0]}</p>
       )}
       {deal.source && (
-        <p className="text-xs text-gray-400">
-          {SOURCES.find(s => s.value === deal.source)?.label ?? deal.source}
-        </p>
+        <p className="text-xs text-gray-400">{deal.source}</p>
       )}
       {deal.notes && (
         <p className="text-xs text-gray-500 mt-1.5 line-clamp-2 leading-relaxed">{deal.notes}</p>
       )}
-      <p className="text-xs text-gray-300 mt-2">
-        {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
-      </p>
+      <div className="flex items-center justify-between mt-2">
+        <p className="text-xs text-gray-300">
+          {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+        </p>
+        {deal.funnel === 'leads' && onTransfer && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onTransfer(deal) }}
+            className="text-xs text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 rounded px-1.5 py-0.5 font-medium transition-colors"
+            title="Перевести в медицинскую воронку"
+          >
+            → В мед.
+          </button>
+        )}
+      </div>
     </div>
   )
 }
 
 // ─── KanbanColumn ─────────────────────────────────────────────────────────────
 
-function KanbanColumn({ col, deals, onDragStart, onDrop, onCardClick }: {
-  col: { key: string; label: string }
+function KanbanColumn({ col, deals, sources, clinicId, showQuickAdd, onDragStart, onDrop, onCardClick, onTransfer, onQuickAddToggle, onCreated }: {
+  col: Stage
   deals: DealRow[]
+  sources: string[]
+  clinicId: string
+  showQuickAdd: boolean
   onDragStart: (id: string) => void
   onDrop: (stage: string) => void
   onCardClick: (deal: DealRow) => void
+  onTransfer?: (deal: DealRow) => void
+  onQuickAddToggle: () => void
+  onCreated: () => void
 }) {
   const [over, setOver] = useState(false)
   return (
     <div className="flex-shrink-0 w-56">
       <div className="flex items-center justify-between mb-2.5">
-        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-          {col.label}
-        </span>
-        <span className="text-xs text-gray-400 bg-gray-100 rounded-full px-2 py-0.5">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: col.color }} />
+          <span className="text-xs font-semibold text-gray-600 truncate">{col.label}</span>
+        </div>
+        <span className="text-xs text-gray-400 bg-gray-100 rounded-full px-2 py-0.5 flex-shrink-0">
           {deals.length}
         </span>
       </div>
@@ -152,9 +384,16 @@ function KanbanColumn({ col, deals, onDragStart, onDrop, onCardClick }: {
         ].join(' ')}
       >
         {deals.map(deal => (
-          <DealCard key={deal.id} deal={deal} onDragStart={onDragStart} onClick={onCardClick} />
+          <DealCard
+            key={deal.id}
+            deal={deal}
+            sources={sources}
+            onDragStart={onDragStart}
+            onClick={onCardClick}
+            onTransfer={onTransfer}
+          />
         ))}
-        {deals.length === 0 && (
+        {deals.length === 0 && !showQuickAdd && (
           <div className={[
             'text-center py-8 text-xs border border-dashed rounded-lg transition-colors',
             over ? 'border-blue-300 text-blue-400' : 'border-gray-200 text-gray-300',
@@ -163,18 +402,43 @@ function KanbanColumn({ col, deals, onDragStart, onDrop, onCardClick }: {
           </div>
         )}
       </div>
+
+      {/* Quick add */}
+      {showQuickAdd ? (
+        <div className="mt-2">
+          <QuickAddForm
+            stageKey={col.key}
+            clinicId={clinicId}
+            sources={sources}
+            onCreated={onCreated}
+            onCancel={onQuickAddToggle}
+          />
+        </div>
+      ) : (
+        <button
+          onClick={onQuickAddToggle}
+          className="mt-2 w-full text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-lg py-2 transition-colors flex items-center justify-center gap-1"
+        >
+          <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+          </svg>
+          лид
+        </button>
+      )}
     </div>
   )
 }
 
 // ─── DealDrawer ───────────────────────────────────────────────────────────────
 
-function DealDrawer({ deal, stages, clinicId, onClose, onUpdate }: {
+function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTransfer }: {
   deal: DealRow
-  stages: { key: string; label: string }[]
+  stages: Stage[]
+  sources: string[]
   clinicId: string
   onClose: () => void
   onUpdate: () => void
+  onTransfer?: (deal: DealRow) => void
 }) {
   const supabase = createClient()
   const [interactions, setInteractions] = useState<Interaction[]>([])
@@ -243,6 +507,8 @@ function DealDrawer({ deal, stages, clinicId, onClose, onUpdate }: {
     loadInteractions()
   }
 
+  const currentStage = stages.find(s => s.key === deal.stage)
+
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
@@ -254,18 +520,33 @@ function DealDrawer({ deal, stages, clinicId, onClose, onUpdate }: {
             <h3 className="text-base font-semibold text-gray-900 leading-tight">
               {deal.patient?.full_name ?? '—'}
             </h3>
-            <p className="text-xs text-gray-400 mt-0.5 truncate">
-              {[
-                deal.patient?.phones?.[0],
-                deal.source ? SOURCES.find(s => s.value === deal.source)?.label : null,
-              ].filter(Boolean).join(' · ')}
-            </p>
+            <div className="flex items-center gap-2 mt-1">
+              {currentStage && (
+                <span className="flex items-center gap-1 text-xs text-gray-500">
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: currentStage.color }} />
+                  {currentStage.label}
+                </span>
+              )}
+              {deal.patient?.phones?.[0] && (
+                <span className="text-xs text-gray-400">{deal.patient.phones[0]}</span>
+              )}
+            </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 flex-shrink-0 mt-0.5">
-            <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
-              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {deal.funnel === 'leads' && onTransfer && (
+              <button
+                onClick={() => onTransfer(deal)}
+                className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg px-2.5 py-1.5 font-medium transition-colors"
+              >
+                → В медицинскую
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 mt-0.5">
+              <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* Stage pills */}
@@ -278,9 +559,10 @@ function DealDrawer({ deal, stages, clinicId, onClose, onUpdate }: {
                 className={[
                   'flex-shrink-0 text-xs px-2.5 py-1 rounded-full font-medium transition-colors',
                   i < stageIdx         ? 'bg-green-100 text-green-700' :
-                  s.key === deal.stage ? 'bg-blue-600 text-white cursor-default' :
+                  s.key === deal.stage ? 'text-white cursor-default' :
                                          'bg-gray-100 text-gray-500 hover:bg-gray-200',
                 ].join(' ')}
+                style={s.key === deal.stage ? { backgroundColor: s.color } : undefined}
               >
                 {i < stageIdx ? '✓ ' : ''}{s.label}
               </button>
@@ -301,6 +583,9 @@ function DealDrawer({ deal, stages, clinicId, onClose, onUpdate }: {
                   </span>
                 )
               })()}
+              {deal.source && (
+                <span className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{deal.source}</span>
+              )}
               <span className="text-xs text-gray-400">
                 {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
               </span>
@@ -456,8 +741,9 @@ function DealDrawer({ deal, stages, clinicId, onClose, onUpdate }: {
 
 // ─── CreateDealModal ──────────────────────────────────────────────────────────
 
-function CreateDealModal({ clinicId, onClose, onCreated }: {
+function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
   clinicId: string
+  sources: string[]
   onClose: () => void
   onCreated: () => void
 }) {
@@ -581,7 +867,7 @@ function CreateDealModal({ clinicId, onClose, onCreated }: {
               <label className={labelCls}>Источник</label>
               <select className={inputCls} value={form.source} onChange={set('source')}>
                 <option value="">— не указан —</option>
-                {SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                {sources.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
             <div>
@@ -644,8 +930,22 @@ export default function CrmPage() {
   const [selected, setSelected] = useState<DealRow | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
+  const [transferDeal, setTransferDeal] = useState<DealRow | null>(null)
+  const [quickAddStage, setQuickAddStage] = useState<string | null>(null)
+  const [settings, setSettings] = useState<CrmSettings>(() => loadSettings())
 
-  const stages = funnel === 'leads' ? LEADS_STAGES : MEDICAL_STAGES
+  const leadsStages = settings.leads_stages
+  const medicalStages = settings.medical_stages
+  const sources = settings.sources
+
+  const stages = funnel === 'leads' ? leadsStages : medicalStages
+
+  // Reload settings from localStorage when page gains focus (settings page may have updated)
+  useEffect(() => {
+    const onFocus = () => setSettings(loadSettings())
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -671,6 +971,11 @@ export default function CrmPage() {
     await supabase.from('deals').update({ stage }).eq('id', id)
   }
 
+  const handleQuickCreated = () => {
+    setQuickAddStage(null)
+    load()
+  }
+
   return (
     <div className="flex flex-col h-full -m-6 overflow-hidden">
 
@@ -691,15 +996,27 @@ export default function CrmPage() {
           ))}
         </div>
         <span className="text-sm text-gray-400">{deals.length} сделок</span>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="ml-auto bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5"
-        >
-          <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
-          </svg>
-          Новый лид
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <Link
+            href="/crm/settings"
+            className="text-gray-400 hover:text-gray-600 border border-gray-200 hover:border-gray-300 rounded-lg px-3 py-2 text-sm transition-colors flex items-center gap-1.5"
+          >
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+              <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" strokeWidth="1.5"/>
+            </svg>
+            Настройки
+          </Link>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+            </svg>
+            Новый лид
+          </button>
+        </div>
       </div>
 
       {/* Board */}
@@ -713,9 +1030,15 @@ export default function CrmPage() {
                 key={col.key}
                 col={col}
                 deals={deals.filter(d => d.stage === col.key)}
+                sources={sources}
+                clinicId={clinicId}
+                showQuickAdd={quickAddStage === col.key && funnel === 'leads'}
                 onDragStart={setDragId}
                 onDrop={handleDrop}
                 onCardClick={setSelected}
+                onTransfer={funnel === 'leads' ? setTransferDeal : undefined}
+                onQuickAddToggle={() => setQuickAddStage(prev => prev === col.key ? null : col.key)}
+                onCreated={handleQuickCreated}
               />
             ))}
           </div>
@@ -726,17 +1049,30 @@ export default function CrmPage() {
         <DealDrawer
           deal={selected}
           stages={stages}
+          sources={sources}
           clinicId={clinicId}
           onClose={() => setSelected(null)}
           onUpdate={load}
+          onTransfer={funnel === 'leads' ? (d) => { setSelected(null); setTransferDeal(d) } : undefined}
         />
       )}
 
       {showCreate && clinicId && (
         <CreateDealModal
           clinicId={clinicId}
+          sources={sources}
           onClose={() => setShowCreate(false)}
           onCreated={() => { load(); setShowCreate(false) }}
+        />
+      )}
+
+      {transferDeal && clinicId && (
+        <TransferModal
+          deal={transferDeal}
+          medicalStages={medicalStages}
+          clinicId={clinicId}
+          onClose={() => setTransferDeal(null)}
+          onTransferred={() => { load(); setTransferDeal(null) }}
         />
       )}
     </div>
