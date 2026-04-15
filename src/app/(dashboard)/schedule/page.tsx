@@ -87,7 +87,25 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     setSaving(true)
 
     const timeEnd = calcEnd(form.time_start, duration)
-    const { error: err } = await supabase.from('appointments').insert({
+
+    // Check for overlapping appointments for same doctor
+    const timeEndForCheck = calcEnd(form.time_start, duration) + ':00'
+    const { data: conflicts } = await supabase
+      .from('appointments')
+      .select('id, time_start, time_end')
+      .eq('doctor_id', form.doctor_id)
+      .eq('date', form.date)
+      .not('status', 'in', '(cancelled,no_show,rescheduled)')
+      .lt('time_start', timeEndForCheck)
+      .gt('time_end', form.time_start + ':00')
+
+    if (conflicts && conflicts.length > 0) {
+      setError(`Конфликт: у врача уже есть запись в это время`)
+      setSaving(false)
+      return
+    }
+
+    const { data: appt, error: err } = await supabase.from('appointments').insert({
       clinic_id: clinicId,
       patient_id: form.patient_id,
       doctor_id: form.doctor_id,
@@ -99,9 +117,19 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
       is_walkin: form.is_walkin,
       source: 'admin',
       notes: form.notes.trim() || null,
-    })
+    }).select('id').single()
 
     if (err) { setError(err.message); setSaving(false); return }
+
+    // Auto-create open visit
+    await supabase.from('visits').insert({
+      clinic_id: clinicId,
+      patient_id: form.patient_id,
+      doctor_id: form.doctor_id,
+      appointment_id: appt.id,
+      status: 'open',
+    })
+
     onCreated()
     onClose()
   }
@@ -292,6 +320,17 @@ function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
   const updateStatus = async (status: string) => {
     setSaving(true)
     await supabase.from('appointments').update({ status }).eq('id', appt.id)
+    if (status === 'no_show') {
+      await supabase.from('tasks').insert({
+        clinic_id: appt.clinic_id,
+        title: `Выяснить причину неявки: ${appt.patient?.full_name}`,
+        type: 'call',
+        priority: 'high',
+        status: 'new',
+        patient_id: appt.patient_id,
+        due_at: new Date(Date.now() + 2*60*60*1000).toISOString(),
+      })
+    }
     setSaving(false)
     onUpdate()
     onClose()

@@ -535,6 +535,26 @@ export default function VisitPage() {
 
   const advance = async (s: VisitFull['status']) => {
     if (!visit) return
+
+    // V1, V2, V3 validation before closing
+    if (s === 'completed') {
+      if (!visit.has_charges) {
+        alert('Нельзя завершить визит: нет ни одного начисления')
+        return
+      }
+      // Check medical record exists
+      const { data: rec } = await supabase
+        .from('medical_records').select('id').eq('visit_id', visit.id).maybeSingle()
+      if (!rec) {
+        alert('Нельзя завершить визит: не заполнена медицинская запись')
+        return
+      }
+      if (!visit.finance_settled) {
+        alert('Нельзя завершить визит: финансы не зафиксированы (оплата или долг)')
+        return
+      }
+    }
+
     setAdv(true)
     await supabase.from('visits').update({ status: s }).eq('id', visit.id)
     setAdv(false)
@@ -595,6 +615,16 @@ export default function VisitPage() {
                 {advancing ? '...' : '½ Частично'}
               </button>
             </>)}
+            {visit.status === 'in_progress' && (
+              <div className="mt-3 space-y-1">
+                <p className={`text-xs flex items-center gap-1.5 ${visit.has_charges ? 'text-green-600' : 'text-red-400'}`}>
+                  {visit.has_charges ? '✓' : '○'} Начисления
+                </p>
+                <p className={`text-xs flex items-center gap-1.5 ${visit.finance_settled ? 'text-green-600' : 'text-gray-400'}`}>
+                  {visit.finance_settled ? '✓' : '○'} Оплачено
+                </p>
+              </div>
+            )}
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-3">

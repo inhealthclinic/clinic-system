@@ -500,7 +500,7 @@ function CreateDealModal({ clinicId, onClose, onCreated }: {
 
       if (pErr) { setError(pErr.message); setSaving(false); return }
 
-      const { error: dErr } = await supabase
+      const { data: deal, error: dErr } = await supabase
         .from('deals')
         .insert({
           clinic_id: clinicId,
@@ -511,8 +511,25 @@ function CreateDealModal({ clinicId, onClose, onCreated }: {
           priority: form.priority,
           notes: form.notes.trim() || null,
         })
+        .select('id')
+        .single()
 
       if (dErr) { setError(dErr.message); setSaving(false); return }
+
+      // Auto-create "call" task for new lead (rule D1)
+      if (deal) {
+        const due = new Date()
+        due.setHours(due.getHours() + 1)
+        await supabase.from('tasks').insert({
+          clinic_id: clinicId,
+          title: `Позвонить: ${form.full_name.trim()}`,
+          type: 'call',
+          priority: 'high',
+          status: 'new',
+          patient_id: patient.id,
+          due_at: due.toISOString(),
+        })
+      }
 
       onCreated()
     } catch (err: unknown) {

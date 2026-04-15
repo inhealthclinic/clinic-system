@@ -31,7 +31,47 @@ const STATUS_CLR: Record<string, string> = {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-type Tab = 'profile' | 'medcard' | 'history'
+type Tab = 'profile' | 'medcard' | 'lab' | 'finance' | 'history'
+
+// ─── lab order types ──────────────────────────────────────────────────────────
+
+interface LabOrderItem { id: string; name: string }
+interface LabOrder {
+  id: string
+  order_number: string
+  status: string
+  urgent: boolean
+  ordered_at: string
+  doctor: { id: string; first_name: string; last_name: string } | null
+  items: LabOrderItem[]
+}
+
+const LAB_STATUS_CLR: Record<string, string> = {
+  ordered: 'bg-gray-100 text-gray-600', agreed: 'bg-blue-50 text-blue-600',
+  in_progress: 'bg-blue-100 text-blue-700', ready: 'bg-green-100 text-green-700',
+  verified: 'bg-purple-100 text-purple-700', delivered: 'bg-gray-50 text-gray-400',
+  rejected: 'bg-red-100 text-red-600', paid: 'bg-teal-100 text-teal-700',
+  sample_taken: 'bg-yellow-100 text-yellow-700',
+}
+
+// ─── payment types ────────────────────────────────────────────────────────────
+
+interface Payment {
+  id: string
+  amount: number
+  method: string
+  type: string
+  status: string
+  paid_at: string | null
+  notes: string | null
+}
+
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  cash: 'Наличные', kaspi: 'Kaspi', halyk: 'Halyk', credit: 'Кредит', balance: 'Депозит',
+}
+const PAYMENT_TYPE_LABEL: Record<string, string> = {
+  payment: 'Оплата', prepayment: 'Предоплата', refund: 'Возврат', writeoff: 'Списание',
+}
 
 interface MedicalCard {
   id: string
@@ -135,6 +175,16 @@ export default function PatientCardPage() {
   })
   const [conditionSaving, setConditionSaving] = useState(false)
 
+  // ── lab orders
+  const [labOrders, setLabOrders] = useState<LabOrder[]>([])
+  const [labLoading, setLabLoading] = useState(false)
+  const [labLoaded, setLabLoaded] = useState(false)
+
+  // ── finances
+  const [payments, setPayments] = useState<Payment[]>([])
+  const [finLoading, setFinLoading] = useState(false)
+  const [finLoaded, setFinLoaded] = useState(false)
+
   // ── load patient + appointments
   const load = useCallback(async () => {
     const [p, a] = await Promise.all([
@@ -177,6 +227,44 @@ export default function PatientCardPage() {
   useEffect(() => {
     if (activeTab === 'medcard') loadMedCard()
   }, [activeTab, loadMedCard])
+
+  // ── load lab orders (lazy)
+  const loadLab = useCallback(async () => {
+    if (labLoaded) return
+    setLabLoading(true)
+    const { data } = await supabase
+      .from('lab_orders')
+      .select('*, doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name)')
+      .eq('patient_id', id)
+      .order('ordered_at', { ascending: false })
+      .limit(30)
+    setLabOrders((data ?? []) as LabOrder[])
+    setLabLoaded(true)
+    setLabLoading(false)
+  }, [id, labLoaded])
+
+  useEffect(() => {
+    if (activeTab === 'lab') loadLab()
+  }, [activeTab, loadLab])
+
+  // ── load payments (lazy)
+  const loadFinance = useCallback(async () => {
+    if (finLoaded) return
+    setFinLoading(true)
+    const { data } = await supabase
+      .from('payments')
+      .select('id,amount,method,type,status,paid_at,notes')
+      .eq('patient_id', id)
+      .order('paid_at', { ascending: false })
+      .limit(50)
+    setPayments((data ?? []) as Payment[])
+    setFinLoaded(true)
+    setFinLoading(false)
+  }, [id, finLoaded])
+
+  useEffect(() => {
+    if (activeTab === 'finance') loadFinance()
+  }, [activeTab, loadFinance])
 
   // ── save patient edit
   const saveEdit = async () => {
@@ -293,6 +381,8 @@ export default function PatientCardPage() {
   const TABS: { key: Tab; label: string }[] = [
     { key: 'profile', label: 'Профиль' },
     { key: 'medcard', label: 'Медкарта' },
+    { key: 'lab', label: 'Анализы' },
+    { key: 'finance', label: 'Финансы' },
     { key: 'history', label: 'История' },
   ]
 
@@ -821,6 +911,131 @@ export default function PatientCardPage() {
                         <span className={`text-xs font-medium px-2 py-1 rounded-full flex-shrink-0 ${CONDITION_STATUS_CLS[c.status]}`}>
                           {CONDITION_STATUS_LABEL[c.status]}
                         </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── Tab: Анализы ────────────────────────────────────────────────────── */}
+      {activeTab === 'lab' && (
+        <div className="space-y-3">
+          {labLoading ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+              Загрузка анализов...
+            </div>
+          ) : labOrders.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+              Анализов нет
+            </div>
+          ) : (
+            labOrders.map(order => (
+              <Link key={order.id} href="/lab" className="block bg-white rounded-xl border border-gray-100 p-4 hover:border-gray-200 transition-colors">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className="font-mono text-xs text-gray-400">{order.order_number}</span>
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${LAB_STATUS_CLR[order.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                        {order.status}
+                      </span>
+                      {order.urgent && (
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-600">Срочно</span>
+                      )}
+                    </div>
+                    {order.items.length > 0 && (
+                      <p className="text-sm text-gray-800 truncate">{order.items.map(i => i.name).join(', ')}</p>
+                    )}
+                    <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
+                      {order.doctor && (
+                        <span>{order.doctor.last_name} {order.doctor.first_name}</span>
+                      )}
+                      {order.ordered_at && (
+                        <span>{new Date(order.ordered_at).toLocaleDateString('ru-RU')}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Link>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* ── Tab: Финансы ────────────────────────────────────────────────────── */}
+      {activeTab === 'finance' && (
+        <div className="space-y-4">
+          {finLoading ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+              Загрузка финансов...
+            </div>
+          ) : (
+            <>
+              {/* Summary card */}
+              <div className="bg-white rounded-xl border border-gray-100 p-5">
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Сводка</h3>
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-xs text-gray-400 mb-1">Оплачено</p>
+                    <p className="text-base font-semibold text-gray-900">
+                      {payments
+                        .filter(p => p.type === 'payment' && p.status === 'completed')
+                        .reduce((s, p) => s + p.amount, 0)
+                        .toLocaleString('ru-RU')} ₸
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400 mb-1">Депозит</p>
+                    <p className="text-base font-semibold text-green-600">
+                      +{(patient.balance_amount ?? 0).toLocaleString('ru-RU')} ₸
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400 mb-1">Долг</p>
+                    <p className="text-base font-semibold text-red-500">
+                      -{(patient.debt_amount ?? 0).toLocaleString('ru-RU')} ₸
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Payments table */}
+              <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+                <div className="px-5 py-4 border-b border-gray-100">
+                  <h3 className="text-sm font-semibold text-gray-900">Платежи</h3>
+                </div>
+                {payments.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-gray-400">Платежей нет</div>
+                ) : (
+                  <div className="divide-y divide-gray-50">
+                    {payments.map(p => (
+                      <div key={p.id} className="px-5 py-3 flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-gray-900">
+                            {PAYMENT_TYPE_LABEL[p.type] ?? p.type}
+                            {p.method && (
+                              <span className="text-gray-400 ml-2 text-xs">{PAYMENT_METHOD_LABEL[p.method] ?? p.method}</span>
+                            )}
+                          </p>
+                          {p.paid_at && (
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              {new Date(p.paid_at).toLocaleDateString('ru-RU')}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                            p.status === 'completed' ? 'bg-green-100 text-green-700' :
+                            p.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-gray-100 text-gray-500'
+                          }`}>{p.status}</span>
+                          <span className={`text-sm font-semibold ${p.type === 'refund' || p.type === 'writeoff' ? 'text-red-500' : 'text-gray-900'}`}>
+                            {p.type === 'refund' || p.type === 'writeoff' ? '-' : ''}{p.amount.toLocaleString('ru-RU')} ₸
+                          </span>
+                        </div>
                       </div>
                     ))}
                   </div>
