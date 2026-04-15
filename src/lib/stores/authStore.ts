@@ -1,37 +1,23 @@
 import { create } from 'zustand'
-import type { UserProfile, Role } from '@/types/app'
+import type { User } from '@supabase/supabase-js'
+import type { UserProfile } from '@/types'
 
 interface AuthState {
-  user: UserProfile | null
-  permissions: Set<string>
+  user: User | null
+  profile: UserProfile | null
   isLoading: boolean
-  setUser: (user: UserProfile | null) => void
-  clearUser: () => void
+  setUser: (user: User | null) => void
+  setProfile: (profile: UserProfile | null) => void
+  setLoading: (loading: boolean) => void
+  reset: () => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  permissions: new Set(),
+  profile: null,
   isLoading: true,
-
-  setUser: (user) => {
-    if (!user) {
-      set({ user: null, permissions: new Set(), isLoading: false })
-      return
-    }
-
-    // Собираем права: роль + extra - denied
-    const rolePerms = new Set(user.role.permissions)
-    user.extra_permissions.forEach(p => rolePerms.add(p))
-    user.denied_permissions.forEach(p => rolePerms.delete(p))
-
-    // Owner — всё разрешено (маркер)
-    if (user.role.slug === 'owner') {
-      rolePerms.add('*')
-    }
-
-    set({ user, permissions: rolePerms, isLoading: false })
-  },
-
-  clearUser: () => set({ user: null, permissions: new Set(), isLoading: false }),
+  setUser: (user) => set({ user }),
+  setProfile: (profile) => set({ profile }),
+  setLoading: (isLoading) => set({ isLoading }),
+  reset: () => set({ user: null, profile: null, isLoading: false }),
 }))

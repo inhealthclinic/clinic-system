@@ -1,67 +1,52 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
-import type { UserProfile } from '@/types/app'
 
 export function useCurrentUser() {
-  const { setUser, clearUser, user, isLoading } = useAuthStore()
+  const { user, profile, isLoading, setUser, setProfile, setLoading } = useAuthStore()
+  const initialized = useRef(false)
 
   useEffect(() => {
+    if (initialized.current) return
+    initialized.current = true
+
     const supabase = createClient()
 
-    async function loadUser() {
-      const { data: { user: authUser } } = await supabase.auth.getUser()
-      if (!authUser) { clearUser(); return }
+    // Timeout: если сессия не получена за 3с — считаем, что не авторизован
+    const timeout = setTimeout(() => {
+      setLoading(false)
+    }, 3000)
 
-      // Загружаем профиль + роль + права
-      const { data: profile } = await supabase
-        .from('user_profiles')
-        .select(`
-          *,
-          role:roles(
-            *,
-            permissions:role_permissions(
-              permission:permissions(module, action)
-            )
-          )
-        `)
-        .eq('id', authUser.id)
-        .single()
-
-      if (!profile) { clearUser(); return }
-
-      // Нормализуем права роли
-      const rolePermissions = (profile.role.permissions || []).map(
-        (rp: any) => `${rp.permission.module}:${rp.permission.action}`
-      )
-
-      const userProfile: UserProfile = {
-        ...profile,
-        full_name: `${profile.first_name} ${profile.last_name}`,
-        role: {
-          ...profile.role,
-          permissions: rolePermissions,
-        },
-        extra_permissions: profile.extra_permissions || [],
-        denied_permissions: profile.denied_permissions || [],
+    const resolve = async (userId: string | undefined) => {
+      clearTimeout(timeout)
+      if (userId) {
+        const { data } = await supabase
+          .from('user_profiles')
+          .select('*, role:roles(id, slug, name, color, max_discount_percent)')
+          .eq('id', userId)
+          .single()
+        setProfile(data ?? null)
+      } else {
+        setProfile(null)
       }
-
-      setUser(userProfile)
+      setLoading(false)
     }
 
-    loadUser()
-
+    // Слушаем auth — INITIAL_SESSION срабатывает немедленно из localStorage
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event) => {
-        if (event === 'SIGNED_OUT') clearUser()
-        if (event === 'SIGNED_IN')  loadUser()
+      (event, session) => {
+        setUser(session?.user ?? null)
+        resolve(session?.user?.id)
       }
     )
 
-    return () => subscription.unsubscribe()
+    return () => {
+      clearTimeout(timeout)
+      subscription.unsubscribe()
+    }
   }, [])
 
-  return { user, isLoading }
+  return { user, profile, isLoading }
 }

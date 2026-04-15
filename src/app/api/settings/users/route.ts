@@ -1,56 +1,110 @@
-import { NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
-import { createClient } from '@/lib/supabase/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const supabaseUser = await createClient()
-    const { data: { user } } = await supabaseUser.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // Проверяем наличие service role key до любых запросов
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!serviceKey) {
+      return NextResponse.json(
+        { error: 'Сервер не настроен: отсутствует SUPABASE_SERVICE_ROLE_KEY' },
+        { status: 503 }
+      )
+    }
 
-    // Проверяем право
-    const { data: profile } = await supabaseUser
-      .from('user_profiles')
-      .select('clinic_id, role:roles(slug)')
-      .eq('id', user.id)
-      .single()
+    const adminClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      serviceKey,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    )
 
-    if (!profile) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    // Парсим тело — оборачиваем отдельно чтобы дать понятную ошибку
+    let body: Record<string, string>
+    try {
+      body = await req.json()
+    } catch {
+      return NextResponse.json({ error: 'Неверный формат запроса' }, { status: 400 })
+    }
 
-    const { first_name, last_name, middle_name, phone, role_id, email, password } = await req.json()
+    const { first_name, last_name, email, password, role_slug } = body
 
-    const admin = createAdminClient()
+    // Валидация
+    if (!first_name || !last_name || !email || !password || !role_slug) {
+      return NextResponse.json({ error: 'Все поля обязательны' }, { status: 400 })
+    }
+    if (password.length < 6) {
+      return NextResponse.json({ error: 'Пароль минимум 6 символов' }, { status: 400 })
+    }
 
-    // 1. Создать auth user
-    const { data: authData, error: authErr } = await admin.auth.admin.createUser({
+    // 1. Создаём пользователя в Supabase Auth
+    const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
     })
-    if (authErr) return NextResponse.json({ error: authErr.message }, { status: 400 })
 
-    // 2. Создать profile
-    const { data: newProfile, error: profErr } = await admin
-      .from('user_profiles')
-      .insert({
-        id: authData.user.id,
-        clinic_id: profile.clinic_id,
-        role_id,
-        first_name,
-        last_name,
-        middle_name: middle_name || null,
-        phone: phone || null,
-      })
-      .select('*, role:roles(id,name,color,slug)')
-      .single()
-
-    if (profErr) {
-      await admin.auth.admin.deleteUser(authData.user.id)
-      return NextResponse.json({ error: profErr.message }, { status: 400 })
+    if (authError) {
+      const msg = authError.message.toLowerCase()
+      if (msg.includes('already registered') || msg.includes('already been registered')) {
+        return NextResponse.json(
+          { error: 'Пользователь с таким email уже существует' },
+          { status: 409 }
+        )
+      }
+      return NextResponse.json({ error: authError.message }, { status: 400 })
     }
 
-    return NextResponse.json({ user: newProfile })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    const userId = authData.user.id
+
+    // 2. Получаем clinic_id вызывающего пользователя
+    const authHeader = req.headers.get('authorization')
+    const anonClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { global: { headers: { Authorization: authHeader ?? '' } } }
+    )
+
+    const { data: callerProfile, error: profileError } = await anonClient
+      .from('user_profiles')
+      .select('clinic_id')
+      .single()
+
+    if (profileError || !callerProfile) {
+      await adminClient.auth.admin.deleteUser(userId)
+      return NextResponse.json({ error: 'Нет прав для создания сотрудников' }, { status: 403 })
+    }
+
+    const clinic_id = callerProfile.clinic_id
+
+    // 3. Находим role_id по slug
+    const { data: role, error: roleError } = await adminClient
+      .from('roles')
+      .select('id')
+      .eq('clinic_id', clinic_id)
+      .eq('slug', role_slug)
+      .single()
+
+    if (roleError || !role) {
+      await adminClient.auth.admin.deleteUser(userId)
+      return NextResponse.json({ error: `Роль "${role_slug}" не найдена` }, { status: 400 })
+    }
+
+    // 4. Создаём user_profile
+    const { data: profile, error: insertError } = await adminClient
+      .from('user_profiles')
+      .insert({ id: userId, clinic_id, role_id: role.id, first_name, last_name, is_active: true })
+      .select()
+      .single()
+
+    if (insertError) {
+      await adminClient.auth.admin.deleteUser(userId)
+      return NextResponse.json({ error: insertError.message }, { status: 500 })
+    }
+
+    return NextResponse.json({ user: profile }, { status: 201 })
+
+  } catch (err) {
+    console.error('POST /api/settings/users:', err)
+    return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 })
   }
 }

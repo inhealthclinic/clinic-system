@@ -2,182 +2,206 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { usePermissions } from '@/lib/hooks/usePermissions'
+import { useAuthStore } from '@/lib/stores/authStore'
+
+const SOURCES = [
+  { value: 'instagram', label: 'Instagram' },
+  { value: 'whatsapp',  label: 'WhatsApp' },
+  { value: 'target',    label: 'Таргет' },
+  { value: 'referral',  label: 'Рекомендация' },
+  { value: 'organic',   label: 'Органика' },
+  { value: 'repeat',    label: 'Повторный' },
+  { value: 'other',     label: 'Другое' },
+]
 
 export default function NewPatientPage() {
   const router = useRouter()
   const supabase = createClient()
-  const { user } = usePermissions()
+  const { profile } = useAuthStore()
+  const clinicId = profile?.clinic_id ?? ''
 
   const [form, setForm] = useState({
-    full_name: '', phone1: '', phone2: '',
-    gender: 'female' as 'male' | 'female' | 'other',
-    birth_date: '', iin: '', city: '', email: '',
-    source: '', notes: '',
+    full_name: '',
+    phone: '',
+    phone2: '',
+    gender: 'other' as 'male' | 'female' | 'other',
+    birth_date: '',
+    iin: '',
+    city: '',
+    email: '',
+    source_text: '',
+    notes: '',
   })
-  const [consentGiven, setConsentGiven] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }))
+  const set = (f: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+      setForm(prev => ({ ...prev, [f]: e.target.value }))
 
-  const save = async () => {
-    if (!form.full_name.trim()) { setError('ФИО обязательно'); return }
-    if (!form.phone1.trim())    { setError('Телефон обязателен'); return }
-    if (!consentGiven)          { setError('Требуется согласие на обработку персональных данных'); return }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!clinicId) { setError('Ошибка: нет клиники'); return }
+    setError('')
+    setSaving(true)
 
-    setSaving(true); setError('')
+    const phones = [form.phone.trim(), form.phone2.trim()].filter(Boolean)
 
-    const phones = [form.phone1, form.phone2].filter(Boolean)
-
-    const { data: patient, error: err } = await supabase
+    const { data, error: err } = await supabase
       .from('patients')
       .insert({
-        clinic_id: user?.clinic_id,
+        clinic_id: clinicId,
         full_name: form.full_name.trim(),
         phones,
         gender: form.gender,
         birth_date: form.birth_date || null,
-        iin: form.iin || null,
-        city: form.city || null,
-        email: form.email || null,
-        notes: form.notes || null,
-        first_owner_id: user?.id,
-        manager_id: user?.id,
+        iin: form.iin.trim() || null,
+        city: form.city.trim() || null,
+        email: form.email.trim() || null,
+        source_text: form.source_text || null,
+        notes: form.notes.trim() || null,
         status: 'new',
+        is_vip: false,
+        balance_amount: 0,
+        debt_amount: 0,
+        tags: [],
       })
-      .select('id').single()
+      .select('id')
+      .single()
 
     if (err) { setError(err.message); setSaving(false); return }
-
-    // Согласие ПДн
-    await supabase.from('patient_consents').insert({
-      clinic_id: user?.clinic_id,
-      patient_id: patient.id,
-      type: 'personal_data',
-      agreed: true,
-      signed_by: user?.id,
-    })
-
-    // Депозит
-    await supabase.from('patient_balance').insert({
-      patient_id: patient.id, clinic_id: user?.clinic_id, balance: 0,
-    })
-
-    router.push(`/patients/${patient.id}`)
+    router.push(`/patients/${data.id}`)
   }
 
-  return (
-    <div className="p-6 max-w-2xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <button onClick={() => router.back()} className="text-gray-400 hover:text-gray-600">←</button>
-        <h1 className="text-2xl font-bold text-gray-900">Новый пациент</h1>
-      </div>
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
+  const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
 
-      <div className="bg-white rounded-2xl border border-gray-200 p-6 space-y-5">
-        {/* Персональные данные */}
-        <div>
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">
-            Персональные данные
-          </h2>
-          <div className="grid grid-cols-1 gap-3">
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">ФИО *</label>
-              <input value={form.full_name} onChange={e => set('full_name', e.target.value)}
-                placeholder="Иванов Иван Иванович"
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
+  return (
+    <div className="max-w-2xl mx-auto">
+      <Link href="/patients" className="text-sm text-gray-400 hover:text-gray-600 mb-4 inline-flex items-center gap-1">
+        ← Пациенты
+      </Link>
+
+      <div className="bg-white rounded-xl border border-gray-100 p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-6">Новый пациент</h2>
+
+        <form onSubmit={handleSubmit} className="space-y-5">
+
+          {/* Основные данные */}
+          <div>
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Основное</h3>
+            <div className="grid grid-cols-1 gap-4">
               <div>
-                <label className="text-xs text-gray-500 mb-1 block">Пол *</label>
-                <select value={form.gender} onChange={e => set('gender', e.target.value)}
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-                  <option value="female">Женский</option>
-                  <option value="male">Мужской</option>
-                  <option value="other">Другой</option>
+                <label className={labelCls}>ФИО <span className="text-red-400">*</span></label>
+                <input
+                  className={inputCls}
+                  placeholder="Иванова Айгерим Сериковна"
+                  value={form.full_name}
+                  onChange={set('full_name')}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Пол <span className="text-red-400">*</span></label>
+                  <select className={inputCls} value={form.gender} onChange={set('gender')}>
+                    <option value="female">Женский</option>
+                    <option value="male">Мужской</option>
+                    <option value="other">Не указан</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Дата рождения</label>
+                  <input type="date" className={inputCls} value={form.birth_date} onChange={set('birth_date')} />
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>ИИН</label>
+                <input
+                  className={inputCls}
+                  placeholder="000000000000"
+                  value={form.iin}
+                  onChange={set('iin')}
+                  maxLength={12}
+                  pattern="[0-9]{12}"
+                  title="12 цифр"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Контакты */}
+          <div>
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Контакты</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>Телефон 1</label>
+                <input className={inputCls} placeholder="+7 700 000 0000" value={form.phone} onChange={set('phone')} />
+              </div>
+              <div>
+                <label className={labelCls}>Телефон 2</label>
+                <input className={inputCls} placeholder="+7 700 000 0000" value={form.phone2} onChange={set('phone2')} />
+              </div>
+              <div>
+                <label className={labelCls}>Email</label>
+                <input type="email" className={inputCls} placeholder="patient@mail.ru" value={form.email} onChange={set('email')} />
+              </div>
+              <div>
+                <label className={labelCls}>Город</label>
+                <input className={inputCls} placeholder="Актау" value={form.city} onChange={set('city')} />
+              </div>
+            </div>
+          </div>
+
+          {/* Дополнительно */}
+          <div>
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Дополнительно</h3>
+            <div className="grid grid-cols-1 gap-3">
+              <div>
+                <label className={labelCls}>Источник</label>
+                <select className={inputCls} value={form.source_text} onChange={set('source_text')}>
+                  <option value="">— не указан —</option>
+                  {SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>
               </div>
               <div>
-                <label className="text-xs text-gray-500 mb-1 block">Дата рождения</label>
-                <input type="date" value={form.birth_date} onChange={e => set('birth_date', e.target.value)}
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">ИИН</label>
-                <input value={form.iin} onChange={e => set('iin', e.target.value)}
-                  placeholder="123456789012" maxLength={12}
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
+                <label className={labelCls}>Заметки</label>
+                <textarea
+                  className={inputCls + ' resize-none'}
+                  placeholder="Любая важная информация о пациенте..."
+                  rows={3}
+                  value={form.notes}
+                  onChange={set('notes')}
+                />
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Контакты */}
-        <div>
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Контакты</h2>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Телефон 1 *</label>
-              <input value={form.phone1} onChange={e => set('phone1', e.target.value)}
-                placeholder="+7 777 123 4567"
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Телефон 2</label>
-              <input value={form.phone2} onChange={e => set('phone2', e.target.value)}
-                placeholder="+7 700 123 4567"
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Email</label>
-              <input type="email" value={form.email} onChange={e => set('email', e.target.value)}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Город</label>
-              <input value={form.city} onChange={e => set('city', e.target.value)}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
+          {error && (
+            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+              {error}
+            </p>
+          )}
+
+          <div className="flex gap-3 pt-2">
+            <Link
+              href="/patients"
+              className="flex-1 text-center border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium transition-colors"
+            >
+              Отмена
+            </Link>
+            <button
+              type="submit"
+              disabled={saving || !clinicId}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+            >
+              {saving ? 'Сохранение...' : 'Создать пациента'}
+            </button>
           </div>
-        </div>
-
-        {/* Доп */}
-        <div>
-          <label className="text-xs text-gray-500 mb-1 block">Примечания</label>
-          <textarea value={form.notes} onChange={e => set('notes', e.target.value)}
-            rows={2} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm resize-none" />
-        </div>
-
-        {/* Согласие ПДн — обязательно по закону РК */}
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input type="checkbox" checked={consentGiven} onChange={e => setConsentGiven(e.target.checked)}
-              className="mt-0.5 w-4 h-4 accent-blue-600 shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-blue-800">
-                Согласие на обработку персональных данных *
-              </p>
-              <p className="text-xs text-blue-600 mt-0.5">
-                Пациент ознакомлен и согласен с обработкой персональных данных в соответствии
-                с Законом РК «О персональных данных и их защите»
-              </p>
-            </div>
-          </label>
-        </div>
-
-        {error && <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-xl">{error}</p>}
-
-        <div className="flex gap-3 pt-2">
-          <button onClick={() => router.back()}
-            className="flex-1 border border-gray-200 rounded-xl py-3 text-sm text-gray-700 hover:bg-gray-50">
-            Отмена
-          </button>
-          <button onClick={save} disabled={saving}
-            className="flex-1 bg-blue-600 text-white rounded-xl py-3 text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
-            {saving ? 'Создание...' : 'Создать пациента'}
-          </button>
-        </div>
+        </form>
       </div>
     </div>
   )

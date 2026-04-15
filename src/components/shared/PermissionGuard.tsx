@@ -2,40 +2,20 @@
 
 import { usePermissions } from '@/lib/hooks/usePermissions'
 
-interface Props {
-  permission?: string
-  anyOf?: string[]
-  allOf?: string[]
-  role?: string
-  fallback?: React.ReactNode
+interface PermissionGuardProps {
+  module: string
+  action: string
   children: React.ReactNode
+  fallback?: React.ReactNode
 }
 
 export function PermissionGuard({
-  permission,
-  anyOf,
-  allOf,
-  role,
-  fallback = null,
+  module,
+  action,
   children,
-}: Props) {
-  const { can, canAny, canAll, isRole } = usePermissions()
-
-  let allowed = true
-
-  if (permission) allowed = can(permission)
-  if (anyOf?.length)  allowed = canAny(...anyOf)
-  if (allOf?.length)  allowed = canAll(...allOf)
-  if (role)           allowed = isRole(role)
-
-  return allowed ? <>{children}</> : <>{fallback}</>
+  fallback = null,
+}: PermissionGuardProps) {
+  const { can } = usePermissions()
+  if (!can(module, action)) return <>{fallback}</>
+  return <>{children}</>
 }
-
-// Использование:
-// <PermissionGuard permission="medcard:sign">
-//   <Button>Подписать</Button>
-// </PermissionGuard>
-//
-// <PermissionGuard anyOf={['finance:view','finance:reports']}>
-//   <FinanceSection />
-// </PermissionGuard>

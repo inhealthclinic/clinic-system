@@ -1,329 +1,283 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { usePermissions } from '@/lib/hooks/usePermissions'
-import { PermissionGuard } from '@/components/shared/PermissionGuard'
+import type { UserProfile } from '@/types'
 
-interface User {
-  id: string
+const ROLES = [
+  { slug: 'owner',   label: 'Владелец' },
+  { slug: 'admin',   label: 'Администратор' },
+  { slug: 'doctor',  label: 'Врач' },
+  { slug: 'nurse',   label: 'Медсестра' },
+  { slug: 'cashier', label: 'Кассир' },
+  { slug: 'manager', label: 'Менеджер' },
+]
+
+const EMPTY_FORM = {
+  first_name: '',
+  last_name: '',
+  email: '',
+  password: '',
+  role_slug: 'doctor',
+}
+
+interface FormState {
   first_name: string
   last_name: string
-  middle_name?: string
-  phone?: string
-  is_active: boolean
-  role_id: string
-  role: { id: string; name: string; color: string; slug: string }
-  last_login?: string
-  created_at: string
+  email: string
+  password: string
+  role_slug: string
 }
-
-interface Role { id: string; name: string; color: string; slug: string }
 
 export default function UsersPage() {
-  const { can } = usePermissions()
-  const [users, setUsers] = useState<User[]>([])
-  const [roles, setRoles] = useState<Role[]>([])
-  const [showModal, setShowModal] = useState(false)
-  const [editUser, setEditUser] = useState<User | null>(null)
-  const [search, setSearch] = useState('')
-  const supabase = createClient()
+  const [users, setUsers]     = useState<UserProfile[]>([])
+  const [loading, setLoading] = useState(true)
+  const [open, setOpen]       = useState(false)
+  const [form, setForm]       = useState<FormState>(EMPTY_FORM)
+  const [saving, setSaving]   = useState(false)
+  const [error, setError]     = useState('')
 
-  useEffect(() => {
-    supabase.from('user_profiles')
-      .select('*, role:roles(id,name,color,slug)')
-      .order('created_at', { ascending: false })
-      .then(({ data }) => setUsers(data || []))
-
-    supabase.from('roles').select('id,name,color,slug').order('name')
-      .then(({ data }) => setRoles(data || []))
+  const load = useCallback(async () => {
+    const { data } = await createClient()
+      .from('user_profiles')
+      .select('*, role:roles(id, slug, name, color)')
+      .eq('is_active', true)
+      .order('last_name')
+    setUsers(data ?? [])
+    setLoading(false)
   }, [])
 
-  const filtered = users.filter(u =>
-    `${u.first_name} ${u.last_name} ${u.phone || ''}`.toLowerCase().includes(search.toLowerCase())
-  )
+  useEffect(() => { load() }, [load])
 
-  const toggleActive = async (user: User) => {
-    if (!can('settings:users')) return
-    await supabase.from('user_profiles')
-      .update({ is_active: !user.is_active })
-      .eq('id', user.id)
-    setUsers(prev => prev.map(u =>
-      u.id === user.id ? { ...u, is_active: !u.is_active } : u
-    ))
+  const openModal = () => {
+    setForm(EMPTY_FORM)
+    setError('')
+    setOpen(true)
   }
 
-  const changeRole = async (userId: string, roleId: string) => {
-    if (!can('settings:users')) return
-    const role = roles.find(r => r.id === roleId)!
-    await supabase.from('user_profiles').update({ role_id: roleId }).eq('id', userId)
-    setUsers(prev => prev.map(u => u.id === userId ? { ...u, role_id: roleId, role } : u))
+  const closeModal = () => {
+    if (saving) return
+    setOpen(false)
+    setError('')
   }
+
+  const set = (field: keyof FormState) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+      setForm((prev) => ({ ...prev, [field]: e.target.value }))
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setSaving(true)
+
+    // Получаем текущий JWT для передачи в API
+    const { data: { session } } = await createClient().auth.getSession()
+
+    const res = await fetch('/api/settings/users', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {}),
+      },
+      body: JSON.stringify(form),
+    })
+
+    let json: { error?: string; user?: unknown } = {}
+    try { json = await res.json() } catch { /* пустое тело */ }
+
+    if (!res.ok) {
+      setError(json.error ?? `Ошибка сервера (${res.status})`)
+      setSaving(false)
+      return
+    }
+
+    setSaving(false)
+    setOpen(false)
+    load()
+  }
+
+  // ─── UI ───────────────────────────────────────────────────────────────────
+
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
+  const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="max-w-3xl mx-auto">
+      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Пользователи</h1>
-          <p className="text-gray-500 text-sm mt-1">Сотрудники клиники</p>
+          <h2 className="text-lg font-semibold text-gray-900">Сотрудники</h2>
+          <p className="text-sm text-gray-400">{users.length} сотрудников</p>
         </div>
-        <PermissionGuard permission="settings:users">
-          <button
-            onClick={() => { setEditUser(null); setShowModal(true) }}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
-          >
-            + Добавить сотрудника
-          </button>
-        </PermissionGuard>
+        <button
+          onClick={openModal}
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors flex items-center gap-2"
+        >
+          <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          Добавить сотрудника
+        </button>
       </div>
 
-      {/* Поиск */}
-      <div className="mb-4">
-        <input
-          type="text"
-          placeholder="Поиск по имени или телефону..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-      </div>
-
-      {/* Таблица */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100 bg-gray-50">
-              <th className="text-left px-4 py-3 text-gray-500 font-medium">Сотрудник</th>
-              <th className="text-left px-4 py-3 text-gray-500 font-medium">Телефон</th>
-              <th className="text-left px-4 py-3 text-gray-500 font-medium">Роль</th>
-              <th className="text-left px-4 py-3 text-gray-500 font-medium">Последний вход</th>
-              <th className="text-left px-4 py-3 text-gray-500 font-medium">Статус</th>
-              <th className="px-4 py-3" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {filtered.map(user => (
-              <tr key={user.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-xs">
-                      {user.first_name[0]}{user.last_name[0]}
-                    </div>
-                    <div>
-                      <p className="font-medium text-gray-900">
-                        {user.last_name} {user.first_name} {user.middle_name || ''}
-                      </p>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-gray-600">{user.phone || '—'}</td>
-                <td className="px-4 py-3">
-                  <PermissionGuard
-                    permission="settings:users"
-                    fallback={
-                      <span
-                        className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium text-white"
-                        style={{ backgroundColor: user.role.color }}
-                      >
-                        {user.role.name}
-                      </span>
-                    }
+      {/* Table */}
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
+        ) : users.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-400">Сотрудников нет</div>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {users.map((u) => (
+              <div key={u.id} className="flex items-center gap-4 px-5 py-4">
+                <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-sm flex-shrink-0">
+                  {u.first_name[0]}{u.last_name[0]}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900">
+                    {u.last_name} {u.first_name} {u.middle_name ?? ''}
+                  </p>
+                  {u.phone && <p className="text-xs text-gray-400">{u.phone}</p>}
+                </div>
+                {u.role && (
+                  <span
+                    className="text-xs font-medium px-2.5 py-1 rounded-full flex-shrink-0"
+                    style={{
+                      background: (u.role.color ?? '#6B7280') + '22',
+                      color: u.role.color ?? '#6B7280',
+                    }}
                   >
-                    <select
-                      value={user.role_id}
-                      onChange={e => changeRole(user.id, e.target.value)}
-                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white"
-                      style={{ color: user.role.color }}
-                      disabled={user.role.slug === 'owner'}
-                    >
-                      {roles.map(r => (
-                        <option key={r.id} value={r.id}>{r.name}</option>
-                      ))}
-                    </select>
-                  </PermissionGuard>
-                </td>
-                <td className="px-4 py-3 text-gray-400 text-xs">
-                  {user.last_login
-                    ? new Date(user.last_login).toLocaleDateString('ru', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })
-                    : 'Не входил'}
-                </td>
-                <td className="px-4 py-3">
-                  <PermissionGuard permission="settings:users">
-                    <button
-                      onClick={() => toggleActive(user)}
-                      disabled={user.role.slug === 'owner'}
-                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                        user.is_active ? 'bg-green-500' : 'bg-gray-200'
-                      } disabled:opacity-50`}
-                    >
-                      <span className={`inline-block h-3 w-3 rounded-full bg-white shadow transform transition-transform ${
-                        user.is_active ? 'translate-x-5' : 'translate-x-1'
-                      }`} />
-                    </button>
-                  </PermissionGuard>
-                </td>
-                <td className="px-4 py-3">
-                  <PermissionGuard permission="settings:users">
-                    <button
-                      onClick={() => { setEditUser(user); setShowModal(true) }}
-                      className="text-gray-400 hover:text-gray-600 text-xs"
-                    >
-                      Изменить
-                    </button>
-                  </PermissionGuard>
-                </td>
-              </tr>
+                    {u.role.name}
+                  </span>
+                )}
+              </div>
             ))}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
-                  Сотрудники не найдены
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+          </div>
+        )}
       </div>
 
-      {/* Модальное окно создания/редактирования */}
-      {showModal && (
-        <UserModal
-          user={editUser}
-          roles={roles}
-          onClose={() => setShowModal(false)}
-          onSave={(saved) => {
-            if (editUser) {
-              setUsers(prev => prev.map(u => u.id === saved.id ? saved : u))
-            } else {
-              setUsers(prev => [saved, ...prev])
-            }
-            setShowModal(false)
-          }}
-        />
+      {/* Modal */}
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={closeModal}
+          />
+
+          {/* Dialog */}
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-base font-semibold text-gray-900">Новый сотрудник</h3>
+              <button
+                onClick={closeModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {/* Name row */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Фамилия <span className="text-red-400">*</span></label>
+                  <input
+                    className={inputCls}
+                    placeholder="Иванов"
+                    value={form.last_name}
+                    onChange={set('last_name')}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Имя <span className="text-red-400">*</span></label>
+                  <input
+                    className={inputCls}
+                    placeholder="Алибек"
+                    value={form.first_name}
+                    onChange={set('first_name')}
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Email */}
+              <div>
+                <label className={labelCls}>Email <span className="text-red-400">*</span></label>
+                <input
+                  type="email"
+                  className={inputCls}
+                  placeholder="alibek@clinic.kz"
+                  value={form.email}
+                  onChange={set('email')}
+                  required
+                />
+              </div>
+
+              {/* Role */}
+              <div>
+                <label className={labelCls}>Роль <span className="text-red-400">*</span></label>
+                <select
+                  className={inputCls}
+                  value={form.role_slug}
+                  onChange={set('role_slug')}
+                  required
+                >
+                  {ROLES.map((r) => (
+                    <option key={r.slug} value={r.slug}>{r.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Password */}
+              <div>
+                <label className={labelCls}>Пароль <span className="text-red-400">*</span></label>
+                <input
+                  type="password"
+                  className={inputCls}
+                  placeholder="Минимум 6 символов"
+                  value={form.password}
+                  onChange={set('password')}
+                  required
+                  minLength={6}
+                />
+              </div>
+
+              {/* Error */}
+              {error && (
+                <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+                  {error}
+                </p>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  disabled={saving}
+                  className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+                >
+                  {saving ? 'Сохранение...' : 'Создать'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
-    </div>
-  )
-}
-
-// ---------- Модальное окно ----------
-function UserModal({
-  user, roles, onClose, onSave
-}: {
-  user: User | null
-  roles: Role[]
-  onClose: () => void
-  onSave: (user: User) => void
-}) {
-  const supabase = createClient()
-  const [form, setForm] = useState({
-    first_name:  user?.first_name  || '',
-    last_name:   user?.last_name   || '',
-    middle_name: user?.middle_name || '',
-    phone:       user?.phone       || '',
-    role_id:     user?.role_id     || roles[0]?.id || '',
-    email:       '',
-    password:    '',
-  })
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const save = async () => {
-    setLoading(true); setError('')
-    try {
-      if (user) {
-        // Редактирование
-        const { error: e } = await supabase.from('user_profiles')
-          .update({ first_name: form.first_name, last_name: form.last_name,
-            middle_name: form.middle_name, phone: form.phone, role_id: form.role_id })
-          .eq('id', user.id)
-        if (e) throw e
-        const role = roles.find(r => r.id === form.role_id)!
-        onSave({ ...user, ...form, role })
-      } else {
-        // Создание — через API route (нужен service role)
-        const res = await fetch('/api/settings/users', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form),
-        })
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error)
-        onSave(data.user)
-      }
-    } catch (e: any) {
-      setError(e.message || 'Ошибка')
-    }
-    setLoading(false)
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
-        <h2 className="text-lg font-semibold mb-5">
-          {user ? 'Редактировать сотрудника' : 'Новый сотрудник'}
-        </h2>
-
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Фамилия *</label>
-              <input value={form.last_name} onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Имя *</label>
-              <input value={form.first_name} onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
-            </div>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">Отчество</label>
-            <input value={form.middle_name} onChange={e => setForm(f => ({ ...f, middle_name: e.target.value }))}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">Телефон</label>
-            <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="+7 ..." />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">Роль *</label>
-            <select value={form.role_id} onChange={e => setForm(f => ({ ...f, role_id: e.target.value }))}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
-              {roles.filter(r => r.slug !== 'owner').map(r => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-          {!user && (
-            <>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Email *</label>
-                <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Пароль *</label>
-                <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
-              </div>
-            </>
-          )}
-        </div>
-
-        {error && <p className="text-red-500 text-sm mt-3">{error}</p>}
-
-        <div className="flex gap-3 mt-6">
-          <button onClick={onClose}
-            className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm hover:bg-gray-50">
-            Отмена
-          </button>
-          <button onClick={save} disabled={loading}
-            className="flex-1 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-60">
-            {loading ? 'Сохранение...' : 'Сохранить'}
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

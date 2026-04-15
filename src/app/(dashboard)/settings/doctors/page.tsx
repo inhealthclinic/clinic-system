@@ -1,173 +1,552 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { usePermissions } from '@/lib/hooks/usePermissions'
+import { useAuthStore } from '@/lib/stores/authStore'
 
-const DAYS = ['mon','tue','wed','thu','fri','sat','sun']
-const DAY_LABELS: Record<string,string> = {mon:'Пн',tue:'Вт',wed:'Ср',thu:'Чт',fri:'Пт',sat:'Сб',sun:'Вс'}
-const COLORS = ['#3B82F6','#10B981','#8B5CF6','#F59E0B','#EF4444','#06B6D4','#EC4899','#6366F1']
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Specialization {
+  id: string
+  name: string
+}
+
+interface DoctorRow {
+  id: string
+  user_id: string
+  first_name: string
+  last_name: string
+  middle_name: string | null
+  color: string
+  consultation_duration: number
+  is_active: boolean
+  specialization: Specialization | null
+}
+
+interface UserProfileOption {
+  id: string
+  first_name: string
+  last_name: string
+  role: { name: string } | null
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const PRESET_COLORS = [
+  { hex: '#3B82F6', label: 'Синий' },
+  { hex: '#10B981', label: 'Зелёный' },
+  { hex: '#F59E0B', label: 'Жёлтый' },
+  { hex: '#EF4444', label: 'Красный' },
+  { hex: '#8B5CF6', label: 'Фиолетовый' },
+  { hex: '#6B7280', label: 'Серый' },
+]
+
+const EMPTY_FORM = {
+  user_id: '',
+  first_name: '',
+  last_name: '',
+  specialization_id: '',
+  color: '#3B82F6',
+  consultation_duration: 30,
+}
+
+// ─── CSS helpers ─────────────────────────────────────────────────────────────
+
+const inputCls =
+  'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
+const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function DoctorsPage() {
-  const supabase = createClient()
-  const { user } = usePermissions()
-  const [doctors, setDoctors] = useState<any[]>([])
-  const [specs, setSpecs] = useState<any[]>([])
-  const [editing, setEditing] = useState<any|null>(null)
+  const { profile } = useAuthStore()
+  const clinicId = profile?.clinic_id ?? ''
+
+  const [doctors, setDoctors] = useState<DoctorRow[]>([])
+  const [specializations, setSpecializations] = useState<Specialization[]>([])
+  const [availableUsers, setAvailableUsers] = useState<UserProfileOption[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // Add modal
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({ ...EMPTY_FORM })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  // Inline edit state: key = doctor id
+  const [editState, setEditState] = useState<
+    Record<string, { color: string; duration: number; saving: boolean }>
+  >({})
+
+  // ── Data loading ─────────────────────────────────────────────────────────
+
+  const load = useCallback(async () => {
+    if (!clinicId) return
+    const supabase = createClient()
+
+    const [doctorsRes, specsRes] = await Promise.all([
+      supabase
+        .from('doctors')
+        .select('id, user_id, first_name, last_name, middle_name, color, consultation_duration, is_active, specialization:specializations(id, name)')
+        .eq('clinic_id', clinicId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .order('last_name'),
+      supabase
+        .from('specializations')
+        .select('id, name')
+        .eq('clinic_id', clinicId)
+        .order('name'),
+    ])
+
+    const doctorList: DoctorRow[] = (doctorsRes.data ?? []).map((d) => ({
+      ...d,
+      specialization: Array.isArray(d.specialization)
+        ? (d.specialization[0] ?? null)
+        : (d.specialization ?? null),
+    }))
+
+    setDoctors(doctorList)
+    setSpecializations(specsRes.data ?? [])
+    setLoading(false)
+  }, [clinicId])
+
+  const loadAvailableUsers = useCallback(async () => {
+    if (!clinicId) return
+    const supabase = createClient()
+
+    const [usersRes, doctorUsersRes] = await Promise.all([
+      supabase
+        .from('user_profiles')
+        .select('id, first_name, last_name, role:roles(name)')
+        .eq('clinic_id', clinicId)
+        .eq('is_active', true)
+        .order('last_name'),
+      supabase
+        .from('doctors')
+        .select('user_id')
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null),
+    ])
+
+    const usedUserIds = new Set((doctorUsersRes.data ?? []).map((d) => d.user_id))
+    const free = (usersRes.data ?? [])
+      .filter((u) => !usedUserIds.has(u.id))
+      .map((u) => ({
+        ...u,
+        role: Array.isArray(u.role) ? (u.role[0] ?? null) : (u.role ?? null),
+      }))
+
+    setAvailableUsers(free)
+  }, [clinicId])
 
   useEffect(() => {
-    supabase.from('doctors').select('*, specialization:specializations(name)')
-      .is('deleted_at', null).order('last_name').then(({data})=>setDoctors(data||[]))
-    supabase.from('specializations').select('*').order('name').then(({data})=>setSpecs(data||[]))
-  }, [])
+    load()
+  }, [load])
 
-  const save = async (form: any) => {
-    if (editing?.id) {
-      const {data} = await supabase.from('doctors').update(form).eq('id', editing.id)
-        .select('*, specialization:specializations(name)').single()
-      setDoctors(p => p.map(d => d.id===editing.id ? data : d))
-    } else {
-      const {data} = await supabase.from('doctors').insert({...form, clinic_id: user?.clinic_id})
-        .select('*, specialization:specializations(name)').single()
-      setDoctors(p => [data, ...p])
+  // ── Modal ─────────────────────────────────────────────────────────────────
+
+  const openModal = () => {
+    setForm({ ...EMPTY_FORM })
+    setError('')
+    loadAvailableUsers()
+    setOpen(true)
+  }
+
+  const closeModal = () => {
+    if (saving) return
+    setOpen(false)
+    setError('')
+  }
+
+  const handleUserSelect = (userId: string) => {
+    const user = availableUsers.find((u) => u.id === userId)
+    setForm((prev) => ({
+      ...prev,
+      user_id: userId,
+      first_name: user?.first_name ?? '',
+      last_name: user?.last_name ?? '',
+    }))
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!clinicId) return
+    setError('')
+    setSaving(true)
+
+    const supabase = createClient()
+    const { error: insertError } = await supabase.from('doctors').insert({
+      clinic_id: clinicId,
+      user_id: form.user_id,
+      first_name: form.first_name,
+      last_name: form.last_name,
+      specialization_id: form.specialization_id || null,
+      color: form.color,
+      consultation_duration: form.consultation_duration,
+      is_active: true,
+    })
+
+    if (insertError) {
+      setError(insertError.message)
+      setSaving(false)
+      return
     }
-    setEditing(null)
+
+    setSaving(false)
+    setOpen(false)
+    load()
   }
 
-  const deactivate = async (id: string) => {
-    await supabase.from('doctors').update({is_active: false}).eq('id', id)
-    setDoctors(p => p.filter(d => d.id !== id))
+  // ── Inline edit ──────────────────────────────────────────────────────────
+
+  const startEdit = (doctor: DoctorRow) => {
+    setEditState((prev) => ({
+      ...prev,
+      [doctor.id]: {
+        color: doctor.color,
+        duration: doctor.consultation_duration,
+        saving: false,
+      },
+    }))
   }
+
+  const cancelEdit = (doctorId: string) => {
+    setEditState((prev) => {
+      const next = { ...prev }
+      delete next[doctorId]
+      return next
+    })
+  }
+
+  const saveEdit = async (doctorId: string) => {
+    const state = editState[doctorId]
+    if (!state) return
+
+    setEditState((prev) => ({ ...prev, [doctorId]: { ...state, saving: true } }))
+
+    const supabase = createClient()
+    const { error: updateError } = await supabase
+      .from('doctors')
+      .update({
+        color: state.color,
+        consultation_duration: state.duration,
+      })
+      .eq('id', doctorId)
+
+    if (updateError) {
+      setEditState((prev) => ({ ...prev, [doctorId]: { ...state, saving: false } }))
+      return
+    }
+
+    setEditState((prev) => {
+      const next = { ...prev }
+      delete next[doctorId]
+      return next
+    })
+    load()
+  }
+
+  const deactivate = async (doctorId: string) => {
+    const supabase = createClient()
+    await supabase
+      .from('doctors')
+      .update({ is_active: false })
+      .eq('id', doctorId)
+    load()
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="max-w-3xl mx-auto">
+      {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Врачи</h1>
-        <button onClick={() => setEditing({})}
-          className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700">
-          + Добавить врача
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">Врачи</h2>
+          <p className="text-sm text-gray-400">{doctors.length} активных врачей</p>
+        </div>
+        <button
+          onClick={openModal}
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors flex items-center gap-2"
+        >
+          <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          Добавить врача
         </button>
       </div>
 
-      <div className="space-y-3">
-        {doctors.map(d => (
-          <div key={d.id} className="bg-white rounded-xl border border-gray-200 px-5 py-4 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
-              style={{backgroundColor: d.color}}>
-              {d.first_name?.[0]}{d.last_name?.[0]}
-            </div>
-            <div className="flex-1">
-              <p className="font-semibold text-gray-800">{d.last_name} {d.first_name} {d.middle_name||''}</p>
-              <p className="text-sm text-gray-400">{d.specialization?.name || '—'} · {d.consultation_duration} мин</p>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => setEditing(d)}
-                className="text-xs text-blue-500 border border-blue-200 px-3 py-1.5 rounded-lg hover:bg-blue-50">
-                Изменить
-              </button>
-              <button onClick={() => deactivate(d.id)}
-                className="text-xs text-red-400 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50">
-                Деактивировать
-              </button>
-            </div>
+      {/* List */}
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
+        ) : doctors.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-400">Врачей нет</div>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {doctors.map((doctor) => {
+              const editing = editState[doctor.id]
+              return (
+                <div key={doctor.id} className="px-5 py-4">
+                  {editing ? (
+                    /* ── Inline edit row ── */
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="w-3 h-3 rounded-full flex-shrink-0 ring-2 ring-offset-1 ring-gray-300"
+                          style={{ background: editing.color }}
+                        />
+                        <p className="text-sm font-medium text-gray-900">
+                          {doctor.last_name} {doctor.first_name}{doctor.middle_name ? ` ${doctor.middle_name}` : ''}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-4">
+                        {/* Color picker */}
+                        <div>
+                          <p className="text-xs text-gray-400 mb-1.5">Цвет</p>
+                          <div className="flex gap-1.5">
+                            {PRESET_COLORS.map((c) => (
+                              <button
+                                key={c.hex}
+                                type="button"
+                                title={c.label}
+                                onClick={() =>
+                                  setEditState((prev) => ({
+                                    ...prev,
+                                    [doctor.id]: { ...editing, color: c.hex },
+                                  }))
+                                }
+                                className={[
+                                  'w-6 h-6 rounded-full transition-transform hover:scale-110',
+                                  editing.color === c.hex ? 'ring-2 ring-offset-1 ring-gray-400 scale-110' : '',
+                                ].join(' ')}
+                                style={{ background: c.hex }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Duration */}
+                        <div>
+                          <p className="text-xs text-gray-400 mb-1.5">Длительность (мин)</p>
+                          <input
+                            type="number"
+                            min={5}
+                            max={240}
+                            step={5}
+                            className="w-20 border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                            value={editing.duration}
+                            onChange={(e) =>
+                              setEditState((prev) => ({
+                                ...prev,
+                                [doctor.id]: { ...editing, duration: Number(e.target.value) },
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          onClick={() => saveEdit(doctor.id)}
+                          disabled={editing.saving}
+                          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          {editing.saving ? 'Сохранение...' : 'Сохранить'}
+                        </button>
+                        <button
+                          onClick={() => cancelEdit(doctor.id)}
+                          disabled={editing.saving}
+                          className="border border-gray-200 text-gray-600 hover:bg-gray-50 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          Отмена
+                        </button>
+                        <button
+                          onClick={() => deactivate(doctor.id)}
+                          disabled={editing.saving}
+                          className="ml-auto text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
+                        >
+                          Деактивировать
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* ── Normal row ── */
+                    <div className="flex items-center gap-4">
+                      <div
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{ background: doctor.color }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900">
+                          {doctor.last_name} {doctor.first_name}{doctor.middle_name ? ` ${doctor.middle_name}` : ''}
+                        </p>
+                        <div className="flex items-center gap-3 mt-0.5">
+                          {doctor.specialization && (
+                            <span className="text-xs text-gray-400">{doctor.specialization.name}</span>
+                          )}
+                          <span className="text-xs text-gray-300">{doctor.consultation_duration} мин</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => startEdit(doctor)}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors flex-shrink-0"
+                      >
+                        Изменить
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
-        ))}
+        )}
       </div>
 
-      {editing !== null && (
-        <DoctorForm initial={editing} specs={specs}
-          onSave={save} onClose={() => setEditing(null)} />
+      {/* Add Modal */}
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeModal} />
+
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-base font-semibold text-gray-900">Новый врач</h3>
+              <button onClick={closeModal} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {/* User select */}
+              <div>
+                <label className={labelCls}>
+                  Сотрудник <span className="text-red-400">*</span>
+                </label>
+                <select
+                  className={inputCls}
+                  value={form.user_id}
+                  onChange={(e) => handleUserSelect(e.target.value)}
+                  required
+                >
+                  <option value="">— выберите сотрудника —</option>
+                  {availableUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.last_name} {u.first_name}
+                      {u.role ? ` (${u.role.name})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Name (auto-filled, editable) */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Фамилия <span className="text-red-400">*</span></label>
+                  <input
+                    className={inputCls}
+                    placeholder="Иванов"
+                    value={form.last_name}
+                    onChange={(e) => setForm((prev) => ({ ...prev, last_name: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Имя <span className="text-red-400">*</span></label>
+                  <input
+                    className={inputCls}
+                    placeholder="Алибек"
+                    value={form.first_name}
+                    onChange={(e) => setForm((prev) => ({ ...prev, first_name: e.target.value }))}
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Specialization */}
+              <div>
+                <label className={labelCls}>Специализация</label>
+                <select
+                  className={inputCls}
+                  value={form.specialization_id}
+                  onChange={(e) => setForm((prev) => ({ ...prev, specialization_id: e.target.value }))}
+                >
+                  <option value="">— не указана —</option>
+                  {specializations.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Color picker */}
+              <div>
+                <label className={labelCls}>Цвет в расписании</label>
+                <div className="flex gap-2 flex-wrap">
+                  {PRESET_COLORS.map((c) => (
+                    <button
+                      key={c.hex}
+                      type="button"
+                      title={c.label}
+                      onClick={() => setForm((prev) => ({ ...prev, color: c.hex }))}
+                      className={[
+                        'w-8 h-8 rounded-full transition-transform hover:scale-110 border-2',
+                        form.color === c.hex
+                          ? 'border-gray-500 scale-110'
+                          : 'border-transparent',
+                      ].join(' ')}
+                      style={{ background: c.hex }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Duration */}
+              <div>
+                <label className={labelCls}>Длительность приёма (минут)</label>
+                <input
+                  type="number"
+                  min={5}
+                  max={240}
+                  step={5}
+                  className={inputCls}
+                  value={form.consultation_duration}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, consultation_duration: Number(e.target.value) }))
+                  }
+                  required
+                />
+              </div>
+
+              {error && (
+                <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+                  {error}
+                </p>
+              )}
+
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  disabled={saving}
+                  className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+                >
+                  {saving ? 'Сохранение...' : 'Добавить'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
-    </div>
-  )
-}
-
-function DoctorForm({initial, specs, onSave, onClose}: any) {
-  const [form, setForm] = useState({
-    first_name: initial?.first_name||'', last_name: initial?.last_name||'',
-    middle_name: initial?.middle_name||'', specialization_id: initial?.specialization_id||'',
-    phone: initial?.phone||'', color: initial?.color||'#3B82F6',
-    consultation_duration: initial?.consultation_duration||30,
-    working_hours: initial?.working_hours||{},
-  })
-
-  const toggleDay = (day: string) => {
-    const wh = {...form.working_hours}
-    if (wh[day]?.length) delete wh[day]
-    else wh[day] = [{from:'09:00', to:'18:00'}]
-    setForm(p=>({...p, working_hours: wh}))
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg font-semibold mb-4">{initial?.id ? 'Изменить врача' : 'Новый врач'}</h2>
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Фамилия *</label>
-              <input value={form.last_name} onChange={e=>setForm(p=>({...p,last_name:e.target.value}))}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Имя *</label>
-              <input value={form.first_name} onChange={e=>setForm(p=>({...p,first_name:e.target.value}))}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 mb-1 block">Специализация</label>
-            <select value={form.specialization_id} onChange={e=>setForm(p=>({...p,specialization_id:e.target.value}))}
-              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-              <option value="">Не указана</option>
-              {specs.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Телефон</label>
-              <input value={form.phone} onChange={e=>setForm(p=>({...p,phone:e.target.value}))}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Длит. приёма (мин)</label>
-              <input type="number" value={form.consultation_duration}
-                onChange={e=>setForm(p=>({...p,consultation_duration:Number(e.target.value)}))}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
-            </div>
-          </div>
-          {/* Цвет */}
-          <div>
-            <label className="text-xs text-gray-500 mb-2 block">Цвет в расписании</label>
-            <div className="flex gap-2 flex-wrap">
-              {COLORS.map(c => (
-                <button key={c} onClick={()=>setForm(p=>({...p,color:c}))}
-                  className={`w-7 h-7 rounded-full border-2 ${form.color===c ? 'border-gray-800 scale-110' : 'border-transparent'}`}
-                  style={{backgroundColor:c}} />
-              ))}
-            </div>
-          </div>
-          {/* Рабочие дни */}
-          <div>
-            <label className="text-xs text-gray-500 mb-2 block">Рабочие дни</label>
-            <div className="flex gap-1.5 flex-wrap">
-              {DAYS.map(d => (
-                <button key={d} onClick={()=>toggleDay(d)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${
-                    form.working_hours[d]?.length ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 text-gray-500'
-                  }`}>{DAY_LABELS[d]}</button>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="flex gap-3 mt-5">
-          <button onClick={onClose} className="flex-1 border border-gray-200 rounded-xl py-2.5 text-sm">Отмена</button>
-          <button onClick={()=>onSave(form)} disabled={!form.first_name||!form.last_name}
-            className="flex-1 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium disabled:opacity-50">
-            Сохранить
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

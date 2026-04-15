@@ -1,184 +1,245 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { usePermissions } from '@/lib/hooks/usePermissions'
-import { PermissionGuard } from '@/components/shared/PermissionGuard'
+import type { Role } from '@/types'
 
-interface Permission { id: string; module: string; action: string; name: string }
-interface Role { id: string; name: string; slug: string; color: string; max_discount_percent: number | null; is_system: boolean }
-interface RolePerm { role_id: string; permission_id: string }
+interface Permission {
+  id: string
+  module: string
+  action: string
+  name: string
+}
 
-const MODULE_LABELS: Record<string, string> = {
-  patients: 'Пациенты', crm: 'CRM', schedule: 'Расписание',
-  visit: 'Визиты', medcard: 'Медкарта', lab: 'Лаборатория',
-  finance: 'Финансы', inventory: 'Склад', analytics: 'Аналитика',
-  tasks: 'Задачи', settings: 'Настройки',
+interface RolePermission {
+  role_id: string
+  permission_id: string
+}
+
+const MODULE_RU: Record<string, string> = {
+  patients:  'Пациенты',
+  crm:       'CRM',
+  schedule:  'Расписание',
+  visit:     'Визиты',
+  medcard:   'Медкарта',
+  lab:       'Лаборатория',
+  finance:   'Финансы',
+  inventory: 'Склад',
+  analytics: 'Аналитика',
+  tasks:     'Задачи',
+  settings:  'Настройки',
+}
+
+const MODULE_ORDER = [
+  'patients', 'crm', 'schedule', 'visit', 'medcard',
+  'lab', 'finance', 'inventory', 'analytics', 'tasks', 'settings',
+]
+
+const SLUG_RU: Record<string, string> = {
+  owner:    'Владелец',
+  admin:    'Администратор',
+  doctor:   'Врач',
+  nurse:    'Медсестра',
+  laborant: 'Лаборант',
+  cashier:  'Кассир',
+  manager:  'Менеджер',
 }
 
 export default function RolesPage() {
-  const { can } = usePermissions()
-  const [roles, setRoles] = useState<Role[]>([])
-  const [permissions, setPermissions] = useState<Permission[]>([])
-  const [rolePerms, setRolePerms] = useState<RolePerm[]>([])
-  const [activeRole, setActiveRole] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-
   const supabase = createClient()
-  const canEdit = can('settings:roles')
 
-  useEffect(() => {
-    Promise.all([
-      supabase.from('roles').select('*').order('is_system', { ascending: false }),
+  const [roles, setRoles]       = useState<Role[]>([])
+  const [perms, setPerms]       = useState<Permission[]>([])
+  const [granted, setGranted]   = useState<Set<string>>(new Set()) // "role_id:perm_id"
+  const [loading, setLoading]   = useState(true)
+  const [toggling, setToggling] = useState<string | null>(null) // key while saving
+
+  const load = useCallback(async () => {
+    const [r, p, rp] = await Promise.all([
+      supabase.from('roles').select('*').order('created_at'),
       supabase.from('permissions').select('*').order('module').order('action'),
-      supabase.from('role_permissions').select('*'),
-    ]).then(([r, p, rp]) => {
-      setRoles(r.data || [])
-      setPermissions(p.data || [])
-      setRolePerms(rp.data || [])
-      if (r.data?.length) setActiveRole(r.data[0].id)
-    })
+      supabase.from('role_permissions').select('role_id, permission_id'),
+    ])
+    setRoles(r.data ?? [])
+    setPerms(p.data ?? [])
+    const grantedSet = new Set(
+      (rp.data ?? []).map((x: RolePermission) => `${x.role_id}:${x.permission_id}`)
+    )
+    setGranted(grantedSet)
+    setLoading(false)
   }, [])
 
-  const hasPerm = (roleId: string, permId: string) =>
-    rolePerms.some(rp => rp.role_id === roleId && rp.permission_id === permId)
+  useEffect(() => { load() }, [load])
 
-  const togglePerm = async (roleId: string, permId: string) => {
-    if (!canEdit) return
-    const role = roles.find(r => r.id === roleId)
-    if (role?.slug === 'owner') return // owner нельзя менять
+  const toggle = async (roleId: string, permId: string, isOwner: boolean) => {
+    if (isOwner) return // owner always has all
+    const key = `${roleId}:${permId}`
+    if (toggling) return
+    setToggling(key)
 
-    setSaving(true)
-    if (hasPerm(roleId, permId)) {
-      await supabase.from('role_permissions')
-        .delete().eq('role_id', roleId).eq('permission_id', permId)
-      setRolePerms(prev => prev.filter(
-        rp => !(rp.role_id === roleId && rp.permission_id === permId)
-      ))
+    const has = granted.has(key)
+
+    // Optimistic update
+    setGranted(prev => {
+      const next = new Set(prev)
+      if (has) next.delete(key)
+      else next.add(key)
+      return next
+    })
+
+    if (has) {
+      await supabase
+        .from('role_permissions')
+        .delete()
+        .eq('role_id', roleId)
+        .eq('permission_id', permId)
     } else {
-      await supabase.from('role_permissions').insert({ role_id: roleId, permission_id: permId })
-      setRolePerms(prev => [...prev, { role_id: roleId, permission_id: permId }])
+      await supabase
+        .from('role_permissions')
+        .insert({ role_id: roleId, permission_id: permId })
     }
-    setSaving(false)
+
+    setToggling(null)
   }
 
-  // Сгруппировать права по модулю
-  const grouped = permissions.reduce((acc, p) => {
-    if (!acc[p.module]) acc[p.module] = []
-    acc[p.module].push(p)
+  // Group permissions by module
+  const byModule = MODULE_ORDER.reduce<Record<string, Permission[]>>((acc, mod) => {
+    const group = perms.filter(p => p.module === mod)
+    if (group.length) acc[mod] = group
     return acc
-  }, {} as Record<string, Permission[]>)
-
-  const activeRoleData = roles.find(r => r.id === activeRole)
+  }, {})
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Роли и права</h1>
-        <p className="text-gray-500 text-sm mt-1">
-          Управление доступом сотрудников к разделам системы
-        </p>
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-lg font-semibold text-gray-900">Роли и права</h2>
+        <span className="text-xs text-gray-400">{roles.length} ролей · {perms.length} прав</span>
       </div>
 
-      <div className="flex gap-6">
-        {/* Список ролей */}
-        <div className="w-56 shrink-0">
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            {roles.map(role => (
-              <button
-                key={role.id}
-                onClick={() => setActiveRole(role.id)}
-                className={`w-full text-left px-4 py-3 flex items-center gap-3 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors ${
-                  activeRole === role.id ? 'bg-blue-50' : ''
-                }`}
-              >
-                <span
-                  className="w-3 h-3 rounded-full shrink-0"
-                  style={{ backgroundColor: role.color }}
-                />
-                <span className={`text-sm font-medium ${activeRole === role.id ? 'text-blue-700' : 'text-gray-700'}`}>
-                  {role.name}
-                </span>
-                {role.slug === 'owner' && (
-                  <span className="ml-auto text-xs text-gray-400">∞</span>
-                )}
-              </button>
-            ))}
+      {loading ? (
+        <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+          Загрузка...
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              {/* ── Header ── */}
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-100">
+                  <th className="text-left text-xs font-medium text-gray-500 px-4 py-3 min-w-[200px] sticky left-0 bg-gray-50 z-10 border-r border-gray-100">
+                    Право
+                  </th>
+                  {roles.map(r => (
+                    <th
+                      key={r.id}
+                      className="px-3 py-3 text-center min-w-[90px]"
+                    >
+                      <div className="flex flex-col items-center gap-1">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                          style={{ background: r.color }}
+                        />
+                        <span className="text-xs font-medium text-gray-700 leading-tight">
+                          {SLUG_RU[r.slug] ?? r.name}
+                        </span>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+
+              {/* ── Body ── */}
+              <tbody>
+                {Object.entries(byModule).map(([mod, modPerms]) => (
+                  <>
+                    {/* Module group header */}
+                    <tr key={`grp-${mod}`} className="bg-blue-50/50 border-y border-blue-100/60">
+                      <td
+                        colSpan={roles.length + 1}
+                        className="px-4 py-2 sticky left-0 bg-blue-50/50"
+                      >
+                        <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
+                          {MODULE_RU[mod] ?? mod}
+                        </span>
+                      </td>
+                    </tr>
+
+                    {/* Permission rows */}
+                    {modPerms.map((perm, idx) => (
+                      <tr
+                        key={perm.id}
+                        className={`border-b border-gray-50 hover:bg-gray-50/50 transition-colors ${idx % 2 === 0 ? '' : 'bg-gray-50/30'}`}
+                      >
+                        <td className="px-4 py-2.5 sticky left-0 bg-white border-r border-gray-100 z-10">
+                          <span className="text-xs text-gray-700">{perm.name}</span>
+                          <span className="ml-2 text-[10px] text-gray-300 font-mono">{perm.action}</span>
+                        </td>
+                        {roles.map(r => {
+                          const isOwner = r.slug === 'owner'
+                          const key     = `${r.id}:${perm.id}`
+                          const checked = isOwner || granted.has(key)
+                          const isSaving = toggling === key
+
+                          return (
+                            <td key={r.id} className="px-3 py-2.5 text-center">
+                              <button
+                                type="button"
+                                disabled={isOwner || isSaving}
+                                onClick={() => toggle(r.id, perm.id, isOwner)}
+                                className={[
+                                  'w-5 h-5 rounded border-2 flex items-center justify-center mx-auto transition-all',
+                                  isOwner
+                                    ? 'border-purple-300 bg-purple-100 cursor-default opacity-70'
+                                    : checked
+                                    ? 'border-blue-500 bg-blue-500 hover:bg-blue-600 hover:border-blue-600 cursor-pointer'
+                                    : 'border-gray-300 bg-white hover:border-gray-400 cursor-pointer',
+                                  isSaving ? 'opacity-50' : '',
+                                ].join(' ')}
+                                title={isOwner ? 'Владелец имеет все права' : (checked ? 'Убрать право' : 'Добавить право')}
+                              >
+                                {checked && (
+                                  <svg className={`w-3 h-3 ${isOwner ? 'text-purple-600' : 'text-white'}`} viewBox="0 0 12 12" fill="none">
+                                    <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                  </svg>
+                                )}
+                              </button>
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </>
+                ))}
+              </tbody>
+            </table>
           </div>
 
-          {activeRoleData && activeRoleData.slug !== 'owner' && (
-            <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-xs text-gray-500 mb-2">Макс. скидка</p>
-              <PermissionGuard permission="settings:roles" fallback={
-                <p className="text-sm font-semibold">
-                  {activeRoleData.max_discount_percent ?? '∞'}%
-                </p>
-              }>
-                <input
-                  type="number"
-                  min={0} max={100}
-                  value={activeRoleData.max_discount_percent ?? ''}
-                  placeholder="∞"
-                  onChange={async (e) => {
-                    const val = e.target.value === '' ? null : Number(e.target.value)
-                    await supabase.from('roles')
-                      .update({ max_discount_percent: val })
-                      .eq('id', activeRoleData.id)
-                    setRoles(prev => prev.map(r =>
-                      r.id === activeRoleData.id ? { ...r, max_discount_percent: val } : r
-                    ))
-                  }}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                />
-              </PermissionGuard>
+          {/* Legend */}
+          <div className="px-4 py-3 border-t border-gray-100 flex items-center gap-6 bg-gray-50/50">
+            <div className="flex items-center gap-1.5">
+              <span className="w-4 h-4 rounded border-2 border-purple-300 bg-purple-100 inline-flex items-center justify-center">
+                <svg className="w-2.5 h-2.5 text-purple-600" viewBox="0 0 12 12" fill="none">
+                  <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </span>
+              <span className="text-xs text-gray-500">Владелец — всегда все права</span>
             </div>
-          )}
+            <div className="flex items-center gap-1.5">
+              <span className="w-4 h-4 rounded border-2 border-blue-500 bg-blue-500 inline-flex items-center justify-center">
+                <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 12 12" fill="none">
+                  <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </span>
+              <span className="text-xs text-gray-500">Право включено</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-4 h-4 rounded border-2 border-gray-300 bg-white inline-block" />
+              <span className="text-xs text-gray-500">Право выключено</span>
+            </div>
+          </div>
         </div>
-
-        {/* Матрица прав */}
-        <div className="flex-1 bg-white rounded-xl border border-gray-200 overflow-hidden">
-          {activeRoleData?.slug === 'owner' ? (
-            <div className="flex items-center justify-center h-48 text-gray-400">
-              <div className="text-center">
-                <p className="text-lg">👑</p>
-                <p className="text-sm mt-1">Владелец имеет все права</p>
-              </div>
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {Object.entries(grouped).map(([module, perms]) => (
-                <div key={module} className="p-4">
-                  <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
-                    {MODULE_LABELS[module] || module}
-                  </h3>
-                  <div className="grid grid-cols-2 gap-2">
-                    {perms.map(perm => {
-                      const checked = activeRole ? hasPerm(activeRole, perm.id) : false
-                      return (
-                        <label
-                          key={perm.id}
-                          className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
-                            checked ? 'bg-blue-50' : 'hover:bg-gray-50'
-                          } ${!canEdit ? 'opacity-60 cursor-default' : ''}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={!canEdit || saving}
-                            onChange={() => activeRole && togglePerm(activeRole, perm.id)}
-                            className="w-4 h-4 rounded accent-blue-600"
-                          />
-                          <span className="text-sm text-gray-700">{perm.name}</span>
-                        </label>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   )
 }
