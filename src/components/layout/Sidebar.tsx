@@ -6,7 +6,14 @@ import { useAuthStore } from '@/lib/stores/authStore'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
-const NAV = [
+interface NavItem {
+  label: string
+  href: string
+  icon: React.ReactNode
+  dividerBefore?: boolean
+}
+
+const NAV: NavItem[] = [
   {
     label: 'Дашборд',
     href: '/',
@@ -78,6 +85,20 @@ const NAV = [
     ),
   },
   {
+    label: 'Врачи',
+    href: '/settings/doctors',
+    dividerBefore: true,
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <circle cx="12" cy="7" r="3.5" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M5 20c0-3.038 3.134-5.5 7-5.5s7 2.462 7 5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M16 10.5c1.5.5 2.5 1.5 2.5 3s-1 2.5-2.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M16 10.5v5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M14.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+  {
     label: 'Настройки',
     href: '/settings/users',
     icon: (
@@ -100,6 +121,11 @@ export function Sidebar({ onClose }: SidebarProps) {
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/'
+    // Settings sub-pages all start with /settings — match any of them when href is /settings/users
+    if (href === '/settings/users') {
+      return pathname.startsWith('/settings/users') ||
+        pathname.startsWith('/settings/roles')
+    }
     return pathname.startsWith(href)
   }
 
@@ -131,25 +157,31 @@ export function Sidebar({ onClose }: SidebarProps) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-        {NAV.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={onClose}
-            className={[
-              'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-              isActive(item.href)
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
-            ].join(' ')}
-          >
-            <span className={isActive(item.href) ? 'text-blue-600' : 'text-gray-400'}>
-              {item.icon}
-            </span>
-            {item.label}
-          </Link>
-        ))}
+      <nav className="flex-1 px-3 py-4 overflow-y-auto">
+        <div className="space-y-0.5">
+          {NAV.map((item) => (
+            <div key={item.href}>
+              {item.dividerBefore && (
+                <div className="my-2 border-t border-gray-100" />
+              )}
+              <Link
+                href={item.href}
+                onClick={onClose}
+                className={[
+                  'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                  isActive(item.href)
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
+                ].join(' ')}
+              >
+                <span className={isActive(item.href) ? 'text-blue-600' : 'text-gray-400'}>
+                  {item.icon}
+                </span>
+                {item.label}
+              </Link>
+            </div>
+          ))}
+        </div>
       </nav>
 
       {/* User */}

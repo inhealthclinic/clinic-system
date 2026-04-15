@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
@@ -49,6 +50,61 @@ function StatCard({
   )
 }
 
+interface QuickLink {
+  label: string
+  href: string
+  iconColor: string
+  icon: React.ReactNode
+}
+
+const QUICK_LINKS: QuickLink[] = [
+  {
+    label: 'Записать пациента',
+    href: '/schedule',
+    iconColor: 'text-blue-600 bg-blue-50',
+    icon: (
+      <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M16 2v4M8 2v4M3 9h18M12 13v4M10 15h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Новый пациент',
+    href: '/patients/new',
+    iconColor: 'text-green-600 bg-green-50',
+    icon: (
+      <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
+        <circle cx="10" cy="8" r="4" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M2 20c0-3.314 3.134-6 7-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M18 14v6M15 17h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Принять оплату',
+    href: '/finance',
+    iconColor: 'text-orange-600 bg-orange-50',
+    icon: (
+      <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
+        <rect x="2" y="6" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M2 10h20M6 14h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Новая задача',
+    href: '/tasks',
+    iconColor: 'text-purple-600 bg-purple-50',
+    icon: (
+      <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M12 8v8M8 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+]
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashStats>(INITIAL)
   const [loading, setLoading] = useState(true)
@@ -61,8 +117,7 @@ export default function DashboardPage() {
       supabase
         .from('appointments')
         .select('status', { count: 'exact' })
-        .gte('start_at', `${today}T00:00:00`)
-        .lte('start_at', `${today}T23:59:59`),
+        .eq('date', today),
       supabase
         .from('visits')
         .select('id', { count: 'exact' })
@@ -70,8 +125,9 @@ export default function DashboardPage() {
       supabase
         .from('payments')
         .select('amount')
-        .gte('created_at', `${today}T00:00:00`)
-        .eq('status', 'paid'),
+        .eq('status', 'completed')
+        .gte('paid_at', `${today}T00:00:00`)
+        .neq('type', 'refund'),
       supabase
         .from('deals')
         .select('id', { count: 'exact' })
@@ -118,13 +174,34 @@ export default function DashboardPage() {
             <StatCard label="Пришли" value={stats.appointments_arrived} color="orange" />
             <StatCard label="Принято" value={stats.appointments_completed} color="purple" />
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
             <StatCard label="Открытых визитов" value={stats.visits_open} color="orange" />
             <StatCard label="Выручка за день" value={fmt(stats.revenue_today)} color="green" />
             <StatCard label="Новых лидов" value={stats.new_leads} color="blue" />
           </div>
         </>
       )}
+
+      {/* Quick links */}
+      <div className="mb-4">
+        <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">Быстрые действия</p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {QUICK_LINKS.map((ql) => (
+            <Link
+              key={ql.href}
+              href={ql.href}
+              className="bg-white rounded-xl border border-gray-100 p-4 flex flex-col items-start gap-3 hover:border-gray-200 hover:shadow-sm transition-all group"
+            >
+              <span className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${ql.iconColor}`}>
+                {ql.icon}
+              </span>
+              <span className="text-sm font-medium text-gray-700 group-hover:text-gray-900 leading-tight">
+                {ql.label}
+              </span>
+            </Link>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
