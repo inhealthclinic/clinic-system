@@ -19,6 +19,87 @@ const STATUS_STYLE: Record<string, { cls: string; label: string }> = {
 
 type DoctorRow = Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color' | 'consultation_duration'>
 
+// ─── TimeGrid ─────────────────────────────────────────────────────────────────
+
+function TimeGrid({ appointments, onCardClick }: {
+  appointments: Appointment[]
+  onCardClick: (a: Appointment) => void
+}) {
+  const HOUR_HEIGHT = 60 // px per hour
+  const START_HOUR = 8
+  const END_HOUR = 20
+  const hours = Array.from({ length: END_HOUR - START_HOUR }, (_, i) => START_HOUR + i)
+
+  function timeToMinutes(t: string) {
+    const [h, m] = t.slice(0, 5).split(':').map(Number)
+    return h * 60 + m
+  }
+
+  const startMinutes = START_HOUR * 60
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+      <div className="flex">
+        {/* Time labels column */}
+        <div className="w-16 flex-shrink-0 border-r border-gray-100">
+          {hours.map(h => (
+            <div key={h} style={{ height: HOUR_HEIGHT }} className="flex items-start justify-end pr-3 pt-1 border-b border-gray-50">
+              <span className="text-xs text-gray-400 font-mono">{String(h).padStart(2, '0')}:00</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Appointments area */}
+        <div className="flex-1 relative" style={{ height: (END_HOUR - START_HOUR) * HOUR_HEIGHT }}>
+          {/* Hour lines */}
+          {hours.map(h => (
+            <div key={h} className="absolute left-0 right-0 border-b border-gray-50"
+              style={{ top: (h - START_HOUR) * HOUR_HEIGHT }} />
+          ))}
+          {/* Half-hour lines */}
+          {hours.map(h => (
+            <div key={`${h}-half`} className="absolute left-0 right-0 border-b border-dashed border-gray-50"
+              style={{ top: (h - START_HOUR) * HOUR_HEIGHT + HOUR_HEIGHT / 2 }} />
+          ))}
+
+          {/* Appointment blocks */}
+          {appointments.map(a => {
+            const startMin = timeToMinutes(a.time_start) - startMinutes
+            const duration = a.duration_min ?? 30
+            const topPx = (startMin / 60) * HOUR_HEIGHT
+            const heightPx = Math.max((duration / 60) * HOUR_HEIGHT, 24)
+            const doctor = a.doctor as { color?: string; first_name: string; last_name: string } | undefined
+            const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
+
+            return (
+              <div
+                key={a.id}
+                onClick={() => onCardClick(a)}
+                className="absolute left-2 right-2 rounded-lg px-2 py-1 cursor-pointer shadow-sm hover:shadow-md transition-all overflow-hidden border-l-4"
+                style={{
+                  top: topPx,
+                  height: heightPx,
+                  backgroundColor: doctor?.color ? `${doctor.color}20` : '#eff6ff',
+                  borderLeftColor: doctor?.color ?? '#3b82f6',
+                }}
+              >
+                <p className="text-xs font-semibold text-gray-900 truncate leading-tight">
+                  {a.patient?.full_name ?? 'Walk-in'}
+                </p>
+                {heightPx > 36 && (
+                  <p className="text-xs text-gray-500 truncate leading-tight">
+                    {a.time_start.slice(0,5)} · {doctor ? `${doctor.last_name}` : ''}
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── CreateAppointmentModal ───────────────────────────────────────────────────
 
 function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
@@ -531,6 +612,7 @@ export default function SchedulePage() {
   const [showCreate, setShowCreate] = useState(false)
   const [selected, setSelected] = useState<Appointment | null>(null)
   const [search, setSearch] = useState('')
+  const [view, setView] = useState<'list' | 'grid'>('list')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -554,6 +636,16 @@ export default function SchedulePage() {
 
   const dateLabel = new Date(date + 'T12:00:00').toLocaleDateString('ru-RU', {
     weekday: 'long', day: 'numeric', month: 'long',
+  })
+
+  // Shared filter logic for both list and grid views
+  const filteredAppts = appointments.filter(a => {
+    if (!search.trim()) return true
+    const q = search.toLowerCase()
+    const patName = (a.patient?.full_name ?? '').toLowerCase()
+    const doc = a.doctor as { last_name: string; first_name: string } | undefined
+    const docName = doc ? `${doc.last_name} ${doc.first_name}`.toLowerCase() : ''
+    return patName.includes(q) || docName.includes(q)
   })
 
   return (
@@ -588,6 +680,23 @@ export default function SchedulePage() {
           Сегодня
         </button>
         <span className="text-sm text-gray-400">{appointments.length} записей</span>
+
+        {/* View toggle */}
+        <div className="flex bg-gray-100 rounded-lg p-0.5">
+          {(['list', 'grid'] as const).map(v => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={[
+                'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                view === v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+              ].join(' ')}
+            >
+              {v === 'list' ? '☰ Список' : '⊞ Сетка'}
+            </button>
+          ))}
+        </div>
+
         <button
           onClick={() => setShowCreate(true)}
           className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5"
@@ -623,39 +732,27 @@ export default function SchedulePage() {
         )}
       </div>
 
-      {/* List */}
-      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-        {loading ? (
-          <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
-        ) : (() => {
-          const filtered = appointments.filter(a => {
-            if (!search.trim()) return true
-            const q = search.toLowerCase()
-            const patName = (a.patient?.full_name ?? '').toLowerCase()
-            const doc = a.doctor as { last_name: string; first_name: string } | undefined
-            const docName = doc ? `${doc.last_name} ${doc.first_name}`.toLowerCase() : ''
-            return patName.includes(q) || docName.includes(q)
-          })
-
-          if (appointments.length === 0) return (
-            <div className="p-12 text-center">
-              <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
-              <button onClick={() => setShowCreate(true)}
-                className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-                + Создать первую запись
-              </button>
-            </div>
-          )
-
-          if (filtered.length === 0) return (
-            <div className="p-8 text-center text-sm text-gray-400">
-              Ничего не найдено по запросу «{search}»
-            </div>
-          )
-
-          return (
+      {/* Content */}
+      {loading ? (
+        <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+          Загрузка...
+        </div>
+      ) : appointments.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
+          <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
+          <button onClick={() => setShowCreate(true)}
+            className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+            + Создать первую запись
+          </button>
+        </div>
+      ) : filteredAppts.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+          Ничего не найдено по запросу «{search}»
+        </div>
+      ) : view === 'list' ? (
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
           <div className="divide-y divide-gray-50">
-            {filtered.map(a => {
+            {filteredAppts.map(a => {
               const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
               const doctor = a.doctor as { last_name: string; first_name: string; color: string } | undefined
               return (
@@ -690,9 +787,10 @@ export default function SchedulePage() {
               )
             })}
           </div>
-          )
-        })()}
-      </div>
+        </div>
+      ) : (
+        <TimeGrid appointments={filteredAppts} onCardClick={setSelected} />
+      )}
 
       {showCreate && clinicId && (
         <CreateAppointmentModal

@@ -305,6 +305,7 @@ function DealCard({ deal, sources, onDragStart, onClick, onTransfer }: {
   onTransfer?: (deal: DealRow) => void
 }) {
   const p = PRIORITY_STYLE[deal.priority] ?? PRIORITY_STYLE.warm
+  const daysInStage = Math.floor((Date.now() - new Date(deal.created_at).getTime()) / (1000 * 60 * 60 * 24))
   return (
     <div
       draggable
@@ -343,6 +344,11 @@ function DealCard({ deal, sources, onDragStart, onClick, onTransfer }: {
           </button>
         )}
       </div>
+      {daysInStage > 0 && (
+        <span className={`text-xs ${daysInStage > 7 ? 'text-red-400' : daysInStage > 3 ? 'text-orange-400' : 'text-gray-300'}`}>
+          {daysInStage} дн.
+        </span>
+      )}
     </div>
   )
 }
@@ -429,6 +435,16 @@ function KanbanColumn({ col, deals, sources, clinicId, showQuickAdd, onDragStart
   )
 }
 
+// ─── Stage auto-tasks ────────────────────────────────────────────────────────
+
+const STAGE_TASKS: Record<string, string> = {
+  'contact':            'Написать в WhatsApp: {name}',
+  'in_progress':        'Позвонить: {name}',
+  'primary_scheduled':  'Напомнить о консультации: {name}',
+  'no_show':            'Выяснить причину неявки: {name}',
+  'deciding':           'Позвонить, уточнить решение: {name}',
+}
+
 // ─── DealDrawer ───────────────────────────────────────────────────────────────
 
 function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTransfer }: {
@@ -468,6 +484,20 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
 
   const moveStage = async (stage: string) => {
     await supabase.from('deals').update({ stage }).eq('id', deal.id)
+    const taskTitle = STAGE_TASKS[stage]
+    if (taskTitle) {
+      const due = new Date()
+      due.setHours(due.getHours() + 2)
+      await supabase.from('tasks').insert({
+        clinic_id: clinicId,
+        title: taskTitle.replace('{name}', deal.patient?.full_name ?? ''),
+        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'message' : 'call',
+        priority: stage === 'no_show' ? 'high' : 'medium',
+        status: 'new',
+        patient_id: deal.patient_id,
+        due_at: due.toISOString(),
+      })
+    }
     onUpdate()
     onClose()
   }
@@ -758,10 +788,27 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [phoneWarning, setPhoneWarning] = useState<string | null>(null)
 
   const set = (f: keyof typeof form) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
       setForm(prev => ({ ...prev, [f]: e.target.value }))
+
+  useEffect(() => {
+    if (form.phone.trim().length < 7) { setPhoneWarning(null); return }
+    const t = setTimeout(async () => {
+      const { data } = await supabase.from('patients')
+        .select('id, full_name')
+        .contains('phones', [form.phone.trim()])
+        .limit(1)
+      if (data?.[0]) {
+        setPhoneWarning(`Пациент с таким номером уже существует: ${data[0].full_name}`)
+      } else {
+        setPhoneWarning(null)
+      }
+    }, 500)
+    return () => clearTimeout(t)
+  }, [form.phone])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -854,6 +901,11 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
             <div>
               <label className={labelCls}>Телефон</label>
               <input className={inputCls} placeholder="+7 700 000 0000" value={form.phone} onChange={set('phone')} />
+              {phoneWarning && (
+                <p className="text-xs text-orange-600 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 flex items-center gap-1.5 mt-1.5">
+                  ⚠️ {phoneWarning}
+                </p>
+              )}
             </div>
             <div>
               <label className={labelCls}>Пол</label>
@@ -969,6 +1021,20 @@ export default function CrmPage() {
     const id = dragId
     setDragId(null)
     await supabase.from('deals').update({ stage }).eq('id', id)
+    const taskTitle = STAGE_TASKS[stage]
+    if (taskTitle) {
+      const due = new Date()
+      due.setHours(due.getHours() + 2)
+      await supabase.from('tasks').insert({
+        clinic_id: clinicId,
+        title: taskTitle.replace('{name}', deal.patient?.full_name ?? ''),
+        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'message' : 'call',
+        priority: stage === 'no_show' ? 'high' : 'medium',
+        status: 'new',
+        patient_id: deal.patient_id,
+        due_at: due.toISOString(),
+      })
+    }
   }
 
   const handleQuickCreated = () => {
@@ -996,6 +1062,11 @@ export default function CrmPage() {
           ))}
         </div>
         <span className="text-sm text-gray-400">{deals.length} сделок</span>
+        {deals.filter(d => Math.floor((Date.now() - new Date(d.created_at).getTime()) / 86400000) > 7).length > 0 && (
+          <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full">
+            ⚠ {deals.filter(d => Math.floor((Date.now() - new Date(d.created_at).getTime()) / 86400000) > 7).length} зависших
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <Link
             href="/crm/settings"

@@ -34,6 +34,7 @@ interface MedRecord {
 }
 interface ICD10Hit { code: string; name: string }
 interface Service { id: string; name: string; price: number | null }
+interface Allergy { allergen: string; type: string; severity: string }
 
 /* ─── Helpers ────────────────────────────────────────────── */
 const STATUS_CLR: Record<string, string> = {
@@ -141,8 +142,21 @@ function AddChargeModal({ visitId, patientId, clinicId, onClose, onSaved }: {
   )
 }
 
+/* ─── Allergy check helper ───────────────────────────────── */
+function checkAllergy(drugName: string, allergies: { allergen: string; type: string }[]): string | null {
+  if (!drugName.trim()) return null
+  const drug = drugName.toLowerCase()
+  const match = allergies.find(a =>
+    a.type === 'drug' && (
+      drug.includes(a.allergen.toLowerCase()) ||
+      a.allergen.toLowerCase().includes(drug)
+    )
+  )
+  return match ? match.allergen : null
+}
+
 /* ─── MedRecordSection ───────────────────────────────────── */
-function MedRecordSection({ visit }: { visit: VisitFull }) {
+function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: Allergy[] }) {
   const supabase = createClient()
   const { profile } = useAuthStore()
 
@@ -150,6 +164,19 @@ function MedRecordSection({ visit }: { visit: VisitFull }) {
   const [loading, setLoading]   = useState(true)
   const [editing, setEditing]   = useState(false)
   const [saving, setSaving]     = useState(false)
+
+  /* Allergy warnings per prescription index */
+  const [allergyWarnings, setAllergyWarnings] = useState<Record<number, string | null>>({})
+
+  /* Last visit record */
+  const [lastRecord, setLastRecord] = useState<{
+    created_at: string
+    icd10_code: string | null
+    diagnosis_text: string | null
+    prescriptions: Array<{ drug_name: string; dosage: string; frequency: string }>
+    recommendations: string | null
+  } | null>(null)
+  const [showLastVisit, setShowLastVisit] = useState(false)
 
   /* ICD-10 search */
   const [icdQuery, setIcdQuery]   = useState('')
@@ -189,6 +216,17 @@ function MedRecordSection({ visit }: { visit: VisitFull }) {
         }
         setLoading(false)
       })
+
+    // Load last completed visit's medical record
+    supabase.from('medical_records')
+      .select('created_at, icd10_code, diagnosis_text, prescriptions, recommendations')
+      .eq('patient_id', visit.patient.id)
+      .neq('visit_id', visit.id)
+      .eq('is_signed', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => { if (data) setLastRecord(data as typeof lastRecord) })
   }, [visit.id])
 
   const searchICD = (q: string) => {
@@ -214,11 +252,26 @@ function MedRecordSection({ visit }: { visit: VisitFull }) {
   const addPrescription = () =>
     setForm(f => ({ ...f, prescriptions: [...f.prescriptions, { drug_name: '', dosage: '', frequency: '', duration: '' }] }))
 
-  const updatePrescription = (i: number, field: string, val: string) =>
+  const updatePrescription = (i: number, field: string, val: string) => {
     setForm(f => ({ ...f, prescriptions: f.prescriptions.map((p, idx) => idx === i ? { ...p, [field]: val } : p) }))
+    if (field === 'drug_name') {
+      const match = checkAllergy(val, allergies)
+      setAllergyWarnings(prev => ({ ...prev, [i]: match }))
+    }
+  }
 
-  const removePrescription = (i: number) =>
+  const removePrescription = (i: number) => {
     setForm(f => ({ ...f, prescriptions: f.prescriptions.filter((_, idx) => idx !== i) }))
+    setAllergyWarnings(prev => {
+      const next: Record<number, string | null> = {}
+      Object.entries(prev).forEach(([k, v]) => {
+        const ki = Number(k)
+        if (ki < i) next[ki] = v
+        else if (ki > i) next[ki - 1] = v
+      })
+      return next
+    })
+  }
 
   const buildVitals = () => {
     const vitals: Record<string, string> = {}
@@ -265,6 +318,54 @@ function MedRecordSection({ visit }: { visit: VisitFull }) {
     <div className="bg-white rounded-xl border border-gray-100 p-6 mt-4 text-sm text-gray-400 text-center">Загрузка медзаписи...</div>
   )
 
+  /* ── Last visit collapsible panel ── */
+  const LastVisitPanel = () => lastRecord ? (
+    <div className="mb-4 border border-blue-100 rounded-xl overflow-hidden">
+      <button onClick={() => setShowLastVisit(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-blue-50 hover:bg-blue-100 transition-colors text-left">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-blue-700">📋 Последний визит</span>
+          <span className="text-xs text-blue-500">
+            {new Date(lastRecord.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })}
+          </span>
+          {lastRecord.icd10_code && (
+            <span className="text-xs font-mono bg-blue-200 text-blue-800 px-1.5 rounded">{lastRecord.icd10_code}</span>
+          )}
+        </div>
+        <svg width="14" height="14" className={`text-blue-400 transition-transform ${showLastVisit ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24">
+          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      </button>
+      {showLastVisit && (
+        <div className="px-4 py-3 bg-white space-y-2">
+          {lastRecord.diagnosis_text && (
+            <p className="text-sm text-gray-700"><span className="text-xs text-gray-400 mr-2">Диагноз:</span>{lastRecord.diagnosis_text}</p>
+          )}
+          {lastRecord.prescriptions?.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-400 mb-1">Назначения:</p>
+              <div className="flex flex-wrap gap-1">
+                {lastRecord.prescriptions.map((p, i) => (
+                  <span key={i} className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{p.drug_name} {p.dosage}</span>
+                ))}
+              </div>
+              <button onClick={() => {
+                setForm(f => ({ ...f, prescriptions: [...f.prescriptions, ...lastRecord.prescriptions.map(p => ({
+                  drug_name: p.drug_name, dosage: p.dosage, frequency: p.frequency, duration: ''
+                }))] }))
+              }} className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                + Скопировать назначения
+              </button>
+            </div>
+          )}
+          {lastRecord.recommendations && (
+            <p className="text-sm text-gray-600"><span className="text-xs text-gray-400 mr-2">Рекомендации:</span>{lastRecord.recommendations}</p>
+          )}
+        </div>
+      )}
+    </div>
+  ) : null
+
   /* ── View mode ── */
   if (record && !editing) {
     const v = record.vitals ?? {}
@@ -287,6 +388,7 @@ function MedRecordSection({ visit }: { visit: VisitFull }) {
           )}
         </div>
         <div className="p-5 space-y-4 text-sm">
+          <LastVisitPanel />
           {/* Vitals row */}
           {(bp || v.pulse || v.temperature || v.spo2) && (
             <div className="flex gap-4 flex-wrap">
@@ -349,6 +451,8 @@ function MedRecordSection({ visit }: { visit: VisitFull }) {
         )}
       </div>
       <div className="p-5 space-y-5">
+
+        <LastVisitPanel />
 
         {/* Vitals */}
         <div>
@@ -448,22 +552,37 @@ function MedRecordSection({ visit }: { visit: VisitFull }) {
             <p className="text-sm text-gray-400">Нет назначений</p>
           )}
           <div className="space-y-2">
-            {form.prescriptions.map((p, i) => (
-              <div key={i} className="grid grid-cols-4 gap-2 bg-gray-50 rounded-lg p-3 relative">
-                <input className={inp} placeholder="Препарат" value={p.drug_name}
-                  onChange={e => updatePrescription(i, 'drug_name', e.target.value)} />
-                <input className={inp} placeholder="Доза" value={p.dosage}
-                  onChange={e => updatePrescription(i, 'dosage', e.target.value)} />
-                <input className={inp} placeholder="Частота" value={p.frequency}
-                  onChange={e => updatePrescription(i, 'frequency', e.target.value)} />
-                <div className="flex gap-2">
-                  <input className={inp} placeholder="Курс" value={p.duration}
-                    onChange={e => updatePrescription(i, 'duration', e.target.value)} />
-                  <button type="button" onClick={() => removePrescription(i)}
-                    className="text-gray-400 hover:text-red-500 flex-shrink-0 text-lg leading-none">×</button>
+            {form.prescriptions.map((p, i) => {
+              const allergyMatch = allergyWarnings[i] ?? null
+              return (
+                <div key={i} className="bg-gray-50 rounded-lg p-3 relative">
+                  <div className="grid grid-cols-4 gap-2">
+                    <div>
+                      <input className={inp} placeholder="Препарат" value={p.drug_name}
+                        onChange={e => updatePrescription(i, 'drug_name', e.target.value)} />
+                      {allergyMatch && (
+                        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-1">
+                          <span className="text-red-600 font-bold text-base">⚠</span>
+                          <span className="text-sm text-red-700 font-medium">
+                            Внимание! У пациента аллергия на <strong>{allergyMatch}</strong>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <input className={inp} placeholder="Доза" value={p.dosage}
+                      onChange={e => updatePrescription(i, 'dosage', e.target.value)} />
+                    <input className={inp} placeholder="Частота" value={p.frequency}
+                      onChange={e => updatePrescription(i, 'frequency', e.target.value)} />
+                    <div className="flex gap-2">
+                      <input className={inp} placeholder="Курс" value={p.duration}
+                        onChange={e => updatePrescription(i, 'duration', e.target.value)} />
+                      <button type="button" onClick={() => removePrescription(i)}
+                        className="text-gray-400 hover:text-red-500 flex-shrink-0 text-lg leading-none">×</button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
 
@@ -516,6 +635,7 @@ export default function VisitPage() {
   const [loading, setLoading]   = useState(true)
   const [advancing, setAdv]     = useState(false)
   const [showCharge, setCharge] = useState(false)
+  const [allergies, setAllergies] = useState<Allergy[]>([])
 
   const load = useCallback(async () => {
     const [v, c] = await Promise.all([
@@ -527,8 +647,15 @@ export default function VisitPage() {
         .eq('visit_id', id).order('created_at'),
     ])
     if (!v.data) { router.push('/'); return }
-    setVisit({ ...v.data, charges: c.data ?? [] } as VisitFull)
+    const visitData = { ...v.data, charges: c.data ?? [] } as VisitFull
+    setVisit(visitData)
     setLoading(false)
+
+    const { data: allergyData } = await supabase
+      .from('allergies')
+      .select('allergen, type, severity')
+      .eq('patient_id', visitData.patient.id)
+    if (allergyData) setAllergies(allergyData)
   }, [id])
 
   useEffect(() => { load() }, [load])
@@ -569,6 +696,8 @@ export default function VisitPage() {
   const total = visit.charges.reduce((s, c) => s + c.total, 0)
   const fmt   = (n: number) => n.toLocaleString('ru-RU') + ' ₸'
 
+  const severeAllergies = allergies.filter(a => a.severity === 'severe' || a.severity === 'life-threatening')
+
   return (
     <div className="max-w-2xl mx-auto">
       {showCharge && (
@@ -589,6 +718,15 @@ export default function VisitPage() {
             <Link href={`/patients/${visit.patient.id}`} className="text-base font-semibold text-gray-900 hover:text-blue-600 transition-colors">
               {visit.patient.full_name}
             </Link>
+            {severeAllergies.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {allergies.filter(a => a.type === 'drug').map((a, i) => (
+                  <span key={i} className="text-xs bg-red-100 text-red-700 border border-red-200 rounded-full px-2 py-0.5 font-medium">
+                    ⚠ {a.allergen}
+                  </span>
+                ))}
+              </div>
+            )}
             <p className="text-sm text-gray-400 mt-0.5">{visit.doctor.last_name} {visit.doctor.first_name}</p>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
               <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${STATUS_CLR[visit.status]}`}>
@@ -674,7 +812,7 @@ export default function VisitPage() {
       </div>
 
       {/* Medical record */}
-      <MedRecordSection visit={visit} />
+      <MedRecordSection visit={visit} allergies={allergies} />
     </div>
   )
 }

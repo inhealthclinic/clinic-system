@@ -12,6 +12,10 @@ interface Parameter {
   unit: string
   ref_min: number | null
   ref_max: number | null
+  ref_gender?: {
+    male?: { min: number; max: number }
+    female?: { min: number; max: number }
+  }
   critical_low?: number | null
   critical_high?: number | null
 }
@@ -148,6 +152,51 @@ function calcFlag(
   return 'normal'
 }
 
+function calcFlagWithGender(
+  value: string,
+  param: Parameter,
+  gender?: string | null,
+): 'normal' | 'low' | 'high' | 'critical' {
+  const v = parseFloat(value)
+  if (isNaN(v)) return 'normal'
+
+  // Use gender-specific ranges if available
+  const genderRef =
+    gender === 'male'
+      ? param.ref_gender?.male
+      : gender === 'female'
+      ? param.ref_gender?.female
+      : null
+  const refMin = genderRef?.min ?? param.ref_min
+  const refMax = genderRef?.max ?? param.ref_max
+
+  if (
+    (param.critical_low != null && v <= param.critical_low) ||
+    (param.critical_high != null && v >= param.critical_high)
+  ) {
+    return 'critical'
+  }
+  if (refMin != null && v < refMin) return 'low'
+  if (refMax != null && v > refMax) return 'high'
+  return 'normal'
+}
+
+function getTATStatus(
+  orderedAt: string,
+  status: string,
+): { label: string; cls: string } | null {
+  if (['delivered', 'verified', 'ready'].includes(status)) return null
+  const hours = (Date.now() - new Date(orderedAt).getTime()) / (1000 * 60 * 60)
+  if (hours < 2)
+    return { label: `${Math.floor(hours * 60)} мин`, cls: 'bg-green-100 text-green-700' }
+  if (hours < 24)
+    return { label: `${Math.floor(hours)} ч`, cls: 'bg-yellow-100 text-yellow-700' }
+  return {
+    label: `${Math.floor(hours / 24)} дн. просрочка`,
+    cls: 'bg-red-100 text-red-700',
+  }
+}
+
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('ru-RU', {
     day: 'numeric',
@@ -161,11 +210,13 @@ function ResultsForm({
   item,
   clinicId,
   patientId,
+  patientGender,
   onSaved,
 }: {
   item: OrderItem
   clinicId: string
   patientId: string
+  patientGender?: string | null
   onSaved: () => void
 }) {
   const supabase = createClient()
@@ -183,6 +234,22 @@ function ResultsForm({
   const [conclusion, setConclusion] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [prevResult, setPrevResult] = useState<ResultEntry[] | null>(null)
+
+  useEffect(() => {
+    if (!item.template_id) return
+    supabase
+      .from('lab_results')
+      .select('results, completed_at')
+      .eq('patient_id', patientId)
+      .neq('order_item_id', item.id)
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.results) setPrevResult(data.results as ResultEntry[])
+      })
+  }, [item.id])
 
   const setValue = (name: string, val: string) =>
     setValues(prev => ({ ...prev, [name]: val }))
@@ -197,7 +264,7 @@ function ResultsForm({
 
     const results: ResultEntry[] = parameters.map(p => {
       const val = values[p.name] ?? ''
-      const flag = calcFlag(val, p)
+      const flag = calcFlagWithGender(val, p, patientGender)
       return {
         parameter: p.name,
         value: val,
@@ -254,7 +321,8 @@ function ResultsForm({
       <div className="space-y-3">
         {parameters.map(p => {
           const val = values[p.name] ?? ''
-          const flag = val !== '' ? calcFlag(val, p) : null
+          const flag = val !== '' ? calcFlagWithGender(val, p, patientGender) : null
+          const prevVal = prevResult?.find(r => r.parameter === p.name)
           return (
             <div key={p.name} className="flex items-center gap-3">
               <div className="flex-1">
@@ -280,6 +348,21 @@ function ResultsForm({
                 {flag && (
                   <div className={`mt-0.5 font-medium ${FLAG_CLR[flag]}`}>
                     {FLAG_RU[flag]}
+                  </div>
+                )}
+                {prevVal && (
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    Пред.:{' '}
+                    <span className={`font-medium ${FLAG_CLR[prevVal.flag] ?? 'text-gray-600'}`}>
+                      {prevVal.value}
+                    </span>
+                    {val !== '' && !isNaN(parseFloat(val)) && !isNaN(parseFloat(prevVal.value))
+                      ? parseFloat(val) > parseFloat(prevVal.value)
+                        ? ' ↑'
+                        : parseFloat(val) < parseFloat(prevVal.value)
+                        ? ' ↓'
+                        : ''
+                      : ''}
                   </div>
                 )}
               </div>
@@ -319,7 +402,13 @@ function ResultsForm({
 }
 
 /* ─── ResultsTable ──────────────────────────────────────────── */
-function ResultsTable({ result }: { result: LabResult }) {
+function ResultsTable({
+  result,
+  prevResults,
+}: {
+  result: LabResult
+  prevResults?: ResultEntry[] | null
+}) {
   return (
     <div className="mt-3 space-y-3">
       <div className="overflow-x-auto rounded-lg border border-gray-100">
@@ -331,6 +420,7 @@ function ResultsTable({ result }: { result: LabResult }) {
               <th className="text-left text-xs font-medium text-gray-400 px-4 py-2.5">Ед.</th>
               <th className="text-left text-xs font-medium text-gray-400 px-4 py-2.5">Референс</th>
               <th className="text-left text-xs font-medium text-gray-400 px-4 py-2.5">Флаг</th>
+              <th className="text-left text-xs font-medium text-gray-400 px-4 py-2.5">Δ Пред.</th>
             </tr>
           </thead>
           <tbody>
@@ -348,6 +438,30 @@ function ResultsTable({ result }: { result: LabResult }) {
                 </td>
                 <td className={`px-4 py-2.5 text-xs font-medium ${FLAG_CLR[r.flag] ?? ''}`}>
                   {FLAG_RU[r.flag] ?? r.flag}
+                </td>
+                <td className="px-4 py-2.5 text-xs">
+                  {(() => {
+                    const prev = prevResults?.find(p => p.parameter === r.parameter)
+                    if (!prev || !prev.value || !r.value)
+                      return <span className="text-gray-300">—</span>
+                    const diff = parseFloat(r.value) - parseFloat(prev.value)
+                    if (isNaN(diff)) return <span className="text-gray-300">—</span>
+                    return (
+                      <span
+                        className={
+                          diff > 0
+                            ? 'text-orange-500'
+                            : diff < 0
+                            ? 'text-blue-500'
+                            : 'text-gray-400'
+                        }
+                      >
+                        {diff > 0 ? '+' : ''}
+                        {diff.toFixed(1)} {diff !== 0 ? (diff > 0 ? '↑' : '↓') : ''}
+                        <div className="text-gray-300">{prev.value}</div>
+                      </span>
+                    )
+                  })()}
                 </td>
               </tr>
             ))}
@@ -417,6 +531,7 @@ export default function LabOrderPage() {
   const [notFound, setNotFound] = useState(false)
   const [advancing, setAdvancing] = useState(false)
   const [openForms, setOpenForms] = useState<Set<string>>(new Set())
+  const [prevResultsMap, setPrevResultsMap] = useState<Record<string, ResultEntry[]>>({})
 
   const load = useCallback(async () => {
     if (!orderId) return
@@ -438,9 +553,35 @@ export default function LabOrderPage() {
 
     if (error || !data) {
       setNotFound(true)
-    } else {
-      setOrder(data as unknown as LabOrder)
+      setLoading(false)
+      return
     }
+
+    const loadedOrder = data as unknown as LabOrder
+    setOrder(loadedOrder)
+
+    // Load previous results for each item with a template
+    const items: OrderItem[] = loadedOrder.items ?? []
+    const prevPromises = items
+      .filter(i => i.template_id)
+      .map(async (i) => {
+        const { data: prevData } = await supabase
+          .from('lab_results')
+          .select('results, completed_at, order_item_id')
+          .eq('patient_id', loadedOrder.patient_id)
+          .neq('order_id', loadedOrder.id)
+          .order('completed_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        if (prevData) {
+          setPrevResultsMap(prev => ({
+            ...prev,
+            [i.id]: prevData.results as ResultEntry[],
+          }))
+        }
+      })
+    await Promise.all(prevPromises)
+
     setLoading(false)
   }, [orderId])
 
@@ -536,6 +677,14 @@ export default function LabOrderPage() {
             <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${STATUS_CLR[order.status] ?? ''}`}>
               {STATUS_RU[order.status] ?? order.status}
             </span>
+            {(() => {
+              const tat = getTATStatus(order.ordered_at, order.status)
+              return tat ? (
+                <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${tat.cls}`}>
+                  ⏱ {tat.label}
+                </span>
+              ) : null
+            })()}
           </div>
           {order.patient && (
             <p className="text-sm text-gray-500 mt-0.5">{order.patient.full_name}</p>
@@ -649,7 +798,7 @@ export default function LabOrderPage() {
 
               {/* Result table if exists */}
               {result && (
-                <ResultsTable result={result} />
+                <ResultsTable result={result} prevResults={prevResultsMap[item.id]} />
               )}
 
               {/* Inline form if no result yet and form is open */}
@@ -658,6 +807,7 @@ export default function LabOrderPage() {
                   item={item}
                   clinicId={clinicId}
                   patientId={order.patient_id}
+                  patientGender={order.patient?.gender}
                   onSaved={() => {
                     closeForm(item.id)
                     load()
