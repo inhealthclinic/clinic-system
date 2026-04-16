@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Appointment, Doctor } from '@/types'
@@ -102,6 +102,8 @@ function TimeGrid({ appointments, onCardClick }: {
 
 // ─── CreateAppointmentModal ───────────────────────────────────────────────────
 
+type PatientMode = 'search' | 'new'
+
 function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   clinicId: string
   defaultDate: string
@@ -109,54 +111,135 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   onCreated: () => void
 }) {
   const supabase = createClient()
-  const [doctors, setDoctors] = useState<DoctorRow[]>([])
-  const [patients, setPatients] = useState<{ id: string; full_name: string; phones: string[] }[]>([])
+
+  /* ── doctors ── */
+  const [doctors, setDoctors]       = useState<DoctorRow[]>([])
+  const [doctorsLoading, setDocLoad] = useState(true)
+  const [doctorsError, setDocErr]   = useState('')
+
+  /* ── patient ── */
+  const [patientMode, setPatientMode]   = useState<PatientMode>('search')
   const [patientSearch, setPatientSearch] = useState('')
-  const [selectedPatientName, setSelectedPatientName] = useState('')
-  const [selectedPatientPhone, setSelectedPatientPhone] = useState('')
+  const [searchResults, setSearchResults] = useState<{ id: string; full_name: string; phones: string[] }[]>([])
+  const [showDropdown, setShowDropdown]  = useState(false)
+  const searchRef = useRef<HTMLDivElement>(null)
 
-  // New patient registration inline
-  const [showNewPatient, setShowNewPatient] = useState(false)
-  const [newPatient, setNewPatient] = useState({ full_name: '', phone: '', gender: 'other' as 'male' | 'female' | 'other', birth_date: '' })
-  const [registeringPatient, setRegisteringPatient] = useState(false)
+  /* selected patient */
+  const [selectedPatient, setSelectedPatient] = useState<{ id: string; full_name: string; phone: string } | null>(null)
 
+  /* new patient form */
+  const [newPat, setNewPat] = useState({ full_name: '', phone: '', gender: 'other' as 'male' | 'female' | 'other', birth_date: '' })
+  const [newPatSaving, setNewPatSaving] = useState(false)
+  const [newPatError, setNewPatError]   = useState('')
+
+  /* ── booking form ── */
   const [form, setForm] = useState({
     doctor_id: '',
-    patient_id: '',
     date: defaultDate,
     time_start: '09:00',
     notes: '',
     is_walkin: false,
   })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const [takenSlots, setTakenSlots] = useState<string[]>([])
+  const [saving, setSaving]   = useState(false)
+  const [error, setError]     = useState('')
 
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition bg-white'
+  const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
+
+  /* ── load doctors (no deleted_at filter — not all tables have it) ── */
   useEffect(() => {
+    setDocLoad(true)
+    setDocErr('')
     supabase
       .from('doctors')
       .select('id, first_name, last_name, color, consultation_duration')
       .eq('is_active', true)
-      .is('deleted_at', null)
-      .then(({ data }) => {
-        setDoctors(data ?? [])
-        if (data?.[0]) setForm(f => ({ ...f, doctor_id: data[0].id }))
+      .order('last_name')
+      .then(({ data, error: err }) => {
+        setDocLoad(false)
+        if (err) { setDocErr(err.message); return }
+        const list = data ?? []
+        setDoctors(list)
+        if (list[0]) setForm(f => ({ ...f, doctor_id: list[0].id }))
       })
   }, [])
 
+  /* ── load taken slots when doctor or date changes ── */
   useEffect(() => {
-    if (patientSearch.length < 2) { setPatients([]); return }
-    const t = setTimeout(async () => {
+    if (!form.doctor_id || !form.date) return
+    supabase
+      .from('appointments')
+      .select('time_start')
+      .eq('doctor_id', form.doctor_id)
+      .eq('date', form.date)
+      .not('status', 'in', '(cancelled,no_show,rescheduled)')
+      .then(({ data }) => {
+        setTakenSlots((data ?? []).map(a => a.time_start.slice(0, 5)))
+      })
+  }, [form.doctor_id, form.date])
+
+  /* ── patient search ── */
+  const searchDebRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (patientSearch.length < 2) { setSearchResults([]); return }
+    if (searchDebRef.current) clearTimeout(searchDebRef.current)
+    searchDebRef.current = setTimeout(async () => {
       const { data } = await supabase
         .from('patients')
         .select('id, full_name, phones')
-        .is('deleted_at', null)
-        .ilike('full_name', `%${patientSearch}%`)
+        .or(`full_name.ilike.%${patientSearch}%,phones.cs.{${patientSearch}}`)
         .limit(8)
-      setPatients(data ?? [])
-    }, 300)
-    return () => clearTimeout(t)
+      setSearchResults(data ?? [])
+      setShowDropdown(true)
+    }, 250)
+    return () => { if (searchDebRef.current) clearTimeout(searchDebRef.current) }
   }, [patientSearch])
 
+  /* close dropdown on outside click */
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) setShowDropdown(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const pickPatient = (p: { id: string; full_name: string; phones: string[] }) => {
+    setSelectedPatient({ id: p.id, full_name: p.full_name, phone: p.phones?.[0] ?? '' })
+    setShowDropdown(false)
+    setPatientSearch('')
+  }
+
+  const clearPatient = () => {
+    setSelectedPatient(null)
+    setPatientSearch('')
+    setPatientMode('search')
+  }
+
+  /* ── register new patient ── */
+  const registerNewPatient = async () => {
+    if (!newPat.full_name.trim()) { setNewPatError('Укажите ФИО'); return }
+    setNewPatSaving(true); setNewPatError('')
+    const { data: pat, error: pErr } = await supabase.from('patients').insert({
+      clinic_id: clinicId,
+      full_name: newPat.full_name.trim(),
+      phones: newPat.phone.trim() ? [newPat.phone.trim()] : [],
+      gender: newPat.gender,
+      birth_date: newPat.birth_date || null,
+      status: 'new',
+      is_vip: false,
+      balance_amount: 0,
+      debt_amount: 0,
+      tags: [],
+    }).select('id, full_name, phones').single()
+    setNewPatSaving(false)
+    if (pErr || !pat) { setNewPatError(pErr?.message ?? 'Ошибка создания'); return }
+    setSelectedPatient({ id: pat.id, full_name: pat.full_name, phone: pat.phones?.[0] ?? '' })
+    setPatientMode('search')
+  }
+
+  /* ── helpers ── */
   const selectedDoctor = doctors.find(d => d.id === form.doctor_id)
   const duration = selectedDoctor?.consultation_duration ?? 30
 
@@ -166,58 +249,38 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
   }
 
-  const registerNewPatient = async () => {
-    if (!newPatient.full_name.trim()) return
-    setRegisteringPatient(true)
-    const { data: pat, error: pErr } = await supabase.from('patients').insert({
-      clinic_id: clinicId,
-      full_name: newPatient.full_name.trim(),
-      phones: newPatient.phone.trim() ? [newPatient.phone.trim()] : [],
-      gender: newPatient.gender,
-      birth_date: newPatient.birth_date || null,
-      status: 'new',
-      is_vip: false,
-      balance_amount: 0,
-      debt_amount: 0,
-      tags: [],
-    }).select('id, full_name, phones').single()
-    setRegisteringPatient(false)
-    if (pErr || !pat) { setError(pErr?.message ?? 'Ошибка регистрации'); return }
-    setForm(f => ({ ...f, patient_id: pat.id }))
-    setSelectedPatientName(pat.full_name)
-    setSelectedPatientPhone(pat.phones?.[0] ?? '')
-    setShowNewPatient(false)
-  }
+  /* generate 15-min slots 08:00–19:45 */
+  const ALL_SLOTS = Array.from({ length: 48 }, (_, i) => {
+    const totalMin = 8 * 60 + i * 15
+    return `${String(Math.floor(totalMin / 60)).padStart(2, '0')}:${String(totalMin % 60).padStart(2, '0')}`
+  })
 
+  /* ── submit ── */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!form.patient_id) { setError('Выберите или зарегистрируйте пациента'); return }
+    if (!selectedPatient) { setError('Выберите или зарегистрируйте пациента'); return }
     if (!form.doctor_id)  { setError('Выберите врача'); return }
-    setError('')
-    setSaving(true)
+    setError(''); setSaving(true)
 
     const timeEnd = calcEnd(form.time_start, duration)
+    const timeEndCheck = timeEnd + ':00'
 
-    // Check for overlapping appointments for same doctor (rule A1)
-    const timeEndForCheck = calcEnd(form.time_start, duration) + ':00'
+    /* conflict check */
     const { data: conflicts } = await supabase
-      .from('appointments')
-      .select('id, time_start, time_end')
-      .eq('doctor_id', form.doctor_id)
-      .eq('date', form.date)
+      .from('appointments').select('id')
+      .eq('doctor_id', form.doctor_id).eq('date', form.date)
       .not('status', 'in', '(cancelled,no_show,rescheduled)')
-      .lt('time_start', timeEndForCheck)
+      .lt('time_start', timeEndCheck)
       .gt('time_end', form.time_start + ':00')
 
     if (conflicts && conflicts.length > 0) {
-      setError(`Конфликт: у врача уже есть запись в это время`)
-      setSaving(false)
-      return
+      setError(`Конфликт: у врача уже есть запись в ${form.time_start}`)
+      setSaving(false); return
     }
 
     const { data: appt, error: err } = await supabase.from('appointments').insert({
       clinic_id: clinicId,
-      patient_id: form.patient_id,
+      patient_id: selectedPatient.id,
       doctor_id: form.doctor_id,
       date: form.date,
       time_start: form.time_start + ':00',
@@ -229,29 +292,27 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
       notes: form.notes.trim() || null,
     }).select('id').single()
 
-    if (err) { setError(err.message); setSaving(false); return }
+    if (err || !appt) { setError(err?.message ?? 'Ошибка'); setSaving(false); return }
 
-    // Auto-create open visit (rule A5)
+    /* auto-create open visit */
     await supabase.from('visits').insert({
       clinic_id: clinicId,
-      patient_id: form.patient_id,
+      patient_id: selectedPatient.id,
       doctor_id: form.doctor_id,
       appointment_id: appt.id,
       status: 'open',
     })
 
-    onCreated()
-    onClose()
+    onCreated(); onClose()
   }
-
-  const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
-  const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10 max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-5">
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md z-10 max-h-[96vh] flex flex-col">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
           <h3 className="text-base font-semibold text-gray-900">Новая запись</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
@@ -260,227 +321,235 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Patient search / select / register */}
-          <div>
-            <label className={labelCls}>Пациент <span className="text-red-400">*</span></label>
+        <form onSubmit={handleSubmit} className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
 
-            {form.patient_id ? (
-              /* Selected state */
-              <div className="flex items-center justify-between border border-green-200 bg-green-50 rounded-lg px-3 py-2.5">
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{selectedPatientName}</p>
-                  {selectedPatientPhone && <p className="text-xs text-gray-400">{selectedPatientPhone}</p>}
+          {/* ── 1. PATIENT ── */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className={labelCls + ' mb-0'}>Пациент <span className="text-red-400">*</span></label>
+              {!selectedPatient && (
+                <div className="flex gap-1">
+                  <button type="button" onClick={() => setPatientMode('search')}
+                    className={`text-xs px-2.5 py-1 rounded-lg font-medium transition-colors ${patientMode === 'search' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>
+                    Поиск
+                  </button>
+                  <button type="button" onClick={() => { setPatientMode('new'); setShowDropdown(false) }}
+                    className={`text-xs px-2.5 py-1 rounded-lg font-medium transition-colors ${patientMode === 'new' ? 'bg-green-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>
+                    + Новый пациент
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => { setForm(f => ({ ...f, patient_id: '' })); setPatientSearch(''); setShowNewPatient(false) }}
-                  className="text-gray-400 hover:text-gray-600 text-xs ml-2"
-                >
-                  ✕
-                </button>
+              )}
+            </div>
+
+            {/* Selected */}
+            {selectedPatient ? (
+              <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">{selectedPatient.full_name}</p>
+                  {selectedPatient.phone && <p className="text-xs text-gray-500 mt-0.5">{selectedPatient.phone}</p>}
+                </div>
+                <button type="button" onClick={clearPatient}
+                  className="text-gray-400 hover:text-red-500 transition-colors ml-3 text-lg leading-none">×</button>
               </div>
-            ) : (
-              <div className="space-y-2">
-                {/* Search input */}
-                <div className="relative">
-                  <input
-                    className={inputCls}
-                    placeholder="Поиск по имени или телефону..."
-                    value={patientSearch}
-                    onChange={e => { setPatientSearch(e.target.value); setShowNewPatient(false) }}
-                    autoFocus
-                  />
-                  {/* Dropdown results */}
-                  {patientSearch.length >= 2 && (
-                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 overflow-hidden">
-                      {patients.map(p => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => {
-                            setForm(f => ({ ...f, patient_id: p.id }))
-                            setSelectedPatientName(p.full_name)
-                            setSelectedPatientPhone(p.phones?.[0] ?? '')
-                          }}
-                          className="w-full text-left px-4 py-2.5 hover:bg-blue-50 transition-colors border-b border-gray-50 last:border-0"
-                        >
+
+            ) : patientMode === 'search' ? (
+              /* Search mode */
+              <div ref={searchRef} className="relative">
+                <input
+                  className={inputCls}
+                  placeholder="Имя или телефон пациента..."
+                  value={patientSearch}
+                  onChange={e => { setPatientSearch(e.target.value); setShowDropdown(true) }}
+                  onFocus={() => patientSearch.length >= 2 && setShowDropdown(true)}
+                  autoFocus
+                />
+                {showDropdown && patientSearch.length >= 2 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-20 overflow-hidden max-h-52 overflow-y-auto">
+                    {searchResults.length === 0 ? (
+                      <div className="px-4 py-3 text-sm text-gray-400">Не найдено — зарегистрируйте нового</div>
+                    ) : (
+                      searchResults.map(p => (
+                        <button key={p.id} type="button" onClick={() => pickPatient(p)}
+                          className="w-full text-left px-4 py-3 hover:bg-blue-50 transition-colors border-b border-gray-50 last:border-0">
                           <p className="text-sm font-medium text-gray-900">{p.full_name}</p>
                           {p.phones?.[0] && <p className="text-xs text-gray-400">{p.phones[0]}</p>}
                         </button>
-                      ))}
-                      {/* Register new patient option */}
-                      <button
-                        type="button"
-                        onClick={() => setShowNewPatient(v => !v)}
-                        className="w-full text-left px-4 py-2.5 bg-blue-50 hover:bg-blue-100 transition-colors flex items-center gap-2"
-                      >
-                        <span className="text-blue-600 font-bold text-base leading-none">+</span>
-                        <span className="text-sm text-blue-600 font-medium">
-                          {patients.length === 0
-                            ? `Зарегистрировать «${patientSearch}»`
-                            : 'Зарегистрировать нового пациента'}
-                        </span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* New patient inline form */}
-                {showNewPatient && (
-                  <div className="border border-blue-200 rounded-xl p-4 bg-blue-50/50 space-y-3">
-                    <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Регистрация нового пациента</p>
-                    <div>
-                      <label className="text-xs font-medium text-gray-600 block mb-1">ФИО <span className="text-red-400">*</span></label>
-                      <input
-                        className={inputCls}
-                        placeholder="Айгерим Бекова"
-                        value={newPatient.full_name}
-                        onChange={e => setNewPatient(p => ({ ...p, full_name: e.target.value }))}
-                        autoFocus
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 block mb-1">Телефон</label>
-                        <input
-                          className={inputCls}
-                          placeholder="+7 700 000 0000"
-                          value={newPatient.phone}
-                          onChange={e => setNewPatient(p => ({ ...p, phone: e.target.value }))}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs font-medium text-gray-600 block mb-1">Пол</label>
-                        <select className={inputCls} value={newPatient.gender}
-                          onChange={e => setNewPatient(p => ({ ...p, gender: e.target.value as 'male' | 'female' | 'other' }))}>
-                          <option value="female">Женский</option>
-                          <option value="male">Мужской</option>
-                          <option value="other">Не указан</option>
-                        </select>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-gray-600 block mb-1">Дата рождения</label>
-                      <input type="date" className={inputCls} value={newPatient.birth_date}
-                        onChange={e => setNewPatient(p => ({ ...p, birth_date: e.target.value }))} />
-                    </div>
-                    <div className="flex gap-2 pt-1">
-                      <button type="button" onClick={() => setShowNewPatient(false)}
-                        className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2 text-xs font-medium hover:bg-white">
-                        Отмена
-                      </button>
-                      <button type="button" onClick={registerNewPatient}
-                        disabled={registeringPatient || !newPatient.full_name.trim()}
-                        className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-2 text-xs font-medium">
-                        {registeringPatient ? 'Создание...' : '✓ Зарегистрировать'}
-                      </button>
-                    </div>
+                      ))
+                    )}
+                    <button type="button" onClick={() => { setPatientMode('new'); setNewPat(n => ({ ...n, full_name: patientSearch })); setShowDropdown(false) }}
+                      className="w-full text-left px-4 py-3 bg-green-50 hover:bg-green-100 transition-colors flex items-center gap-2 border-t border-gray-100">
+                      <span className="text-green-600 text-base font-bold leading-none">+</span>
+                      <span className="text-sm font-medium text-green-700">
+                        {searchResults.length === 0 ? `Создать «${patientSearch}»` : 'Новый пациент'}
+                      </span>
+                    </button>
                   </div>
                 )}
+              </div>
+
+            ) : (
+              /* New patient mode */
+              <div className="border border-green-200 rounded-xl p-4 bg-green-50/40 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-green-700 uppercase tracking-wide">Новый пациент</p>
+                  <button type="button" onClick={() => setPatientMode('search')}
+                    className="text-xs text-gray-400 hover:text-gray-600">← Назад к поиску</button>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">ФИО <span className="text-red-400">*</span></label>
+                  <input className={inputCls} placeholder="Айгерим Бекова" autoFocus
+                    value={newPat.full_name}
+                    onChange={e => setNewPat(p => ({ ...p, full_name: e.target.value }))} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 block mb-1">Телефон</label>
+                    <input className={inputCls} placeholder="+7 700 000 0000"
+                      value={newPat.phone}
+                      onChange={e => setNewPat(p => ({ ...p, phone: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 block mb-1">Пол</label>
+                    <select className={inputCls} value={newPat.gender}
+                      onChange={e => setNewPat(p => ({ ...p, gender: e.target.value as 'male' | 'female' | 'other' }))}>
+                      <option value="female">Женский</option>
+                      <option value="male">Мужской</option>
+                      <option value="other">Не указан</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">Дата рождения</label>
+                  <input type="date" className={inputCls} value={newPat.birth_date}
+                    onChange={e => setNewPat(p => ({ ...p, birth_date: e.target.value }))} />
+                </div>
+                {newPatError && <p className="text-xs text-red-600">{newPatError}</p>}
+                <button type="button" onClick={registerNewPatient}
+                  disabled={newPatSaving || !newPat.full_name.trim()}
+                  className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+                  {newPatSaving ? 'Создание...' : '✓ Зарегистрировать и продолжить'}
+                </button>
               </div>
             )}
           </div>
 
-          {/* Doctor */}
+          {/* ── 2. DOCTOR ── */}
           <div>
             <label className={labelCls}>Врач <span className="text-red-400">*</span></label>
-            <select
-              className={inputCls}
-              value={form.doctor_id}
-              onChange={e => setForm(f => ({ ...f, doctor_id: e.target.value }))}
-              required
-            >
-              {doctors.length === 0 && <option value="">Загрузка...</option>}
-              {doctors.map(d => (
-                <option key={d.id} value={d.id}>
-                  {d.last_name} {d.first_name} ({d.consultation_duration} мин)
-                </option>
-              ))}
-            </select>
+            {doctorsLoading ? (
+              <div className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-400 animate-pulse">Загрузка врачей...</div>
+            ) : doctorsError ? (
+              <div className="border border-red-200 bg-red-50 rounded-lg px-3 py-2.5 text-sm text-red-600">
+                ⚠ Не удалось загрузить врачей: {doctorsError}
+              </div>
+            ) : doctors.length === 0 ? (
+              <div className="border border-yellow-200 bg-yellow-50 rounded-lg px-3 py-2.5 text-sm text-yellow-700">
+                Нет активных врачей. Добавьте врача в Настройках → Врачи.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-2">
+                {doctors.map(d => (
+                  <label key={d.id}
+                    className={[
+                      'flex items-center gap-3 border rounded-xl px-4 py-3 cursor-pointer transition-colors',
+                      form.doctor_id === d.id
+                        ? 'border-blue-400 bg-blue-50'
+                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
+                    ].join(' ')}>
+                    <input type="radio" name="doctor" value={d.id} checked={form.doctor_id === d.id}
+                      onChange={() => setForm(f => ({ ...f, doctor_id: d.id }))}
+                      className="accent-blue-600 flex-shrink-0" />
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: d.color ?? '#9ca3af' }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">{d.last_name} {d.first_name}</p>
+                      <p className="text-xs text-gray-400">{d.consultation_duration ?? 30} мин/приём</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Date + Time */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>Дата <span className="text-red-400">*</span></label>
-              <input
-                type="date"
-                className={inputCls}
-                value={form.date}
-                onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
-                required
-              />
-            </div>
-            <div>
-              <label className={labelCls}>Время <span className="text-red-400">*</span></label>
-              <input
-                type="time"
-                className={inputCls}
-                value={form.time_start}
-                onChange={e => setForm(f => ({ ...f, time_start: e.target.value }))}
-                step="900"
-                required
-              />
-            </div>
-          </div>
-
-          {selectedDoctor && (
-            <p className="text-xs text-gray-400 -mt-2">
-              ⏱ {duration} мин · конец в {calcEnd(form.time_start, duration)}
-            </p>
-          )}
-
-          {/* Notes */}
+          {/* ── 3. DATE + TIME SLOT ── */}
           <div>
-            <label className={labelCls}>Заметка</label>
-            <textarea
-              className={inputCls + ' resize-none'}
-              placeholder="Причина обращения..."
-              rows={2}
-              value={form.notes}
-              onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-            />
+            <label className={labelCls}>Дата <span className="text-red-400">*</span></label>
+            <input type="date" className={inputCls} value={form.date} required
+              onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
           </div>
 
-          {/* Walk-in */}
-          <label className="flex items-center gap-3 cursor-pointer">
-            <div
-              onClick={() => setForm(f => ({ ...f, is_walkin: !f.is_walkin }))}
-              className={[
-                'w-10 h-5 rounded-full transition-colors relative flex-shrink-0',
-                form.is_walkin ? 'bg-blue-600' : 'bg-gray-200',
-              ].join(' ')}
-            >
-              <span className={[
-                'absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform',
-                form.is_walkin ? 'translate-x-5' : 'translate-x-0.5',
-              ].join(' ')} />
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className={labelCls + ' mb-0'}>Время <span className="text-red-400">*</span></label>
+              {selectedDoctor && form.time_start && (
+                <span className="text-xs text-gray-400">
+                  ⏱ {duration} мин · до {calcEnd(form.time_start, duration)}
+                </span>
+              )}
             </div>
-            <span className="text-sm text-gray-700">Walk-in (без записи заранее)</span>
+            {/* Visual slot grid */}
+            <div className="grid grid-cols-6 gap-1.5">
+              {ALL_SLOTS.map(slot => {
+                const taken   = takenSlots.includes(slot)
+                const selected = form.time_start === slot
+                return (
+                  <button
+                    key={slot} type="button"
+                    disabled={taken}
+                    onClick={() => setForm(f => ({ ...f, time_start: slot }))}
+                    className={[
+                      'py-1.5 rounded-lg text-xs font-medium transition-colors',
+                      taken    ? 'bg-red-100 text-red-400 cursor-not-allowed line-through'
+                      : selected ? 'bg-blue-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-blue-100 hover:text-blue-700',
+                    ].join(' ')}
+                  >
+                    {slot}
+                  </button>
+                )
+              })}
+            </div>
+            {takenSlots.length > 0 && (
+              <p className="text-xs text-gray-400 mt-1.5">🔴 — занято</p>
+            )}
+          </div>
+
+          {/* ── 4. NOTES + WALK-IN ── */}
+          <div>
+            <label className={labelCls}>Причина обращения</label>
+            <textarea className={inputCls + ' resize-none'} rows={2}
+              placeholder="Первичный приём / боль в спине / контроль..."
+              value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+          </div>
+
+          <label className="flex items-center gap-3 cursor-pointer">
+            <div onClick={() => setForm(f => ({ ...f, is_walkin: !f.is_walkin }))}
+              className={['w-10 h-5 rounded-full transition-colors relative flex-shrink-0',
+                form.is_walkin ? 'bg-blue-600' : 'bg-gray-200'].join(' ')}>
+              <span className={['absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform',
+                form.is_walkin ? 'translate-x-5' : 'translate-x-0.5'].join(' ')} />
+            </div>
+            <span className="text-sm text-gray-700">Walk-in (пришёл без предварительной записи)</span>
           </label>
 
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
-              {error}
-            </p>
+            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">{error}</p>
           )}
-
-          <div className="flex gap-3 pt-1">
-            <button
-              type="button" onClick={onClose} disabled={saving}
-              className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50"
-            >
-              Отмена
-            </button>
-            <button
-              type="submit" disabled={saving}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium"
-            >
-              {saving ? 'Сохранение...' : 'Создать запись'}
-            </button>
-          </div>
         </form>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-100 flex gap-3 flex-shrink-0">
+          <button type="button" onClick={onClose} disabled={saving}
+            className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50">
+            Отмена
+          </button>
+          <button
+            type="button"
+            disabled={saving || !selectedPatient || !form.doctor_id || doctorsLoading}
+            onClick={(e) => handleSubmit(e as unknown as React.FormEvent)}
+            className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            {saving ? 'Сохранение...' : 'Создать запись'}
+          </button>
+        </div>
       </div>
     </div>
   )
