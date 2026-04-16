@@ -140,6 +140,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     notes: '',
     is_walkin: false,
   })
+  const [customDuration, setCustomDuration] = useState<number | null>(null) // null = use doctor default
   const [takenSlots, setTakenSlots]   = useState<string[]>([])
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
@@ -300,7 +301,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
 
   /* ── helpers ── */
   const selectedDoctor = doctors.find(d => d.id === form.doctor_id)
-  const duration = selectedDoctor?.consultation_duration ?? 30
+  const duration = customDuration ?? selectedDoctor?.consultation_duration ?? 30
 
   const calcEnd = (start: string, min: number) => {
     const [h, m] = start.split(':').map(Number)
@@ -481,13 +482,23 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
                     <label className="text-xs font-medium text-gray-600 block mb-1">Телефон</label>
                     <input className={inputCls} placeholder="+7 700 000 0000"
                       value={newPat.phone}
+                      maxLength={15}
                       onChange={e => {
-                        const val = e.target.value
-                        if (!val.startsWith('+7 7')) return
-                        setNewPat(p => ({ ...p, phone: val }))
+                        const raw = e.target.value
+                        // Extract only digits after "+7 "
+                        if (!raw.startsWith('+7 ')) return
+                        const digits = raw.slice(3).replace(/\D/g, '').slice(0, 10)
+                        // Format: 7XX XXX XXXX
+                        let formatted = '+7 '
+                        if (digits.length === 0) { formatted = '+7 7'; setNewPat(p => ({ ...p, phone: formatted })); return }
+                        formatted += digits.slice(0, 1)
+                        if (digits.length > 1) formatted += digits.slice(1, 3)
+                        if (digits.length > 3) formatted += ' ' + digits.slice(3, 6)
+                        if (digits.length > 6) formatted += ' ' + digits.slice(6, 10)
+                        setNewPat(p => ({ ...p, phone: formatted }))
                       }}
                       onFocus={e => {
-                        if (!newPat.phone) setNewPat(p => ({ ...p, phone: '+7 7' }))
+                        if (!newPat.phone || newPat.phone === '+7 ') setNewPat(p => ({ ...p, phone: '+7 7' }))
                         setTimeout(() => e.target.setSelectionRange(e.target.value.length, e.target.value.length), 0)
                       }} />
                   </div>
@@ -570,16 +581,29 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className={labelCls + ' mb-0'}>Время <span className="text-red-400">*</span></label>
-              <div className="flex items-center gap-2">
-                {selectedDoctor && form.time_start && (
-                  <span className="text-xs text-gray-400">
-                    ⏱ {duration} мин · до {calcEnd(form.time_start, duration)}
-                  </span>
-                )}
-                <span className="text-xs text-gray-300">
-                  {workStart}–{workEnd}
+              <span className="text-xs text-gray-300">{workStart}–{workEnd}</span>
+            </div>
+
+            {/* Duration selector */}
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="text-xs text-gray-400 flex-shrink-0">Длительность:</span>
+              {[15, 30, 45, 60, 90, 120].map(min => (
+                <button key={min} type="button"
+                  onClick={() => setCustomDuration(min === (selectedDoctor?.consultation_duration ?? 30) && customDuration === null ? null : min)}
+                  className={[
+                    'px-2 py-0.5 rounded-md text-xs font-medium transition-colors flex-shrink-0',
+                    duration === min
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
+                  ].join(' ')}>
+                  {min < 60 ? `${min}м` : min === 60 ? '1ч' : `${min / 60}ч`}
+                </button>
+              ))}
+              {form.time_start && (
+                <span className="text-xs text-gray-400 ml-auto flex-shrink-0">
+                  до {calcEnd(form.time_start, duration)}
                 </span>
-              </div>
+              )}
             </div>
 
             {/* Day-off warning */}
