@@ -100,6 +100,121 @@ function TimeGrid({ appointments, onCardClick }: {
   )
 }
 
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function getDatesForSpan(anchorDate: string, spanDays: 1 | 5 | 7): string[] {
+  if (spanDays === 1) return [anchorDate]
+  const d = new Date(anchorDate + 'T12:00:00')
+  const dow = d.getDay() // 0=Sun
+  const monday = new Date(d)
+  monday.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1))
+  return Array.from({ length: spanDays }, (_, i) => {
+    const day = new Date(monday)
+    day.setDate(monday.getDate() + i)
+    return day.toISOString().slice(0, 10)
+  })
+}
+
+// ─── MultiDayGrid ─────────────────────────────────────────────────────────────
+
+function MultiDayGrid({ dates, appointments, onCardClick }: {
+  dates: string[]
+  appointments: Appointment[]
+  onCardClick: (a: Appointment) => void
+}) {
+  const HOUR_HEIGHT = 56
+  const START_HOUR  = 8
+  const END_HOUR    = 20
+  const hours = Array.from({ length: END_HOUR - START_HOUR }, (_, i) => START_HOUR + i)
+  const startMinutes = START_HOUR * 60
+  const today = new Date().toISOString().slice(0, 10)
+  const DAY_RU = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб']
+
+  function toMin(t: string) {
+    const [h, m] = t.slice(0, 5).split(':').map(Number)
+    return (h ?? 0) * 60 + (m ?? 0)
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+      {/* Day header row */}
+      <div className="flex border-b border-gray-100 sticky top-0 bg-white z-10">
+        <div className="w-14 flex-shrink-0 border-r border-gray-100" />
+        {dates.map(d => {
+          const obj = new Date(d + 'T12:00:00')
+          const isToday = d === today
+          return (
+            <div key={d} className={`flex-1 text-center py-2 border-l border-gray-100 ${isToday ? 'bg-blue-50' : ''}`}>
+              <p className={`text-[11px] font-medium uppercase tracking-wide ${isToday ? 'text-blue-500' : 'text-gray-400'}`}>
+                {DAY_RU[obj.getDay()]}
+              </p>
+              <p className={`text-sm font-bold ${isToday ? 'text-blue-700' : 'text-gray-800'}`}>
+                {obj.getDate()}
+              </p>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Time grid */}
+      <div className="flex overflow-y-auto" style={{ maxHeight: 640 }}>
+        {/* Time labels */}
+        <div className="w-14 flex-shrink-0 border-r border-gray-100">
+          {hours.map(h => (
+            <div key={h} style={{ height: HOUR_HEIGHT }}
+              className="flex items-start justify-end pr-2 pt-1 border-b border-gray-50">
+              <span className="text-[11px] text-gray-400 font-mono">{String(h).padStart(2, '0')}:00</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Day columns */}
+        {dates.map(d => {
+          const dayAppts = appointments.filter(a => a.date === d)
+          const isToday = d === today
+          return (
+            <div key={d} className={`flex-1 relative border-l border-gray-100 min-w-0 ${isToday ? 'bg-blue-50/20' : ''}`}
+              style={{ height: (END_HOUR - START_HOUR) * HOUR_HEIGHT }}>
+              {hours.map(h => (
+                <div key={h} className="absolute left-0 right-0 border-b border-gray-50"
+                  style={{ top: (h - START_HOUR) * HOUR_HEIGHT }} />
+              ))}
+              {hours.map(h => (
+                <div key={`${h}h`} className="absolute left-0 right-0 border-b border-dashed border-gray-50"
+                  style={{ top: (h - START_HOUR) * HOUR_HEIGHT + HOUR_HEIGHT / 2 }} />
+              ))}
+              {dayAppts.map(a => {
+                const startMin = toMin(a.time_start) - startMinutes
+                const dur = a.duration_min ?? 30
+                const topPx  = (startMin / 60) * HOUR_HEIGHT
+                const htPx   = Math.max((dur / 60) * HOUR_HEIGHT, 22)
+                const doc = a.doctor as { color?: string; last_name: string } | undefined
+                return (
+                  <div key={a.id} onClick={() => onCardClick(a)}
+                    className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5 cursor-pointer hover:brightness-95 transition-all overflow-hidden border-l-2 shadow-sm"
+                    style={{ top: topPx, height: htPx,
+                      backgroundColor: doc?.color ? `${doc.color}22` : '#eff6ff',
+                      borderLeftColor: doc?.color ?? '#3b82f6' }}>
+                    <p className="text-[11px] font-semibold text-gray-900 truncate leading-tight">
+                      {a.patient?.full_name ?? 'Walk-in'}
+                    </p>
+                    {htPx > 32 && (
+                      <p className="text-[10px] text-gray-500 truncate leading-tight">
+                        {a.time_start.slice(0, 5)}
+                        {doc ? ` · ${doc.last_name}` : ''}
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── CreateAppointmentModal ───────────────────────────────────────────────────
 
 type PatientMode = 'search' | 'new'
@@ -866,6 +981,7 @@ export default function SchedulePage() {
   const clinicId = profile?.clinic_id ?? ''
 
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [span, setSpan] = useState<1 | 5 | 7>(1)
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
@@ -873,29 +989,50 @@ export default function SchedulePage() {
   const [search, setSearch] = useState('')
   const [view, setView] = useState<'list' | 'grid'>('list')
 
+  const dates = getDatesForSpan(date, span)
+
   const load = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
+    const dateRange = getDatesForSpan(date, span)
+    let q = supabase
       .from('appointments')
       .select('*, patient:patients(id, full_name, phones), doctor:doctors(id, first_name, last_name, color)')
-      .eq('date', date)
       .neq('status', 'cancelled')
-      .order('time_start')
+      .order('date').order('time_start')
+
+    if (span === 1) {
+      q = q.eq('date', dateRange[0]!)
+    } else {
+      q = q.gte('date', dateRange[0]!).lte('date', dateRange[dateRange.length - 1]!)
+    }
+
+    const { data } = await q
     setAppointments((data ?? []) as Appointment[])
     setLoading(false)
-  }, [date])
+  }, [date, span])
 
   useEffect(() => { load() }, [load])
 
-  const shiftDate = (days: number) => {
+  const shiftDate = (dir: 1 | -1) => {
+    const step = span === 1 ? 1 : 7
     const d = new Date(date + 'T12:00:00')
-    d.setDate(d.getDate() + days)
+    d.setDate(d.getDate() + dir * step)
     setDate(d.toISOString().slice(0, 10))
   }
 
-  const dateLabel = new Date(date + 'T12:00:00').toLocaleDateString('ru-RU', {
-    weekday: 'long', day: 'numeric', month: 'long',
-  })
+  const dateLabel = (() => {
+    if (span === 1) {
+      return new Date(date + 'T12:00:00').toLocaleDateString('ru-RU', {
+        weekday: 'long', day: 'numeric', month: 'long',
+      })
+    }
+    const first = new Date(dates[0]! + 'T12:00:00')
+    const last  = new Date(dates[dates.length - 1]! + 'T12:00:00')
+    const sameMonth = first.getMonth() === last.getMonth()
+    const fmt = (d: Date, withMonth: boolean) =>
+      d.toLocaleDateString('ru-RU', { day: 'numeric', ...(withMonth ? { month: 'long' } : {}) })
+    return `${fmt(first, !sameMonth)} — ${fmt(last, true)}`
+  })()
 
   // Shared filter logic for both list and grid views
   const filteredAppts = appointments.filter(a => {
@@ -908,58 +1045,61 @@ export default function SchedulePage() {
   })
 
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className={span === 1 ? 'max-w-3xl mx-auto' : 'w-full'}>
       {/* Toolbar */}
-      <div className="flex items-center gap-2 mb-6 flex-wrap">
-        <button
-          onClick={() => shiftDate(-1)}
-          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500 text-lg leading-none"
-        >‹</button>
-        <div className="flex-1 text-center min-w-[200px]">
-          <input
-            type="date" value={date}
-            onChange={e => setDate(e.target.value)}
-            className="sr-only" id="sched-date"
-          />
-          <label
-            htmlFor="sched-date"
-            className="text-base font-semibold text-gray-900 capitalize cursor-pointer hover:text-blue-600"
-          >
-            {dateLabel}
-          </label>
-        </div>
-        <button
-          onClick={() => shiftDate(1)}
-          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500 text-lg leading-none"
-        >›</button>
-        <button
-          onClick={() => setDate(new Date().toISOString().slice(0, 10))}
-          className="text-sm text-blue-600 font-medium px-3 py-2 rounded-lg hover:bg-blue-50"
-        >
-          Сегодня
-        </button>
-        <span className="text-sm text-gray-400">{appointments.length} записей</span>
-
-        {/* View toggle */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {/* Span selector */}
         <div className="flex bg-gray-100 rounded-lg p-0.5">
-          {(['list', 'grid'] as const).map(v => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
+          {([1, 5, 7] as const).map(s => (
+            <button key={s} onClick={() => setSpan(s)}
               className={[
                 'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                view === v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
-              ].join(' ')}
-            >
-              {v === 'list' ? '☰ Список' : '⊞ Сетка'}
+                span === s ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+              ].join(' ')}>
+              {s === 1 ? '1 день' : s === 5 ? '5 дней' : '7 дней'}
             </button>
           ))}
         </div>
 
-        <button
-          onClick={() => setShowCreate(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5"
-        >
+        <button onClick={() => shiftDate(-1)}
+          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500 text-lg leading-none">‹</button>
+
+        <div className="flex-1 text-center min-w-[180px]">
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            className="sr-only" id="sched-date" />
+          <label htmlFor="sched-date"
+            className="text-sm font-semibold text-gray-900 capitalize cursor-pointer hover:text-blue-600">
+            {dateLabel}
+          </label>
+        </div>
+
+        <button onClick={() => shiftDate(1)}
+          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500 text-lg leading-none">›</button>
+
+        <button onClick={() => setDate(new Date().toISOString().slice(0, 10))}
+          className="text-sm text-blue-600 font-medium px-3 py-2 rounded-lg hover:bg-blue-50">
+          Сегодня
+        </button>
+
+        <span className="text-sm text-gray-400">{appointments.length} записей</span>
+
+        {/* View toggle — only for 1-day */}
+        {span === 1 && (
+          <div className="flex bg-gray-100 rounded-lg p-0.5">
+            {(['list', 'grid'] as const).map(v => (
+              <button key={v} onClick={() => setView(v)}
+                className={[
+                  'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                  view === v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}>
+                {v === 'list' ? '☰ Список' : '⊞ Сетка'}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <button onClick={() => setShowCreate(true)}
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5">
           <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
           </svg>
@@ -996,6 +1136,8 @@ export default function SchedulePage() {
         <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
           Загрузка...
         </div>
+      ) : span > 1 ? (
+        <MultiDayGrid dates={dates} appointments={filteredAppts} onCardClick={setSelected} />
       ) : appointments.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
           <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
