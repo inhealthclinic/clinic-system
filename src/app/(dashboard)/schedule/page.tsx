@@ -1311,17 +1311,27 @@ export default function SchedulePage() {
     <div className={span === 1 ? 'max-w-3xl mx-auto' : 'w-full'}>
       {/* Toolbar */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        {/* Span selector */}
+
+        {/* Combined view/span selector */}
         <div className="flex bg-gray-100 rounded-lg p-0.5">
-          {([1, 5, 7] as const).map(s => (
-            <button key={s} onClick={() => setSpan(s)}
-              className={[
-                'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                span === s ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
-              ].join(' ')}>
-              {s === 1 ? '1 день' : s === 5 ? '5 дней' : '7 дней'}
-            </button>
-          ))}
+          {[
+            { label: '☰ Список', s: 1 as const, v: 'list'  as const },
+            { label: '⊞ 1 день', s: 1 as const, v: 'grid'  as const },
+            { label: '5 дней',   s: 5 as const, v: 'grid'  as const },
+            { label: '7 дней',   s: 7 as const, v: 'grid'  as const },
+          ].map(opt => {
+            const active = span === opt.s && (opt.s > 1 || view === opt.v)
+            return (
+              <button key={opt.label}
+                onClick={() => { setSpan(opt.s); setView(opt.v) }}
+                className={[
+                  'px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
+                  active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+                ].join(' ')}>
+                {opt.label}
+              </button>
+            )
+          })}
         </div>
 
         <button onClick={() => shiftDate(-1)}
@@ -1345,21 +1355,6 @@ export default function SchedulePage() {
         </button>
 
         <span className="text-sm text-gray-400">{appointments.length} записей</span>
-
-        {/* View toggle — only for 1-day */}
-        {span === 1 && (
-          <div className="flex bg-gray-100 rounded-lg p-0.5">
-            {(['list', 'grid'] as const).map(v => (
-              <button key={v} onClick={() => setView(v)}
-                className={[
-                  'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                  view === v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
-                ].join(' ')}>
-                {v === 'list' ? '☰ Список' : '⊞ Сетка'}
-              </button>
-            ))}
-          </div>
-        )}
 
         <button onClick={() => setShowCreate(true)}
           className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5">
