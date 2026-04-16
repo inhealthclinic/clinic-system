@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Appointment, Doctor } from '@/types'
@@ -21,7 +22,9 @@ type DoctorRow = Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color' | 'con
 
 // ─── Appointment type presets ─────────────────────────────────────────────────
 
-const APPT_TYPES = [
+type ApptTypeItem = { key: string; label: string; color: string }
+
+const DEFAULT_APPT_TYPES: ApptTypeItem[] = [
   { key: 'consultation', label: 'Консультация', color: '#3b82f6' },
   { key: 'procedure',    label: 'Процедура',    color: '#8b5cf6' },
   { key: 'checkup',      label: 'Осмотр',       color: '#10b981' },
@@ -29,12 +32,44 @@ const APPT_TYPES = [
   { key: 'surgery',      label: 'Операция',      color: '#f59e0b' },
   { key: 'emergency',    label: 'Срочно',        color: '#ef4444' },
   { key: 'other',        label: 'Другое',        color: '#6b7280' },
-] as const
+]
+
+// Notes-meta encoding: prefix `[t:KEY|c:#HEX] real_notes`
+// Used to persist appointment type+color even when the dedicated DB columns
+// (color, appt_type) haven't been migrated yet.
+const NOTES_META_RE = /^\[t:([^|\]]*)(?:\|c:(#[0-9a-fA-F]{3,8}))?\]\s*/
+
+function parseNotesMeta(notes: string | null | undefined): { type: string | null; color: string | null; rest: string } {
+  if (!notes) return { type: null, color: null, rest: '' }
+  const m = notes.match(NOTES_META_RE)
+  if (!m) return { type: null, color: null, rest: notes }
+  return { type: m[1] || null, color: m[2] || null, rest: notes.replace(NOTES_META_RE, '') }
+}
+
+function formatNotesMeta(typeKey: string | null | undefined, color: string | null | undefined, rest: string): string | null {
+  const body = (rest ?? '').trim()
+  if (!typeKey && !color) return body || null
+  const t = typeKey ?? ''
+  const c = color ? `|c:${color}` : ''
+  const prefix = `[t:${t}${c}] `
+  return body ? prefix + body : prefix.trim()
+}
+
+function apptType(appt: Appointment): string | null {
+  if (appt.appt_type) return appt.appt_type
+  return parseNotesMeta(appt.notes).type
+}
 
 function apptColor(appt: Appointment): string {
   if (appt.color) return appt.color
+  const meta = parseNotesMeta(appt.notes)
+  if (meta.color) return meta.color
   const doc = appt.doctor as { color?: string } | undefined
   return doc?.color ?? '#3b82f6'
+}
+
+function apptDisplayNotes(appt: Appointment): string {
+  return parseNotesMeta(appt.notes).rest
 }
 
 // ─── TimeGrid ─────────────────────────────────────────────────────────────────
@@ -135,9 +170,10 @@ function getDatesForSpan(anchorDate: string, spanDays: 1 | 5 | 7): string[] {
 
 // ─── MultiDayGrid ─────────────────────────────────────────────────────────────
 
-function MultiDayGrid({ dates, appointments, onCardClick, onDayClick }: {
+function MultiDayGrid({ dates, appointments, birthdayCounts, onCardClick, onDayClick }: {
   dates: string[]
   appointments: Appointment[]
+  birthdayCounts?: Record<string, number>
   onCardClick: (a: Appointment) => void
   onDayClick?: (d: string) => void
 }) {
@@ -148,6 +184,8 @@ function MultiDayGrid({ dates, appointments, onCardClick, onDayClick }: {
   const startMinutes = START_HOUR * 60
   const today = new Date().toISOString().slice(0, 10)
   const DAY_RU = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб']
+  const nowObj = new Date()
+  const nowTop = ((nowObj.getHours() * 60 + nowObj.getMinutes() - startMinutes) / 60) * HOUR_HEIGHT
 
   function toMin(t: string) {
     const [h, m] = t.slice(0, 5).split(':').map(Number)
@@ -156,44 +194,33 @@ function MultiDayGrid({ dates, appointments, onCardClick, onDayClick }: {
 
   return (
     <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-      {/* Day header row */}
       <div className="flex border-b border-gray-100 sticky top-0 bg-white z-10">
         <div className="w-14 flex-shrink-0 border-r border-gray-100" />
         {dates.map(d => {
           const obj = new Date(d + 'T12:00:00')
           const isToday = d === today
+          const bdays = birthdayCounts?.[d] ?? 0
           return (
-            <div key={d}
-              onClick={() => onDayClick?.(d)}
-              className={[
-                'flex-1 text-center py-2 border-l border-gray-100 transition-colors',
+            <div key={d} onClick={() => onDayClick?.(d)}
+              className={['flex-1 text-center py-2 border-l border-gray-100 transition-colors',
                 onDayClick ? 'cursor-pointer hover:bg-blue-50' : '',
-                isToday ? 'bg-blue-50' : '',
-              ].join(' ')}>
-              <p className={`text-[11px] font-medium uppercase tracking-wide ${isToday ? 'text-blue-500' : 'text-gray-400'}`}>
-                {DAY_RU[obj.getDay()]}
-              </p>
-              <p className={`text-sm font-bold ${isToday ? 'text-blue-700' : 'text-gray-800'}`}>
-                {obj.getDate()}
-              </p>
+                isToday ? 'bg-blue-50' : ''].join(' ')}>
+              <p className={`text-[11px] font-medium uppercase tracking-wide ${isToday ? 'text-blue-500' : 'text-gray-400'}`}>{DAY_RU[obj.getDay()]}</p>
+              <p className={`text-sm font-bold ${isToday ? 'text-blue-700' : 'text-gray-800'}`}>{obj.getDate()}</p>
+              {bdays > 0 && <p className="text-[9px] text-pink-500 font-medium">🎂 {bdays}</p>}
             </div>
           )
         })}
       </div>
 
-      {/* Time grid */}
       <div className="flex overflow-y-auto" style={{ maxHeight: 640 }}>
-        {/* Time labels */}
         <div className="w-14 flex-shrink-0 border-r border-gray-100">
           {hours.map(h => (
-            <div key={h} style={{ height: HOUR_HEIGHT }}
-              className="flex items-start justify-end pr-2 pt-1 border-b border-gray-50">
+            <div key={h} style={{ height: HOUR_HEIGHT }} className="flex items-start justify-end pr-2 pt-1 border-b border-gray-50">
               <span className="text-[11px] text-gray-400 font-mono">{String(h).padStart(2, '0')}:00</span>
             </div>
           ))}
         </div>
-
-        {/* Day columns */}
         {dates.map(d => {
           const dayAppts = appointments.filter(a => a.date === d)
           const isToday = d === today
@@ -201,35 +228,166 @@ function MultiDayGrid({ dates, appointments, onCardClick, onDayClick }: {
             <div key={d} className={`flex-1 relative border-l border-gray-100 min-w-0 ${isToday ? 'bg-blue-50/20' : ''}`}
               style={{ height: (END_HOUR - START_HOUR) * HOUR_HEIGHT }}>
               {hours.map(h => (
-                <div key={h} className="absolute left-0 right-0 border-b border-gray-50"
-                  style={{ top: (h - START_HOUR) * HOUR_HEIGHT }} />
+                <div key={h} className="absolute left-0 right-0 border-b border-gray-50" style={{ top: (h - START_HOUR) * HOUR_HEIGHT }} />
               ))}
               {hours.map(h => (
-                <div key={`${h}h`} className="absolute left-0 right-0 border-b border-dashed border-gray-50"
-                  style={{ top: (h - START_HOUR) * HOUR_HEIGHT + HOUR_HEIGHT / 2 }} />
+                <div key={`${h}h`} className="absolute left-0 right-0 border-b border-dashed border-gray-50" style={{ top: (h - START_HOUR) * HOUR_HEIGHT + HOUR_HEIGHT / 2 }} />
               ))}
-              {dayAppts.map(a => {
-                const startMin = toMin(a.time_start) - startMinutes
-                const dur = a.duration_min ?? 30
-                const topPx  = (startMin / 60) * HOUR_HEIGHT
-                const htPx   = Math.max((dur / 60) * HOUR_HEIGHT, 22)
-                const doc = a.doctor as { color?: string; last_name: string } | undefined
-                const aColor = apptColor(a)
+              {isToday && nowTop >= 0 && nowTop <= (END_HOUR - START_HOUR) * HOUR_HEIGHT && (
+                <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: nowTop }}>
+                  <div className="h-0.5 bg-red-400"><div className="absolute -left-0.5 -top-1 w-2 h-2 rounded-full bg-red-400" /></div>
+                </div>
+              )}
+              {(() => {
+                // Lay out overlapping appts side-by-side in lanes
+                const sorted = [...dayAppts].sort((x, y) => toMin(x.time_start) - toMin(y.time_start))
+                const lanes: Appointment[][] = []
+                const positions = new Map<string, { lane: number; lanesTotal: number }>()
+                for (const a of sorted) {
+                  const aStart = toMin(a.time_start)
+                  const aEnd   = aStart + (a.duration_min ?? 30)
+                  let placed = false
+                  for (let i = 0; i < lanes.length; i++) {
+                    const last = lanes[i]![lanes[i]!.length - 1]!
+                    const lEnd = toMin(last.time_start) + (last.duration_min ?? 30)
+                    if (lEnd <= aStart) {
+                      lanes[i]!.push(a); positions.set(a.id, { lane: i, lanesTotal: 0 }); placed = true; break
+                    }
+                    void aEnd
+                  }
+                  if (!placed) { lanes.push([a]); positions.set(a.id, { lane: lanes.length - 1, lanesTotal: 0 }) }
+                }
+                // Compute lanesTotal per cluster (group of overlapping appts)
+                for (const a of sorted) {
+                  const aStart = toMin(a.time_start)
+                  const aEnd   = aStart + (a.duration_min ?? 30)
+                  let total = 1
+                  for (const b of sorted) {
+                    if (b.id === a.id) continue
+                    const bStart = toMin(b.time_start); const bEnd = bStart + (b.duration_min ?? 30)
+                    if (bStart < aEnd && bEnd > aStart) total = Math.max(total, (positions.get(b.id)?.lane ?? 0) + 1)
+                  }
+                  const cur = positions.get(a.id)!
+                  positions.set(a.id, { lane: cur.lane, lanesTotal: Math.max(total, cur.lane + 1) })
+                }
+
+                return dayAppts.map(a => {
+                  const startMin = toMin(a.time_start) - startMinutes
+                  const dur = a.duration_min ?? 30
+                  const topPx = (startMin / 60) * HOUR_HEIGHT
+                  const htPx  = Math.max((dur / 60) * HOUR_HEIGHT, 22)
+                  const doc = a.doctor as { color?: string; last_name: string } | undefined
+                  const aColor = apptColor(a)
+                  const pos = positions.get(a.id) ?? { lane: 0, lanesTotal: 1 }
+                  const widthPct = 100 / Math.max(pos.lanesTotal, 1)
+                  const leftPct  = pos.lane * widthPct
+                  return (
+                    <div key={a.id} onClick={() => onCardClick(a)}
+                      className="absolute rounded-md px-1.5 py-0.5 cursor-pointer hover:brightness-110 transition-all overflow-hidden shadow-sm"
+                      style={{
+                        top: topPx, height: htPx,
+                        left: `calc(${leftPct}% + 2px)`, width: `calc(${widthPct}% - 4px)`,
+                        backgroundColor: aColor, color: '#fff',
+                      }}>
+                      <p className="text-[11px] font-semibold truncate leading-tight" style={{ color: '#fff' }}>{a.patient?.full_name ?? 'Walk-in'}</p>
+                      {htPx > 32 && (
+                        <p className="text-[10px] truncate leading-tight" style={{ color: 'rgba(255,255,255,0.85)' }}>
+                          {a.time_start.slice(0, 5)}{doc ? ` · ${doc.last_name}` : ''}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })
+              })()}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── DoctorDayGrid ────────────────────────────────────────────────────────────
+
+function DoctorDayGrid({ date, doctors, appointments, birthdayCount, onCardClick, onSlotClick }: {
+  date: string; doctors: DoctorRow[]; appointments: Appointment[]
+  birthdayCount?: number; onCardClick: (a: Appointment) => void
+  onSlotClick: (doctorId: string, time: string) => void
+}) {
+  const H = 60, S = 8, E = 20
+  const hours = Array.from({ length: E - S }, (_, i) => S + i)
+  const startMin = S * 60
+  const isToday = date === new Date().toISOString().slice(0, 10)
+  const nowObj = new Date()
+  const nowTop = ((nowObj.getHours() * 60 + nowObj.getMinutes() - startMin) / 60) * H
+  const DAY_RU = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб']
+  const dateObj = new Date(date + 'T12:00:00')
+
+  const handleColClick = (e: React.MouseEvent<HTMLDivElement>, doctorId: string) => {
+    if ((e.target as HTMLElement).closest('[data-appt]')) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const mins = Math.round(((y / H) * 60 + startMin) / 15) * 15
+    const hh = Math.floor(mins / 60), mm = mins % 60
+    if (hh >= S && hh < E) onSlotClick(doctorId, `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`)
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+      <div className={`flex items-center justify-between px-4 py-2.5 border-b border-gray-100 ${isToday ? 'bg-blue-50' : 'bg-gray-50'}`}>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-semibold uppercase tracking-wide ${isToday ? 'text-blue-500' : 'text-gray-400'}`}>{DAY_RU[dateObj.getDay()]}</span>
+          <span className={`text-lg font-bold ${isToday ? 'text-blue-700' : 'text-gray-800'}`}>{dateObj.getDate()}</span>
+          <span className="text-xs text-gray-400">{dateObj.toLocaleDateString('ru-RU', { month: 'long' })}</span>
+        </div>
+        {(birthdayCount ?? 0) > 0 && <span className="text-xs text-pink-600 font-medium bg-pink-50 px-2.5 py-1 rounded-full">🎂 {birthdayCount} дн. рождения</span>}
+      </div>
+      <div className="flex border-b border-gray-100 sticky top-0 bg-white z-10">
+        <div className="w-14 flex-shrink-0 border-r border-gray-100" />
+        {doctors.map(d => {
+          const cnt = appointments.filter(a => a.doctor_id === d.id).length
+          return (
+            <div key={d.id} className="flex-1 min-w-[130px] py-2 px-2 border-l border-gray-100 text-center">
+              <div className="flex items-center justify-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full" style={{ background: d.color ?? '#9ca3af' }} />
+                <p className="text-xs font-semibold text-gray-800 truncate">{d.last_name} {d.first_name.charAt(0)}.</p>
+              </div>
+              <span className={`text-[10px] ${cnt > 0 ? 'text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded-full' : 'text-gray-300'}`}>{cnt > 0 ? `${cnt} зап.` : 'свободен'}</span>
+            </div>
+          )
+        })}
+      </div>
+      <div className="flex overflow-x-auto overflow-y-auto" style={{ maxHeight: 620 }}>
+        <div className="w-14 flex-shrink-0 border-r border-gray-100">
+          {hours.map(h => (
+            <div key={h} style={{ height: H }} className="flex items-start justify-end pr-2 pt-1 border-b border-gray-50">
+              <span className="text-[11px] text-gray-400 font-mono">{String(h).padStart(2,'0')}:00</span>
+            </div>
+          ))}
+        </div>
+        {doctors.map(d => {
+          const docAppts = appointments.filter(a => a.doctor_id === d.id)
+          return (
+            <div key={d.id} className="flex-1 min-w-[130px] relative border-l border-gray-100 cursor-pointer hover:bg-gray-50/40"
+              style={{ height: (E - S) * H }} onClick={e => handleColClick(e, d.id)}>
+              {hours.map(h => <div key={h} className="absolute left-0 right-0 border-b border-gray-50 pointer-events-none" style={{ top: (h - S) * H }} />)}
+              {hours.map(h => <div key={`${h}h`} className="absolute left-0 right-0 border-b border-dashed border-gray-50 pointer-events-none" style={{ top: (h - S) * H + H / 2 }} />)}
+              {isToday && nowTop >= 0 && nowTop <= (E - S) * H && (
+                <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: nowTop }}>
+                  <div className="h-0.5 bg-red-400"><div className="absolute -left-0.5 -top-1 w-2 h-2 rounded-full bg-red-400" /></div>
+                </div>
+              )}
+              {docAppts.map(a => {
+                const top = ((a.time_start.slice(0,5).split(':').reduce((h,m,i)=>i===0?+h*60:+h+ +m,0 as unknown as number) - startMin) / 60) * H
+                const ht = Math.max(((a.duration_min ?? 30) / 60) * H, 24)
+                const color = apptColor(a)
                 return (
-                  <div key={a.id} onClick={() => onCardClick(a)}
-                    className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5 cursor-pointer hover:brightness-95 transition-all overflow-hidden border-l-2 shadow-sm"
-                    style={{ top: topPx, height: htPx,
-                      backgroundColor: `${aColor}22`,
-                      borderLeftColor: aColor }}>
-                    <p className="text-[11px] font-semibold text-gray-900 truncate leading-tight">
-                      {a.patient?.full_name ?? 'Walk-in'}
-                    </p>
-                    {htPx > 32 && (
-                      <p className="text-[10px] text-gray-500 truncate leading-tight">
-                        {a.time_start.slice(0, 5)}
-                        {doc ? ` · ${doc.last_name}` : ''}
-                      </p>
-                    )}
+                  <div key={a.id} data-appt="1" onClick={e => { e.stopPropagation(); onCardClick(a) }}
+                    className="absolute left-0.5 right-0.5 rounded-lg px-1.5 py-1 cursor-pointer hover:brightness-110 overflow-hidden shadow-sm z-10"
+                    style={{ top, height: ht, backgroundColor: color, color: '#fff' }}>
+                    <p className="text-[11px] font-semibold truncate leading-tight" style={{ color: '#fff' }}>{a.patient?.full_name ?? 'Walk-in'}</p>
+                    {ht > 28 && <p className="text-[10px] truncate" style={{ color: 'rgba(255,255,255,0.85)' }}>{a.time_start.slice(0,5)}–{a.time_end.slice(0,5)}</p>}
+                    {ht > 46 && a.patient?.phones?.[0] && <p className="text-[10px] truncate" style={{ color: 'rgba(255,255,255,0.7)' }}>{a.patient.phones[0]}</p>}
                   </div>
                 )
               })}
@@ -241,13 +399,125 @@ function MultiDayGrid({ dates, appointments, onCardClick, onDayClick }: {
   )
 }
 
+// ─── ListView ─────────────────────────────────────────────────────────────────
+// List of appointments grouped by day. Works for any span (1/5/7).
+
+function ListView({ dates, appointments, onClick }: {
+  dates: string[]
+  appointments: Appointment[]
+  onClick: (a: Appointment) => void
+}) {
+  const today = new Date().toISOString().slice(0, 10)
+  const DAY_RU = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота']
+  const dayLabel = (d: string) => {
+    const obj = new Date(d + 'T12:00:00')
+    return `${DAY_RU[obj.getDay()]}, ${obj.getDate()} ${obj.toLocaleDateString('ru-RU', { month: 'long' })}`
+  }
+
+  return (
+    <div className="space-y-4">
+      {dates.map(d => {
+        const dayAppts = appointments.filter(a => a.date === d).sort((x, y) => x.time_start.localeCompare(y.time_start))
+        const isToday = d === today
+        return (
+          <div key={d} className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+            <div className={`px-5 py-2.5 border-b border-gray-100 flex items-center justify-between ${isToday ? 'bg-blue-50' : 'bg-gray-50'}`}>
+              <p className={`text-sm font-semibold capitalize ${isToday ? 'text-blue-700' : 'text-gray-700'}`}>
+                {dayLabel(d)}{isToday && <span className="ml-2 text-xs font-medium text-blue-500">· сегодня</span>}
+              </p>
+              <span className="text-xs text-gray-400">{dayAppts.length} зап.</span>
+            </div>
+            {dayAppts.length === 0 ? (
+              <p className="px-5 py-6 text-center text-sm text-gray-300">Записей нет</p>
+            ) : (
+              <div className="divide-y divide-gray-50">
+                {dayAppts.map(a => {
+                  const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
+                  const doctor = a.doctor as { last_name: string; first_name: string; color: string } | undefined
+                  return (
+                    <div key={a.id} onClick={() => onClick(a)}
+                      className="flex items-center gap-4 px-5 py-3.5 hover:bg-gray-50 transition-colors cursor-pointer">
+                      <div className="w-20 flex-shrink-0">
+                        <p className="text-sm font-mono text-gray-700">{a.time_start.slice(0, 5)}</p>
+                        <p className="text-xs text-gray-300">{a.time_end.slice(0, 5)}</p>
+                      </div>
+                      <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: apptColor(a) }} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">{a.patient?.full_name ?? 'Walk-in'}</p>
+                        <p className="text-xs text-gray-400">
+                          {doctor ? `${doctor.last_name} ${doctor.first_name}` : ''}
+                          {a.is_walkin && <span className="ml-2 text-orange-400">walk-in</span>}
+                        </p>
+                      </div>
+                      <span className={`text-xs font-medium px-2.5 py-1 rounded-full border flex-shrink-0 ${st.cls}`}>
+                        {st.label}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── ScheduleSidebar ──────────────────────────────────────────────────────────
+
+function ScheduleSidebar({ doctors, visibleIds, onToggle, counts, birthdayCount }: {
+  doctors: DoctorRow[]; visibleIds: Set<string>
+  onToggle: (id: string) => void; counts: Record<string, number>; birthdayCount: number
+}) {
+  const allVisible = doctors.every(d => visibleIds.has(d.id))
+  return (
+    <aside className="w-52 flex-shrink-0 self-start sticky top-4">
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        {birthdayCount > 0 && (
+          <div className="px-4 py-2.5 border-b border-gray-100 bg-pink-50">
+            <p className="text-xs text-pink-600 font-medium">🎂 Дней рождения: {birthdayCount}</p>
+          </div>
+        )}
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Врачи</p>
+            <button onClick={() => doctors.forEach(d => { if (allVisible || !visibleIds.has(d.id)) onToggle(d.id) })}
+              className="text-[10px] text-blue-500 hover:text-blue-700 font-medium">
+              {allVisible ? 'скрыть все' : 'показать все'}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {doctors.map(d => {
+              const on = visibleIds.has(d.id)
+              return (
+                <label key={d.id} className="flex items-center gap-2.5 cursor-pointer">
+                  <div onClick={() => onToggle(d.id)}
+                    className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${on ? 'border-transparent' : 'border-gray-300 bg-white'}`}
+                    style={on ? { backgroundColor: d.color ?? '#3b82f6', borderColor: d.color ?? '#3b82f6' } : {}}>
+                    {on && <svg width="9" height="9" fill="none" viewBox="0 0 12 12"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </div>
+                  <p className={`text-xs truncate flex-1 ${on ? 'font-medium text-gray-800' : 'text-gray-400'}`}>{d.last_name} {d.first_name.charAt(0)}.</p>
+                  {(counts[d.id] ?? 0) > 0 && <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">{counts[d.id]}</span>}
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 // ─── CreateAppointmentModal ───────────────────────────────────────────────────
 
 type PatientMode = 'search' | 'new'
 
-function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
+function CreateAppointmentModal({ clinicId, defaultDate, defaultDoctorId, defaultTime, onClose, onCreated }: {
   clinicId: string
   defaultDate: string
+  defaultDoctorId?: string
+  defaultTime?: string
   onClose: () => void
   onCreated: () => void
 }) {
@@ -273,16 +543,19 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   const [newPatSaving, setNewPatSaving] = useState(false)
   const [newPatError, setNewPatError]   = useState('')
 
+  /* ── appointment types from clinic settings ── */
+  const [apptTypes, setApptTypes] = useState<ApptTypeItem[]>(DEFAULT_APPT_TYPES)
+
   /* ── booking form ── */
   const [form, setForm] = useState({
-    doctor_id: '',
+    doctor_id: defaultDoctorId ?? '',
     date: defaultDate,
-    time_start: '09:00',
+    time_start: defaultTime ?? '09:00',
     notes: '',
     is_walkin: false,
   })
-  const [apptType, setApptType] = useState<string>(APPT_TYPES[0].key)
-  const [apptColor, setApptColor] = useState<string>(APPT_TYPES[0].color)
+  const [apptType, setApptType] = useState<string>(DEFAULT_APPT_TYPES[0].key)
+  const [apptColor, setApptColor] = useState<string>(DEFAULT_APPT_TYPES[0].color)
   const [customDuration, setCustomDuration] = useState<number | null>(null) // null = use doctor default
   const [takenSlots, setTakenSlots]   = useState<string[]>([])
   const [saving, setSaving]           = useState(false)
@@ -311,7 +584,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
         if (err) { setDocErr(err.message); return }
         const list = data ?? []
         setDoctors(list)
-        if (list[0]) setForm(f => ({ ...f, doctor_id: list[0].id }))
+        if (list[0] && !defaultDoctorId) setForm(f => ({ ...f, doctor_id: list[0].id }))
       })
   }, [])
 
@@ -325,12 +598,14 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
       .single()
       .then(({ data }) => {
         const wh = data?.settings?.working_hours
-        if (!wh) return
-        // map day of week from date
+        // Load custom appointment types
+        const savedTypes = data?.settings?.appt_types as ApptTypeItem[] | undefined
+        if (savedTypes?.length) { setApptTypes(savedTypes); setApptType(savedTypes[0].key); setApptColor(savedTypes[0].color) }
         // Read slot interval
         if (data?.settings?.slot_interval_min) {
           setSlotInterval(data.settings.slot_interval_min as number)
         }
+        if (!wh) return
         const applyDay = (dateStr: string) => {
           const dayIdx = new Date(dateStr + 'T12:00:00').getDay() // 0=Sun
           const KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
@@ -474,53 +749,51 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   /* ── submit ── */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedPatient) { setError('Выберите или зарегистрируйте пациента'); return }
-    if (!form.doctor_id)  { setError('Выберите врача'); return }
+    if (!form.doctor_id) { setError('Выберите врача'); return }
     setError(''); setSaving(true)
 
-    const timeEnd = calcEnd(form.time_start, duration)
-    const timeEndCheck = timeEnd + ':00'
-
-    /* conflict check */
-    const { data: conflicts } = await supabase
-      .from('appointments').select('id')
-      .eq('doctor_id', form.doctor_id).eq('date', form.date)
-      .not('status', 'in', '(cancelled,no_show,rescheduled)')
-      .lt('time_start', timeEndCheck)
-      .gt('time_end', form.time_start + ':00')
-
-    if (conflicts && conflicts.length > 0) {
-      setError(`Конфликт: у врача уже есть запись в ${form.time_start}`)
-      setSaving(false); return
+    // Auto-register new patient if needed
+    let patientId = selectedPatient?.id ?? null
+    if (!patientId) {
+      if (patientMode !== 'new' || !newPat.full_name.trim()) { setError('Укажите пациента'); setSaving(false); return }
+      const { data: pat, error: pErr } = await supabase.from('patients').insert({
+        clinic_id: clinicId, full_name: newPat.full_name.trim(),
+        phones: newPat.phone.replace(/\D/g,'').length > 3 ? [newPat.phone.trim()] : [],
+        gender: newPat.gender, birth_date: newPat.birth_date || null,
+        status: 'new', is_vip: false, balance_amount: 0, debt_amount: 0, tags: [],
+      }).select('id, full_name, phones').single()
+      if (pErr || !pat) { setError(pErr?.message ?? 'Ошибка создания пациента'); setSaving(false); return }
+      patientId = pat.id
+      setSelectedPatient({ id: pat.id, full_name: pat.full_name, phone: pat.phones?.[0] ?? '' })
     }
 
-    const { data: appt, error: err } = await supabase.from('appointments').insert({
-      clinic_id: clinicId,
-      patient_id: selectedPatient.id,
-      doctor_id: form.doctor_id,
-      date: form.date,
-      time_start: form.time_start + ':00',
-      time_end: timeEnd + ':00',
-      duration_min: duration,
-      status: 'pending',
-      is_walkin: form.is_walkin,
-      source: 'admin',
-      notes: form.notes.trim() || null,
-      color: apptColor,
-      appt_type: apptType,
-    }).select('id').single()
+    const timeEnd = calcEnd(form.time_start, duration)
+    const { data: conflicts } = await supabase.from('appointments').select('id')
+      .eq('doctor_id', form.doctor_id).eq('date', form.date)
+      .not('status', 'in', '(cancelled,no_show,rescheduled)')
+      .lt('time_start', timeEnd + ':00').gt('time_end', form.time_start + ':00')
+    if (conflicts && conflicts.length > 0) { setError(`Конфликт: уже есть запись в ${form.time_start}`); setSaving(false); return }
 
+    // Encode type+color into notes prefix as a fallback (works without DB migration)
+    const notesWithMeta = formatNotesMeta(apptType, apptColor, form.notes.trim())
+    let insertData: Record<string, unknown> = {
+      clinic_id: clinicId, patient_id: patientId, doctor_id: form.doctor_id,
+      date: form.date, time_start: form.time_start + ':00', time_end: timeEnd + ':00',
+      duration_min: duration, status: 'pending', is_walkin: form.is_walkin,
+      source: 'admin', notes: notesWithMeta, color: apptColor, appt_type: apptType,
+    }
+    let { data: appt, error: err } = await supabase.from('appointments').insert(insertData).select('id').single()
+    if (err?.message?.includes('appt_type') || err?.message?.includes('color')) {
+      const { appt_type: _a, color: _c, ...basic } = insertData; void _a; void _c; insertData = basic
+      const r2 = await supabase.from('appointments').insert(insertData).select('id').single()
+      appt = r2.data; err = r2.error
+    }
     if (err || !appt) { setError(err?.message ?? 'Ошибка'); setSaving(false); return }
 
-    /* auto-create open visit */
     await supabase.from('visits').insert({
-      clinic_id: clinicId,
-      patient_id: selectedPatient.id,
-      doctor_id: form.doctor_id,
-      appointment_id: appt.id,
-      status: 'open',
+      clinic_id: clinicId, patient_id: patientId,
+      doctor_id: form.doctor_id, appointment_id: appt.id, status: 'open',
     })
-
     onCreated(); onClose()
   }
 
@@ -670,11 +943,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
                     onChange={e => setNewPat(p => ({ ...p, birth_date: e.target.value }))} />
                 </div>
                 {newPatError && <p className="text-xs text-red-600">{newPatError}</p>}
-                <button type="button" onClick={registerNewPatient}
-                  disabled={newPatSaving || !newPat.full_name.trim()}
-                  className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
-                  {newPatSaving ? 'Создание...' : '✓ Зарегистрировать и продолжить'}
-                </button>
+                <p className="text-xs text-gray-400">Пациент создастся автоматически при нажатии «Создать запись»</p>
               </div>
             )}
           </div>
@@ -795,7 +1064,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
           <div>
             <label className={labelCls}>Тип приёма</label>
             <div className="flex flex-wrap gap-1.5 mb-2">
-              {APPT_TYPES.map(t => (
+              {apptTypes.map(t => (
                 <button key={t.key} type="button"
                   onClick={() => { setApptType(t.key); setApptColor(t.color) }}
                   className={[
@@ -852,7 +1121,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
           </button>
           <button
             type="button"
-            disabled={saving || !selectedPatient || !form.doctor_id || doctorsLoading}
+            disabled={saving || !form.doctor_id || doctorsLoading || (patientMode === 'new' ? !newPat.full_name.trim() : !selectedPatient)}
             onClick={(e) => handleSubmit(e as unknown as React.FormEvent)}
             className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
             {saving ? 'Сохранение...' : 'Создать запись'}
@@ -901,7 +1170,7 @@ function printAppointmentSlip(appt: Appointment) {
   <div class="row"><span class="lbl2">Врач</span><span>${doctor ? `${doctor.last_name} ${doctor.first_name}` : '—'}</span></div>
   <div class="row"><span class="lbl2">Длительность</span><span>${appt.duration_min ?? 30} мин</span></div>
   ${patient?.phones?.[0] ? `<div class="row"><span class="lbl2">Телефон</span><span>${patient.phones[0]}</span></div>` : ''}
-  ${appt.notes ? `<div class="row"><span class="lbl2">Примечание</span><span style="max-width:180px;text-align:right">${appt.notes}</span></div>` : ''}
+  ${apptDisplayNotes(appt) ? `<div class="row"><span class="lbl2">Примечание</span><span style="max-width:180px;text-align:right">${apptDisplayNotes(appt)}</span></div>` : ''}
   <div class="status">Статус: ${statusRu}</div>
   <div class="foot">IN HEALTH · Распечатано: ${new Date().toLocaleString('ru-RU')}</div>
   <script>window.onload=()=>{window.print()}</script>
@@ -926,7 +1195,7 @@ function RescheduleModal({ appt, clinicId, mode, onClose, onDone }: {
   const [date, setDate]           = useState(tomorrow)
   const [timeStart, setTimeStart] = useState(appt.time_start.slice(0, 5))
   const [dur, setDur]             = useState(appt.duration_min ?? 30)
-  const [notes, setNotes]         = useState(appt.notes ?? '')
+  const [notes, setNotes]         = useState(apptDisplayNotes(appt))
   const [workStart, setWorkStart] = useState('08:00')
   const [workEnd, setWorkEnd]     = useState('20:00')
   const [workDayOff, setWorkDayOff] = useState(false)
@@ -994,6 +1263,10 @@ function RescheduleModal({ appt, clinicId, mode, onClose, onDone }: {
     setSaving(true); setError('')
     const timeEndStr = calcEnd(timeStart, dur)
 
+    // Preserve type+color meta when moving/copying
+    const existingMeta = parseNotesMeta(appt.notes)
+    const notesWithMeta = formatNotesMeta(existingMeta.type ?? appt.appt_type, existingMeta.color ?? appt.color, notes.trim())
+
     if (mode === 'move') {
       // update existing appointment in-place
       const { error: err } = await supabase.from('appointments').update({
@@ -1002,7 +1275,7 @@ function RescheduleModal({ appt, clinicId, mode, onClose, onDone }: {
         time_start: timeStart + ':00',
         time_end:   timeEndStr + ':00',
         duration_min: dur,
-        notes: notes.trim() || null,
+        notes: notesWithMeta,
         status: 'pending',
       }).eq('id', appt.id)
       if (err) { setError(err.message); setSaving(false); return }
@@ -1016,7 +1289,7 @@ function RescheduleModal({ appt, clinicId, mode, onClose, onDone }: {
         time_start:  timeStart + ':00',
         time_end:    timeEndStr + ':00',
         duration_min: dur,
-        notes: notes.trim() || null,
+        notes: notesWithMeta,
         status: 'pending',
         is_walkin: appt.is_walkin ?? false,
       })
@@ -1144,17 +1417,190 @@ function RescheduleModal({ appt, clinicId, mode, onClose, onDone }: {
   )
 }
 
+// ─── EditAppointmentModal ─────────────────────────────────────────────────────
+
+function EditAppointmentModal({ appt, clinicId, onClose, onSaved }: {
+  appt: Appointment; clinicId: string; onClose: () => void; onSaved: () => void
+}) {
+  const supabase = createClient()
+  const [doctors, setDoctors] = useState<DoctorRow[]>([])
+  const [apptTypes, setApptTypes] = useState<ApptTypeItem[]>(DEFAULT_APPT_TYPES)
+  const [doctorId, setDoctorId] = useState(appt.doctor_id)
+  const [date, setDate] = useState(appt.date)
+  const [timeStart, setTimeStart] = useState(appt.time_start.slice(0, 5))
+  const [dur, setDur] = useState(appt.duration_min ?? 30)
+  const [notes, setNotes] = useState(apptDisplayNotes(appt))
+  const [isWalkin, setIsWalkin] = useState(appt.is_walkin ?? false)
+  const [selType, setSelType] = useState(apptType(appt) ?? DEFAULT_APPT_TYPES[0].key)
+  const [selColor, setSelColor] = useState(apptColor(appt))
+  const [workStart, setWorkStart] = useState('08:00')
+  const [workEnd, setWorkEnd] = useState('20:00')
+  const [slotInterval, setSlotInterval] = useState(15)
+  const [takenSlots, setTakenSlots] = useState<string[]>([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const ic = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition bg-white'
+
+  useEffect(() => {
+    supabase.from('doctors').select('id,first_name,last_name,color,consultation_duration').eq('is_active',true).order('last_name').then(({data})=>setDoctors((data??[]) as DoctorRow[]))
+    if (clinicId) supabase.from('clinics').select('settings').eq('id',clinicId).single().then(({data})=>{
+      const s = data?.settings as Record<string,unknown>|null
+      const t = s?.appt_types as ApptTypeItem[]|undefined; if (t?.length) setApptTypes(t)
+      if (s?.slot_interval_min) setSlotInterval(s.slot_interval_min as number)
+      const wh = s?.working_hours as Record<string,{active:boolean;from:string;to:string}>|undefined
+      const dow = new Date(date+'T12:00:00').getDay()
+      const d2 = wh?.[['sun','mon','tue','wed','thu','fri','sat'][dow]!]
+      if (d2?.active) { setWorkStart(d2.from); setWorkEnd(d2.to) }
+    })
+  }, [clinicId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!doctorId||!date) return
+    supabase.from('appointments').select('time_start').eq('doctor_id',doctorId).eq('date',date).not('status','in','(cancelled,no_show,rescheduled)').neq('id',appt.id).then(({data})=>setTakenSlots((data??[]).map(r=>r.time_start.slice(0,5))))
+  }, [doctorId,date]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const calcEnd = (s:string,m:number)=>{const[h,min]=s.split(':').map(Number);const t=(h??0)*60+(min??0)+m;return`${String(Math.floor(t/60)).padStart(2,'0')}:${String(t%60).padStart(2,'0')}`}
+  const slots=(()=>{const[sh,sm]=workStart.split(':').map(Number);const[eh,em]=workEnd.split(':').map(Number);const r=[];for(let t=(sh??8)*60+(sm??0);t<(eh??20)*60+(em??0);t+=slotInterval)r.push(`${String(Math.floor(t/60)).padStart(2,'0')}:${String(t%60).padStart(2,'0')}`);return r})()
+  const todayStr=new Date().toISOString().slice(0,10); const isToday=date===todayStr; const nowMin=new Date().getHours()*60+new Date().getMinutes()
+
+  const handleSave = async () => {
+    if (!doctorId||!date||!timeStart){setError('Заполните все поля');return}
+    setSaving(true);setError('')
+    const notesWithMeta = formatNotesMeta(selType, selColor, notes.trim())
+    let u:Record<string,unknown>={doctor_id:doctorId,date,time_start:timeStart+':00',time_end:calcEnd(timeStart,dur)+':00',duration_min:dur,notes:notesWithMeta,is_walkin:isWalkin,color:selColor,appt_type:selType}
+    let {error:err}=await supabase.from('appointments').update(u).eq('id',appt.id)
+    if (err?.message?.includes('appt_type')||err?.message?.includes('color')){const{appt_type:_a,color:_c,...b}=u;void _a;void _c;u=b;const r2=await supabase.from('appointments').update(u).eq('id',appt.id);err=r2.error}
+    setSaving(false); if(err){setError(err.message);return}; onSaved(); onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose}/>
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md z-10 max-h-[96vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">Редактировать запись</h3>
+            <p className="text-xs text-gray-400">{(appt.patient as {full_name:string}|undefined)?.full_name}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          {/* Doctor */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Врач</label>
+            <div className="space-y-1.5">
+              {doctors.map(d=>(
+                <label key={d.id} className={`flex items-center gap-3 border rounded-xl px-4 py-3 cursor-pointer transition-colors ${doctorId===d.id?'border-blue-400 bg-blue-50':'border-gray-200 hover:border-gray-300'}`}>
+                  <input type="radio" name="edit-doc" value={d.id} checked={doctorId===d.id} onChange={()=>setDoctorId(d.id)} className="accent-blue-600"/>
+                  <div className="w-3 h-3 rounded-full" style={{background:d.color??'#9ca3af'}}/>
+                  <p className="text-sm font-medium text-gray-900">{d.last_name} {d.first_name}</p>
+                </label>
+              ))}
+            </div>
+          </div>
+          {/* Date */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Дата</label>
+            <input type="date" className={ic} value={date} onChange={e=>setDate(e.target.value)}/>
+          </div>
+          {/* Time */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-2">Время</label>
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <input type="time" value={timeStart} onChange={e=>setTimeStart(e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none bg-white w-32 flex-shrink-0"/>
+              <div className="flex gap-1 flex-wrap">
+                {[15,30,45,60,90,120].map(m=>(
+                  <button key={m} type="button" onClick={()=>setDur(m)} className={`px-2 py-0.5 rounded-md text-xs font-medium ${dur===m?'bg-blue-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                    {m<60?`${m}м`:m===60?'1ч':`${m/60}ч`}
+                  </button>
+                ))}
+              </div>
+              <span className="text-xs text-gray-400 ml-auto">→ {calcEnd(timeStart,dur)}</span>
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+              {slots.map(slot=>{
+                const taken=takenSlots.includes(slot);const sel=timeStart===slot
+                const[sh,sm]=slot.split(':').map(Number);const past=isToday&&((sh??0)*60+(sm??0))<nowMin
+                return(
+                  <button key={slot} type="button" disabled={taken||past} onClick={()=>setTimeStart(slot)}
+                    className={`flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-medium border ${taken?'bg-red-50 text-red-300 border-red-100 cursor-not-allowed line-through':past?'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed':sel?'bg-blue-600 text-white border-blue-600':'bg-white text-gray-600 border-gray-200 hover:border-blue-400'}`}>
+                    {slot}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          {/* Type */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Тип приёма</label>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {apptTypes.map(t=>(
+                <button key={t.key} type="button" onClick={()=>{setSelType(t.key);setSelColor(t.color)}}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${selType===t.key?'text-white border-transparent':'bg-white text-gray-600 border-gray-200'}`}
+                  style={selType===t.key?{backgroundColor:t.color,borderColor:t.color}:{}}>
+                  <span className="w-2 h-2 rounded-full" style={{background:t.color}}/>{t.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-400">Свой цвет:</span>
+              <input type="color" value={selColor} onChange={e=>{setSelColor(e.target.value);setSelType('other')}} className="w-7 h-7 rounded-md border border-gray-200 cursor-pointer p-0.5 bg-white"/>
+              <span className="text-xs text-gray-400 font-mono">{selColor}</span>
+            </div>
+          </div>
+          {/* Notes */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Причина обращения</label>
+            <textarea className={ic+' resize-none'} rows={2} value={notes} onChange={e=>setNotes(e.target.value)}/>
+          </div>
+          {/* Walk-in */}
+          <label className="flex items-center gap-3 cursor-pointer">
+            <div onClick={()=>setIsWalkin(v=>!v)} className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${isWalkin?'bg-blue-600':'bg-gray-200'}`}>
+              <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${isWalkin?'translate-x-5':'translate-x-0.5'}`}/>
+            </div>
+            <span className="text-sm text-gray-700">Walk-in</span>
+          </label>
+          {error&&<p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">{error}</p>}
+        </div>
+        <div className="px-6 py-4 border-t border-gray-100 flex gap-3 flex-shrink-0">
+          <button type="button" onClick={onClose} disabled={saving} className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50">Отмена</button>
+          <button type="button" onClick={handleSave} disabled={saving} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">{saving?'Сохранение...':'Сохранить'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── AppointmentDetailDrawer ──────────────────────────────────────────────────
 
 function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
-  appt: Appointment
-  clinicId: string
-  onClose: () => void
-  onUpdate: () => void
+  appt: Appointment; clinicId: string; onClose: () => void; onUpdate: () => void
 }) {
   const supabase = createClient()
+  const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
   const [rescheduleMode, setRescheduleMode] = useState<'move' | 'copy' | null>(null)
+  const [visitId, setVisitId] = useState<string | null | 'loading'>('loading')
+  const [openingVisit, setOpeningVisit] = useState(false)
+
+  useEffect(() => {
+    supabase.from('visits').select('id').eq('appointment_id', appt.id).maybeSingle()
+      .then(({ data }) => setVisitId(data?.id ?? null))
+  }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleOpenVisit = async () => {
+    setOpeningVisit(true)
+    if (visitId && visitId !== 'loading') { router.push(`/visits/${visitId}`); return }
+    const { data } = await supabase.from('visits').insert({
+      clinic_id: appt.clinic_id, patient_id: appt.patient_id,
+      doctor_id: appt.doctor_id, appointment_id: appt.id, status: 'open',
+    }).select('id').single()
+    setOpeningVisit(false)
+    if (data?.id) router.push(`/visits/${data.id}`)
+  }
 
   const updateStatus = async (status: string) => {
     setSaving(true)
@@ -1203,17 +1649,15 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             <p className="text-base font-semibold text-gray-900">{patient?.full_name ?? 'Walk-in'}</p>
             {patient?.phones?.[0] && <p className="text-xs text-gray-400 mt-0.5">{patient.phones[0]}</p>}
           </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            <button
-              onClick={() => printAppointmentSlip(appt)}
-              title="Печать талона"
-              className="text-gray-400 hover:text-blue-600 transition-colors text-sm px-2 py-1 rounded-lg hover:bg-blue-50">
-              🖨
+          <div className="flex items-center gap-1 mt-0.5">
+            <button onClick={() => setEditOpen(true)} title="Редактировать"
+              className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-blue-600 px-2.5 py-1.5 rounded-lg hover:bg-blue-50 border border-gray-200 hover:border-blue-200 transition-colors">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              Изменить
             </button>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-              <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
-                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
+            <button onClick={() => printAppointmentSlip(appt)} title="Печать" className="text-gray-400 hover:text-blue-600 px-2 py-1.5 rounded-lg hover:bg-blue-50">🖨</button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1">
+              <svg width="18" height="18" fill="none" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
             </button>
           </div>
         </div>
@@ -1235,8 +1679,8 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             <span className="text-gray-400 text-xs ml-2">({appt.duration_min} мин)</span>
           </p>
           <div className="flex flex-wrap gap-1.5">
-            {appt.appt_type && (() => {
-              const t = APPT_TYPES.find(x => x.key === appt.appt_type)
+            {apptType(appt) && (() => {
+              const t = DEFAULT_APPT_TYPES.find(x => x.key === apptType(appt))
               return t ? (
                 <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full text-white"
                   style={{ backgroundColor: apptColor(appt) }}>
@@ -1251,12 +1695,21 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
               {st.label}
             </span>
           </div>
-          {appt.notes && (
+          {apptDisplayNotes(appt) && (
             <div className="pt-1">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Заметка</p>
-              <p className="text-sm text-gray-600">{appt.notes}</p>
+              <p className="text-sm text-gray-600">{apptDisplayNotes(appt)}</p>
             </div>
           )}
+        </div>
+
+        {/* Open visit */}
+        <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0">
+          <button onClick={handleOpenVisit} disabled={openingVisit||visitId==='loading'}
+            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            {openingVisit ? 'Открытие...' : 'Открыть приём'}
+          </button>
         </div>
 
         {/* Reschedule / Duplicate actions */}
@@ -1303,6 +1756,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           onDone={() => { setRescheduleMode(null); onUpdate(); onClose() }}
         />
       )}
+      {editOpen && <EditAppointmentModal appt={appt} clinicId={clinicId} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); onUpdate(); onClose() }}/>}
     </>
   )
 }
@@ -1323,6 +1777,7 @@ export default function SchedulePage() {
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
+  const [pendingSlot, setPendingSlot] = useState<{ doctorId: string; time: string } | null>(null)
 
   // Sidebar state
   const [doctors, setDoctors] = useState<DoctorRow[]>([])
@@ -1492,36 +1947,54 @@ export default function SchedulePage() {
         {/* SPACER */}
         <div className="flex-1" />
 
-        {/* RIGHT: view switcher */}
-        <div className="flex bg-gray-100 rounded-lg p-0.5 flex-shrink-0">
-          {([
-            { label: 'Список', s: 1 as const, v: 'list' as const },
-            { label: 'День',   s: 1 as const, v: 'grid' as const },
-            { label: '5 дней', s: 5 as const, v: 'grid' as const },
-            { label: '7 дней', s: 7 as const, v: 'grid' as const },
-          ] as const).map(opt => {
-            const active = span === opt.s && (opt.s > 1 || view === opt.v)
-            return (
-              <button key={opt.label}
-                onClick={() => {
-                  // When switching to single-day from multi-day:
-                  // land on today if today is in current range, else keep first date
-                  if (opt.s === 1 && span > 1) {
-                    const todayStr = new Date().toISOString().slice(0, 10)
-                    const inRange = dates.includes(todayStr)
-                    setDate(inRange ? todayStr : dates[0]!)
-                  }
-                  setSpan(opt.s)
-                  setView(opt.v)
-                }}
-                className={[
-                  'px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
-                  active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
-                ].join(' ')}>
-                {opt.label}
-              </button>
-            )
-          })}
+        {/* RIGHT: view mode + span */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* View mode: list / grid */}
+          <div className="flex bg-gray-100 rounded-lg p-0.5">
+            {([
+              { label: 'Список', v: 'list' as const },
+              { label: 'Сетка',  v: 'grid' as const },
+            ] as const).map(opt => {
+              const active = view === opt.v
+              return (
+                <button key={opt.label} onClick={() => setView(opt.v)}
+                  className={[
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
+                    active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+                  ].join(' ')}>
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Span: 1 / 5 / 7 */}
+          <div className="flex bg-gray-100 rounded-lg p-0.5">
+            {([
+              { label: '1 день', s: 1 as const },
+              { label: '5 дней', s: 5 as const },
+              { label: '7 дней', s: 7 as const },
+            ] as const).map(opt => {
+              const active = span === opt.s
+              return (
+                <button key={opt.label}
+                  onClick={() => {
+                    if (opt.s === 1 && span > 1) {
+                      const todayStr = new Date().toISOString().slice(0, 10)
+                      const inRange = dates.includes(todayStr)
+                      setDate(inRange ? todayStr : dates[0]!)
+                    }
+                    setSpan(opt.s)
+                  }}
+                  className={[
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
+                    active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+                  ].join(' ')}>
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
       </div>
@@ -1640,16 +2113,9 @@ export default function SchedulePage() {
             <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
               Загрузка...
             </div>
-          ) : span > 1 ? (
-            <MultiDayGrid
-              dates={dates}
-              appointments={filteredAppts}
-              onCardClick={setSelected}
-              onDayClick={d => { setDate(d); setSpan(1); setView('list') }}
-            />
           ) : appointments.length === 0 ? (
             <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
-              <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
+              <p className="text-sm text-gray-400 mb-3">Записей на {span === 1 ? 'этот день' : 'этот период'} нет</p>
               <button onClick={() => setShowCreate(true)}
                 className="text-sm text-blue-600 hover:text-blue-700 font-medium">
                 + Создать первую запись
@@ -1660,44 +2126,24 @@ export default function SchedulePage() {
               Ничего не найдено по запросу «{search}»
             </div>
           ) : view === 'list' ? (
-            <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-              <div className="divide-y divide-gray-50">
-                {filteredAppts.map(a => {
-                  const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
-                  const doctor = a.doctor as { last_name: string; first_name: string; color: string } | undefined
-                  return (
-                    <div
-                      key={a.id}
-                      onClick={() => setSelected(a)}
-                      className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50 transition-colors cursor-pointer"
-                    >
-                      <div className="w-20 flex-shrink-0">
-                        <p className="text-sm font-mono text-gray-700">{a.time_start.slice(0, 5)}</p>
-                        <p className="text-xs text-gray-300">{a.time_end.slice(0, 5)}</p>
-                      </div>
-                      <div
-                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                        style={{ background: apptColor(a) }}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-900 truncate">
-                          {a.patient?.full_name ?? 'Walk-in'}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          {doctor ? `${doctor.last_name} ${doctor.first_name}` : ''}
-                          {a.is_walkin && <span className="ml-2 text-orange-400">walk-in</span>}
-                        </p>
-                      </div>
-                      <span className={`text-xs font-medium px-2.5 py-1 rounded-full border flex-shrink-0 ${st.cls}`}>
-                        {st.label}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+            <ListView dates={dates} appointments={filteredAppts} onClick={setSelected} />
+          ) : span > 1 ? (
+            <MultiDayGrid
+              dates={dates}
+              appointments={filteredAppts}
+              onCardClick={setSelected}
+              onDayClick={d => { setDate(d); setSpan(1); setView('list') }}
+              birthdayCounts={{ [date]: birthdays.length }}
+            />
           ) : (
-            <TimeGrid appointments={filteredAppts} onCardClick={setSelected} />
+            <DoctorDayGrid
+              date={date}
+              doctors={doctors.filter(d => activeDoctors.has(d.id))}
+              appointments={filteredAppts}
+              birthdayCount={birthdays.length}
+              onCardClick={setSelected}
+              onSlotClick={(doctorId, time) => setPendingSlot({ doctorId, time })}
+            />
           )}
 
         </div>{/* /main content */}
@@ -1709,6 +2155,17 @@ export default function SchedulePage() {
           defaultDate={date}
           onClose={() => setShowCreate(false)}
           onCreated={() => { load(); setShowCreate(false) }}
+        />
+      )}
+
+      {pendingSlot && clinicId && (
+        <CreateAppointmentModal
+          clinicId={clinicId}
+          defaultDate={date}
+          defaultDoctorId={pendingSlot.doctorId}
+          defaultTime={pendingSlot.time}
+          onClose={() => setPendingSlot(null)}
+          onCreated={() => { load(); setPendingSlot(null) }}
         />
       )}
 
