@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { Patient } from '@/types'
 
-/* ─── MedElement: Print patient card (карточка пациента) ─── */
+/* ─── MedElement: Print patient card ─────────────────────── */
 function printPatientCard(p: Patient) {
   const w = window.open('', '_blank', 'width=600,height=680')
   if (!w) return
@@ -67,41 +67,64 @@ function printPatientCard(p: Patient) {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  new: 'Новый',
-  active: 'Активный',
+  new:          'Новый',
+  active:       'Активный',
   in_treatment: 'На лечении',
-  completed: 'Завершён',
-  lost: 'Потерян',
-  vip: 'VIP',
+  completed:    'Завершён',
+  lost:         'Потерян',
+  vip:          'VIP',
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  new: 'bg-gray-100 text-gray-600',
-  active: 'bg-blue-100 text-blue-700',
+  new:          'bg-gray-100 text-gray-600',
+  active:       'bg-blue-100 text-blue-700',
   in_treatment: 'bg-green-100 text-green-700',
-  completed: 'bg-purple-100 text-purple-700',
-  lost: 'bg-red-100 text-red-600',
-  vip: 'bg-yellow-100 text-yellow-700',
+  completed:    'bg-purple-100 text-purple-700',
+  lost:         'bg-red-100 text-red-600',
+  vip:          'bg-yellow-100 text-yellow-700',
+}
+
+type SortKey = 'created_at' | 'full_name' | 'balance_amount'
+
+function calcAge(birthDate: string | null | undefined): string {
+  if (!birthDate) return ''
+  const diff = Date.now() - new Date(birthDate).getTime()
+  const years = Math.floor(diff / (365.25 * 24 * 3600 * 1000))
+  return `${years} л.`
 }
 
 export default function PatientsPage() {
   const [patients, setPatients] = useState<Patient[]>([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [total, setTotal] = useState(0)
+  const [loading, setLoading]   = useState(true)
+  const [search, setSearch]     = useState('')
+  const [total, setTotal]       = useState(0)
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [sortKey, setSortKey]   = useState<SortKey>('created_at')
+  const [sortAsc, setSortAsc]   = useState(false)
 
-  const load = useCallback(async (q: string) => {
+  const load = useCallback(async (q: string, status: string, sort: SortKey, asc: boolean) => {
     setLoading(true)
     const supabase = createClient()
     let query = supabase
       .from('patients')
       .select('*', { count: 'exact' })
       .is('deleted_at', null)
-      .order('created_at', { ascending: false })
+      .order(sort, { ascending: asc })
       .limit(50)
 
     if (q.trim()) {
-      query = query.ilike('full_name', `%${q}%`)
+      // Detect phone-like input
+      const cleaned = q.replace(/[\s\-()]/g, '')
+      const isPhone = /^[\d+]{4,}$/.test(cleaned)
+      if (isPhone) {
+        query = query.or(`full_name.ilike.%${q}%,phones.cs.{"${cleaned}"}`)
+      } else {
+        query = query.ilike('full_name', `%${q}%`)
+      }
+    }
+
+    if (status !== 'all') {
+      query = query.eq('status', status)
     }
 
     const { data, count } = await query
@@ -111,32 +134,73 @@ export default function PatientsPage() {
   }, [])
 
   useEffect(() => {
-    const t = setTimeout(() => load(search), 300)
+    const t = setTimeout(() => load(search, statusFilter, sortKey, sortAsc), 300)
     return () => clearTimeout(t)
-  }, [search, load])
+  }, [search, statusFilter, sortKey, sortAsc, load])
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) setSortAsc(v => !v)
+    else { setSortKey(key); setSortAsc(key === 'full_name') }
+  }
+
+  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
+    <button
+      onClick={() => toggleSort(k)}
+      className={`text-xs px-2 py-1 rounded-md border transition-colors ${
+        sortKey === k
+          ? 'bg-gray-800 text-white border-gray-800'
+          : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+      }`}>
+      {label} {sortKey === k ? (sortAsc ? '↑' : '↓') : ''}
+    </button>
+  )
 
   return (
     <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-5">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">Пациенты</h2>
           <p className="text-sm text-gray-400">{total} записей</p>
         </div>
         <Link
           href="/patients/new"
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-        >
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
           + Новый пациент
         </Link>
       </div>
 
-      <div className="mb-4">
+      {/* Search */}
+      <div className="mb-3">
         <input
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Поиск по имени или телефону..."
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Поиск по имени или телефону…"
           className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
         />
+      </div>
+
+      {/* Status filter chips */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {(['all', 'new', 'active', 'in_treatment', 'completed', 'vip', 'lost'] as const).map(s => (
+          <button key={s}
+            onClick={() => setStatusFilter(s)}
+            className={[
+              'px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+              statusFilter === s
+                ? 'bg-gray-800 border-gray-800 text-white'
+                : 'border-gray-200 text-gray-500 hover:bg-gray-50',
+            ].join(' ')}>
+            {s === 'all' ? 'Все' : STATUS_LABEL[s]}
+          </button>
+        ))}
+      </div>
+
+      {/* Sort controls */}
+      <div className="flex items-center gap-2 mb-4">
+        <span className="text-xs text-gray-400">Сортировка:</span>
+        <SortBtn k="created_at" label="По дате" />
+        <SortBtn k="full_name"  label="По имени" />
+        <SortBtn k="balance_amount" label="По балансу" />
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
@@ -144,7 +208,7 @@ export default function PatientsPage() {
           <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
         ) : patients.length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-400">
-            {search ? 'Ничего не найдено' : 'Пациентов пока нет'}
+            {search || statusFilter !== 'all' ? 'Ничего не найдено' : 'Пациентов пока нет'}
           </div>
         ) : (
           <table className="w-full">
@@ -159,7 +223,7 @@ export default function PatientsPage() {
               </tr>
             </thead>
             <tbody>
-              {patients.map((p) => (
+              {patients.map(p => (
                 <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                   <td className="px-5 py-4">
                     <Link href={`/patients/${p.id}`} className="flex items-center gap-3">
@@ -167,33 +231,39 @@ export default function PatientsPage() {
                         {p.full_name[0]}
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-gray-900 hover:text-blue-600">
-                          {p.full_name}
+                        <p className="text-sm font-medium text-gray-900 hover:text-blue-600">{p.full_name}</p>
+                        <p className="text-xs text-gray-400">
+                          {calcAge(p.birth_date)}
+                          {p.birth_date && p.gender ? ' · ' : ''}
+                          {p.gender === 'male' ? '♂' : p.gender === 'female' ? '♀' : ''}
                         </p>
-                        {p.birth_date && (
-                          <p className="text-xs text-gray-400">
-                            {new Date(p.birth_date).toLocaleDateString('ru-RU')}
-                          </p>
-                        )}
                       </div>
                     </Link>
                   </td>
-                  <td className="px-5 py-4 text-sm text-gray-600">{p.phones[0] ?? '—'}</td>
                   <td className="px-5 py-4">
-                    <span className={`text-xs font-medium px-2 py-1 rounded-full ${STATUS_COLOR[p.status]}`}>
-                      {STATUS_LABEL[p.status]}
+                    {p.phones[0] ? (
+                      <a href={`tel:${p.phones[0]}`}
+                        className="text-sm text-gray-600 hover:text-blue-600 transition-colors"
+                        onClick={e => e.stopPropagation()}>
+                        {p.phones[0]}
+                      </a>
+                    ) : <span className="text-sm text-gray-400">—</span>}
+                  </td>
+                  <td className="px-5 py-4">
+                    <span className={`text-xs font-medium px-2 py-1 rounded-full ${STATUS_COLOR[p.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                      {STATUS_LABEL[p.status] ?? p.status}
                     </span>
                   </td>
-                  <td className="px-5 py-4 text-sm text-gray-600">
+                  <td className="px-5 py-4 text-sm">
                     {p.balance_amount > 0 && (
-                      <span className="text-green-600">+{p.balance_amount.toLocaleString('ru-RU')} ₸</span>
+                      <span className="text-green-600 font-medium">+{p.balance_amount.toLocaleString('ru-RU')} ₸</span>
                     )}
                     {p.debt_amount > 0 && (
-                      <span className="text-red-500">-{p.debt_amount.toLocaleString('ru-RU')} ₸</span>
+                      <span className="text-red-500 font-medium">−{p.debt_amount.toLocaleString('ru-RU')} ₸</span>
                     )}
-                    {p.balance_amount === 0 && p.debt_amount === 0 && '—'}
+                    {p.balance_amount === 0 && p.debt_amount === 0 && <span className="text-gray-400">—</span>}
                   </td>
-                  <td className="px-5 py-4 text-xs text-gray-400">{p.patient_number ?? '—'}</td>
+                  <td className="px-5 py-4 text-xs text-gray-400 font-mono">{p.patient_number ?? '—'}</td>
                   <td className="px-5 py-4">
                     <button
                       onClick={() => printPatientCard(p)}

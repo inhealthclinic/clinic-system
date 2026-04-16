@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Task } from '@/types'
@@ -579,7 +580,12 @@ export default function TasksPage() {
                   </p>
                   <div className="flex items-center gap-3 mt-1 flex-wrap">
                     {task.patient && (
-                      <span className="text-xs text-gray-400">{task.patient.full_name}</span>
+                      <Link
+                        href={`/patients/${(task.patient as { id: string; full_name: string }).id}`}
+                        onClick={e => e.stopPropagation()}
+                        className="text-xs text-blue-500 hover:text-blue-700 hover:underline">
+                        {(task.patient as { id: string; full_name: string }).full_name}
+                      </Link>
                     )}
                     {assignee && (
                       <span className="text-xs text-gray-400">→ {assignee.last_name} {assignee.first_name}</span>

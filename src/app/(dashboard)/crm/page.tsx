@@ -617,9 +617,19 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
           <div className="min-w-0 pr-3">
-            <h3 className="text-base font-semibold text-gray-900 leading-tight">
-              {deal.patient?.full_name ?? '—'}
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-gray-900 leading-tight">
+                {deal.patient?.full_name ?? '—'}
+              </h3>
+              {deal.patient_id && (
+                <Link href={`/patients/${deal.patient_id}`}
+                  onClick={onClose}
+                  className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap"
+                  title="Открыть карточку пациента">
+                  → Карточка
+                </Link>
+              )}
+            </div>
             <div className="flex items-center gap-2 mt-1">
               {currentStage && (
                 <span className="flex items-center gap-1 text-xs text-gray-500">
@@ -628,7 +638,10 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
                 </span>
               )}
               {deal.patient?.phones?.[0] && (
-                <span className="text-xs text-gray-400">{deal.patient.phones[0]}</span>
+                <a href={`tel:${deal.patient.phones[0]}`}
+                  className="text-xs text-blue-400 hover:text-blue-600 transition-colors">
+                  📞 {deal.patient.phones[0]}
+                </a>
               )}
             </div>
           </div>

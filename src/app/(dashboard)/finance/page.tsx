@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
@@ -95,9 +96,13 @@ function PaymentModal({ clinicId, onClose, onSaved }: {
     if (debRef.current) clearTimeout(debRef.current)
     if (q.length < 2) { setHits([]); return }
     debRef.current = setTimeout(async () => {
+      const isPhone = /^[\d\s+\-()]{3,}$/.test(q.trim())
+      const filter = isPhone
+        ? `full_name.ilike.%${q}%,phones.cs.{"${q.trim()}"}`
+        : `full_name.ilike.%${q}%`
       const { data } = await supabase
         .from('patients').select('id,full_name,phones')
-        .ilike('full_name', `%${q}%`).limit(6)
+        .or(filter).limit(6)
       setHits(data ?? [])
     }, 300)
   }
@@ -323,9 +328,20 @@ export default function FinancePage() {
             <tbody>
               {payments.map(p => (
                 <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                  <td className="px-5 py-3 text-sm text-gray-900">{p.patient?.full_name ?? '—'}</td>
+                  <td className="px-5 py-3">
+                    {p.patient_id ? (
+                      <Link href={`/patients/${p.patient_id}`}
+                        className="text-sm text-gray-900 hover:text-blue-600 hover:underline font-medium">
+                        {p.patient?.full_name ?? '—'}
+                      </Link>
+                    ) : (
+                      <span className="text-sm text-gray-900">{p.patient?.full_name ?? '—'}</span>
+                    )}
+                  </td>
                   <td className="px-5 py-3 text-xs text-gray-500">{TYPE_RU[p.type] ?? p.type}</td>
-                  <td className="px-5 py-3 text-sm font-semibold text-gray-900">{fmt(p.amount)}</td>
+                  <td className={`px-5 py-3 text-sm font-semibold ${p.type === 'refund' ? 'text-red-500' : 'text-gray-900'}`}>
+                    {p.type === 'refund' ? '−' : ''}{fmt(p.amount)}
+                  </td>
                   <td className="px-5 py-3 text-sm text-gray-500">{METHOD_RU[p.method] ?? p.method}</td>
                   <td className="px-5 py-3">
                     <span className={`text-xs font-medium px-2 py-1 rounded-full ${STATUS_CLR[p.status] ?? 'bg-gray-100 text-gray-600'}`}>

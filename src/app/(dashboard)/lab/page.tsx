@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
@@ -15,7 +16,7 @@ interface LabOrder {
   ordered_at: string
   patient?: { id: string; full_name: string } | null
   doctor?: { id: string; first_name: string; last_name: string } | null
-  items?: Array<{ id: string; name: string; price: number | null }>
+  items?: Array<{ id: string; name: string; price: number | null; result_value?: string | null }>
 }
 
 interface PatientHit { id: string; full_name: string; phones: string[] }
@@ -55,6 +56,51 @@ const NEXT_STATUS: Record<string, { status: string; label: string; cls: string }
   verified:     { status: 'delivered',    label: 'Выдать',         cls: 'bg-gray-600 hover:bg-gray-700 text-white' },
 }
 
+/* ─── Print lab report ────────────────────────────────────── */
+function printLabReport(order: LabOrder, results: Record<string, string>) {
+  const w = window.open('', '_blank', 'width=620,height=700')
+  if (!w) return
+  const dt = new Date(order.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  const itemRows = (order.items ?? []).map(item => `
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee">${item.name}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:600;color:#111">
+        ${results[item.id] ?? '—'}
+      </td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#888;font-size:11px">
+        ${item.price != null ? item.price.toLocaleString('ru-RU') + ' ₸' : ''}
+      </td>
+    </tr>`).join('')
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Результаты анализов</title>
+  <style>
+    body{font-family:Arial,sans-serif;max-width:560px;margin:24px auto;font-size:13px;color:#111}
+    h2{margin:0 0 2px;font-size:18px}
+    .sub{color:#777;font-size:12px;margin-bottom:16px;border-bottom:2px solid #111;padding-bottom:10px}
+    .info{display:flex;gap:24px;margin-bottom:16px;font-size:12px;color:#555}
+    table{width:100%;border-collapse:collapse}
+    th{text-align:left;padding:6px 8px;background:#f5f5f5;font-size:11px;color:#666;border-bottom:2px solid #ddd;text-transform:uppercase;letter-spacing:.5px}
+    .badge{display:inline-block;padding:2px 10px;border-radius:12px;background:#fef3c7;color:#b45309;font-size:11px;font-weight:600}
+    .foot{margin-top:20px;font-size:10px;color:#ccc;border-top:1px dashed #ddd;padding-top:8px;text-align:center}
+  </style></head><body>
+  <h2>IN HEALTH — Результаты анализов</h2>
+  <div class="sub">Лаборатория медицинского центра</div>
+  <div class="info">
+    <div><b>Пациент:</b> ${order.patient?.full_name ?? '—'}</div>
+    <div><b>Дата:</b> ${dt}</div>
+    ${order.doctor ? `<div><b>Врач:</b> ${order.doctor.last_name} ${order.doctor.first_name}</div>` : ''}
+    ${order.urgent ? '<div class="badge">🔴 СРОЧНЫЙ</div>' : ''}
+  </div>
+  <table>
+    <thead><tr><th>Анализ</th><th>Результат</th><th>Стоимость</th></tr></thead>
+    <tbody>${itemRows}</tbody>
+  </table>
+  ${order.notes ? `<p style="margin-top:12px;color:#555;font-size:12px"><b>Примечание:</b> ${order.notes}</p>` : ''}
+  <div class="foot">Сформировано: ${new Date().toLocaleString('ru-RU')} &nbsp;·&nbsp; IN HEALTH Медицинский центр</div>
+  <script>window.onload=()=>{window.print()}</script>
+  </body></html>`)
+  w.document.close()
+}
+
 /* ─── Order detail drawer ─────────────────────────────────── */
 function OrderDrawer({ order, onClose, onUpdated }: {
   order: LabOrder
@@ -62,7 +108,18 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   onUpdated: () => void
 }) {
   const supabase = createClient()
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving]       = useState(false)
+  const [saveRes, setSaveRes]     = useState(false)
+  const [results, setResults]     = useState<Record<string, string>>({})
+
+  // Pre-fill existing results
+  useEffect(() => {
+    const init: Record<string, string> = {}
+    order.items?.forEach(item => {
+      if (item.result_value) init[item.id] = item.result_value
+    })
+    setResults(init)
+  }, [order])
 
   const advance = async () => {
     const next = NEXT_STATUS[order.status]
@@ -74,7 +131,19 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     onClose()
   }
 
+  const saveResults = async () => {
+    setSaveRes(true)
+    await Promise.all(
+      Object.entries(results).map(([itemId, val]) =>
+        supabase.from('lab_order_items').update({ result_value: val.trim() || null }).eq('id', itemId)
+      )
+    )
+    setSaveRes(false)
+    onUpdated()
+  }
+
   const next = NEXT_STATUS[order.status]
+  const hasResults = (order.items ?? []).length > 0
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -85,9 +154,25 @@ function OrderDrawer({ order, onClose, onUpdated }: {
             <p className="text-sm font-semibold text-gray-900">
               {order.order_number ?? 'Направление'}
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">{order.patient?.full_name}</p>
+            {order.patient ? (
+              <Link href={`/patients/${order.patient_id}`}
+                className="text-xs text-blue-500 hover:text-blue-700 mt-0.5 block"
+                onClick={onClose}>
+                {order.patient.full_name} →
+              </Link>
+            ) : (
+              <p className="text-xs text-gray-400 mt-0.5">—</p>
+            )}
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => printLabReport(order, results)}
+              title="Печать результатов"
+              className="text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-colors">
+              🖨 Отчёт
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+          </div>
         </div>
 
         <div className="p-5 flex-1 space-y-4">
@@ -125,17 +210,34 @@ function OrderDrawer({ order, onClose, onUpdated }: {
             )}
           </div>
 
-          {/* Items */}
-          {(order.items ?? []).length > 0 && (
+          {/* Items + Results entry */}
+          {hasResults && (
             <div>
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Анализы</p>
-              <div className="space-y-1">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Анализы и результаты</p>
+                <button
+                  onClick={saveResults}
+                  disabled={saveRes}
+                  className="text-xs text-blue-600 hover:text-blue-700 font-medium disabled:opacity-50">
+                  {saveRes ? 'Сохранение...' : '💾 Сохранить результаты'}
+                </button>
+              </div>
+              <div className="space-y-2">
                 {order.items!.map(item => (
-                  <div key={item.id} className="flex items-center justify-between py-1.5 px-3 bg-gray-50 rounded-lg">
-                    <span className="text-sm text-gray-800">{item.name}</span>
-                    {item.price != null && (
-                      <span className="text-xs text-gray-400">{item.price.toLocaleString('ru-RU')} ₸</span>
-                    )}
+                  <div key={item.id} className="bg-gray-50 rounded-lg px-3 py-2.5">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-sm text-gray-800 font-medium">{item.name}</span>
+                      {item.price != null && (
+                        <span className="text-xs text-gray-400">{item.price.toLocaleString('ru-RU')} ₸</span>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      value={results[item.id] ?? ''}
+                      onChange={e => setResults(prev => ({ ...prev, [item.id]: e.target.value }))}
+                      placeholder="Введите результат…"
+                      className="w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
+                    />
                   </div>
                 ))}
               </div>
@@ -348,7 +450,7 @@ export default function LabPage() {
     setLoading(true)
     let q = supabase
       .from('lab_orders')
-      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price)')
+      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,result_value)')
       .order('ordered_at', { ascending: false })
       .limit(100)
     if (filter === 'active') q = q.in('status', ['ordered','agreed','paid','sample_taken','in_progress'])
@@ -410,8 +512,11 @@ export default function LabPage() {
               {orders.map(o => (
                 <tr key={o.id} onClick={() => setSelected(o)}
                   className="border-b border-gray-50 hover:bg-blue-50/40 cursor-pointer transition-colors">
-                  <td className="px-5 py-4">
-                    <p className="text-sm font-medium text-gray-900">{o.patient?.full_name ?? '—'}</p>
+                  <td className="px-5 py-4" onClick={e => e.stopPropagation()}>
+                    <Link href={`/patients/${o.patient_id}`}
+                      className="text-sm font-medium text-gray-900 hover:text-blue-600 hover:underline">
+                      {o.patient?.full_name ?? '—'}
+                    </Link>
                     {o.order_number && <p className="text-xs text-gray-400 font-mono mt-0.5">{o.order_number}</p>}
                   </td>
                   <td className="px-5 py-4 text-sm text-gray-500">
