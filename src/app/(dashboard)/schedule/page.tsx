@@ -117,10 +117,11 @@ function getDatesForSpan(anchorDate: string, spanDays: 1 | 5 | 7): string[] {
 
 // ─── MultiDayGrid ─────────────────────────────────────────────────────────────
 
-function MultiDayGrid({ dates, appointments, onCardClick }: {
+function MultiDayGrid({ dates, appointments, onCardClick, onDayClick }: {
   dates: string[]
   appointments: Appointment[]
   onCardClick: (a: Appointment) => void
+  onDayClick?: (d: string) => void
 }) {
   const HOUR_HEIGHT = 56
   const START_HOUR  = 8
@@ -144,7 +145,13 @@ function MultiDayGrid({ dates, appointments, onCardClick }: {
           const obj = new Date(d + 'T12:00:00')
           const isToday = d === today
           return (
-            <div key={d} className={`flex-1 text-center py-2 border-l border-gray-100 ${isToday ? 'bg-blue-50' : ''}`}>
+            <div key={d}
+              onClick={() => onDayClick?.(d)}
+              className={[
+                'flex-1 text-center py-2 border-l border-gray-100 transition-colors',
+                onDayClick ? 'cursor-pointer hover:bg-blue-50' : '',
+                isToday ? 'bg-blue-50' : '',
+              ].join(' ')}>
               <p className={`text-[11px] font-medium uppercase tracking-wide ${isToday ? 'text-blue-500' : 'text-gray-400'}`}>
                 {DAY_RU[obj.getDay()]}
               </p>
@@ -1358,7 +1365,17 @@ export default function SchedulePage() {
             const active = span === opt.s && (opt.s > 1 || view === opt.v)
             return (
               <button key={opt.label}
-                onClick={() => { setSpan(opt.s); setView(opt.v) }}
+                onClick={() => {
+                  // When switching to single-day from multi-day:
+                  // land on today if today is in current range, else keep first date
+                  if (opt.s === 1 && span > 1) {
+                    const todayStr = new Date().toISOString().slice(0, 10)
+                    const inRange = dates.includes(todayStr)
+                    setDate(inRange ? todayStr : dates[0]!)
+                  }
+                  setSpan(opt.s)
+                  setView(opt.v)
+                }}
                 className={[
                   'px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
                   active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
@@ -1401,7 +1418,12 @@ export default function SchedulePage() {
           Загрузка...
         </div>
       ) : span > 1 ? (
-        <MultiDayGrid dates={dates} appointments={filteredAppts} onCardClick={setSelected} />
+        <MultiDayGrid
+          dates={dates}
+          appointments={filteredAppts}
+          onCardClick={setSelected}
+          onDayClick={d => { setDate(d); setSpan(1); setView('list') }}
+        />
       ) : appointments.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
           <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
