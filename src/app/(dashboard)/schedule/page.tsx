@@ -699,24 +699,28 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
               <span className="text-xs text-gray-300">{workStart}–{workEnd}</span>
             </div>
 
-            {/* Duration selector */}
-            <div className="flex items-center gap-1.5 mb-2">
-              <span className="text-xs text-gray-400 flex-shrink-0">Длительность:</span>
-              {[15, 30, 45, 60, 90, 120].map(min => (
-                <button key={min} type="button"
-                  onClick={() => setCustomDuration(min === (selectedDoctor?.consultation_duration ?? 30) && customDuration === null ? null : min)}
-                  className={[
-                    'px-2 py-0.5 rounded-md text-xs font-medium transition-colors flex-shrink-0',
-                    duration === min
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
-                  ].join(' ')}>
-                  {min < 60 ? `${min}м` : min === 60 ? '1ч' : `${min / 60}ч`}
-                </button>
-              ))}
+            {/* Time input + duration row */}
+            <div className="flex items-center gap-2 mb-2">
+              <input
+                type="time"
+                step={slotInterval * 60}
+                value={form.time_start}
+                onChange={e => setForm(f => ({ ...f, time_start: e.target.value }))}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none transition bg-white w-32 flex-shrink-0"
+              />
+              <div className="flex items-center gap-1 flex-wrap">
+                {[15, 30, 45, 60, 90, 120].map(min => (
+                  <button key={min} type="button"
+                    onClick={() => setCustomDuration(min === (selectedDoctor?.consultation_duration ?? 30) && customDuration === null ? null : min)}
+                    className={['px-2 py-0.5 rounded-md text-xs font-medium transition-colors',
+                      duration === min ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'].join(' ')}>
+                    {min < 60 ? `${min}м` : min === 60 ? '1ч' : `${min / 60}ч`}
+                  </button>
+                ))}
+              </div>
               {form.time_start && (
                 <span className="text-xs text-gray-400 ml-auto flex-shrink-0">
-                  до {calcEnd(form.time_start, duration)}
+                  → {calcEnd(form.time_start, duration)}
                 </span>
               )}
             </div>
@@ -725,42 +729,35 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
             {workDayOff ? (
               <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2.5 text-sm text-orange-700">
                 🚫 В этот день клиника не работает по расписанию.{' '}
-                <a href="/settings/clinic" target="_blank" className="underline font-medium">
-                  Изменить расписание
-                </a>
+                <a href="/settings/clinic" target="_blank" className="underline font-medium">Изменить расписание</a>
               </div>
             ) : (
-              <>
-                {/* Visual slot grid */}
-                <div className="grid grid-cols-6 gap-1.5">
-                  {ALL_SLOTS.map(slot => {
-                    const taken    = takenSlots.includes(slot)
-                    const selected = form.time_start === slot
-                    const [slotH, slotM] = slot.split(':').map(Number)
-                    const isPast   = isToday && (slotH! * 60 + (slotM ?? 0)) < nowMinutes
-                    const disabled = taken || isPast
-                    return (
-                      <button
-                        key={slot} type="button"
-                        disabled={disabled}
-                        onClick={() => setForm(f => ({ ...f, time_start: slot }))}
-                        className={[
-                          'py-1.5 rounded-lg text-xs font-medium transition-colors',
-                          taken    ? 'bg-red-100 text-red-400 cursor-not-allowed line-through'
-                          : isPast   ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                          : selected ? 'bg-blue-600 text-white shadow-sm'
-                          : 'bg-gray-100 text-gray-700 hover:bg-blue-100 hover:text-blue-700',
-                        ].join(' ')}
-                      >
-                        {slot}
-                      </button>
-                    )
-                  })}
-                </div>
-                {takenSlots.length > 0 && (
-                  <p className="text-xs text-gray-400 mt-1.5">🔴 — занято</p>
-                )}
-              </>
+              /* Quick-pick slot strip */
+              <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+                {ALL_SLOTS.map(slot => {
+                  const taken    = takenSlots.includes(slot)
+                  const sel      = form.time_start === slot
+                  const [slotH, slotM] = slot.split(':').map(Number)
+                  const isPast   = isToday && ((slotH ?? 0) * 60 + (slotM ?? 0)) < nowMinutes
+                  const disabled = taken || isPast
+                  return (
+                    <button
+                      key={slot} type="button"
+                      disabled={disabled}
+                      onClick={() => setForm(f => ({ ...f, time_start: slot }))}
+                      className={[
+                        'flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-medium transition-colors border',
+                        taken  ? 'bg-red-50 text-red-300 border-red-100 cursor-not-allowed line-through'
+                        : isPast ? 'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed'
+                        : sel  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400 hover:text-blue-600',
+                      ].join(' ')}
+                    >
+                      {slot}
+                    </button>
+                  )
+                })}
+              </div>
             )}
           </div>
 
@@ -1015,43 +1012,43 @@ function RescheduleModal({ appt, clinicId, mode, onClose, onDone }: {
             <input type="date" className={inputCls} value={date} onChange={e => setDate(e.target.value)} />
           </div>
 
-          {/* Duration + Time */}
+          {/* Time + Duration */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-xs font-medium text-gray-600">Время</label>
-              <span className="text-xs text-gray-300">{workStart}–{workEnd}</span>
-            </div>
-            <div className="flex items-center gap-1.5 mb-2 flex-wrap">
-              <span className="text-xs text-gray-400">Длительность:</span>
-              {[15, 30, 45, 60, 90, 120].map(m => (
-                <button key={m} type="button" onClick={() => setDur(m)}
-                  className={['px-2 py-0.5 rounded-md text-xs font-medium transition-colors',
-                    dur === m ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'].join(' ')}>
-                  {m < 60 ? `${m}м` : m === 60 ? '1ч' : `${m/60}ч`}
-                </button>
-              ))}
-              {timeStart && <span className="text-xs text-gray-400 ml-auto">до {calcEnd(timeStart, dur)}</span>}
+            <label className="block text-xs font-medium text-gray-600 mb-2">Время</label>
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <input type="time" step={slotInterval * 60} value={timeStart}
+                onChange={e => setTimeStart(e.target.value)}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none transition bg-white w-32 flex-shrink-0" />
+              <div className="flex items-center gap-1 flex-wrap">
+                {[15, 30, 45, 60, 90, 120].map(m => (
+                  <button key={m} type="button" onClick={() => setDur(m)}
+                    className={['px-2 py-0.5 rounded-md text-xs font-medium transition-colors',
+                      dur === m ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'].join(' ')}>
+                    {m < 60 ? `${m}м` : m === 60 ? '1ч' : `${m/60}ч`}
+                  </button>
+                ))}
+              </div>
+              {timeStart && <span className="text-xs text-gray-400 ml-auto flex-shrink-0">→ {calcEnd(timeStart, dur)}</span>}
             </div>
             {workDayOff ? (
               <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 text-sm text-orange-700">
                 🚫 Клиника не работает в этот день
               </div>
             ) : (
-              <div className="grid grid-cols-6 gap-1.5">
+              <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
                 {ALL_SLOTS.map(slot => {
                   const taken    = takenSlots.includes(slot)
                   const sel      = timeStart === slot
                   const [sh, sm] = slot.split(':').map(Number)
                   const isPast   = isToday && ((sh ?? 0) * 60 + (sm ?? 0)) < nowMinutes
-                  const disabled = taken || isPast
                   return (
-                    <button key={slot} type="button" disabled={disabled}
+                    <button key={slot} type="button" disabled={taken || isPast}
                       onClick={() => setTimeStart(slot)}
-                      className={['py-1.5 rounded-lg text-xs font-medium transition-colors',
-                        taken  ? 'bg-red-100 text-red-400 cursor-not-allowed line-through'
-                        : isPast ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                        : sel  ? 'bg-blue-600 text-white shadow-sm'
-                        : 'bg-gray-100 text-gray-700 hover:bg-blue-100 hover:text-blue-700'].join(' ')}>
+                      className={['flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors',
+                        taken  ? 'bg-red-50 text-red-300 border-red-100 cursor-not-allowed line-through'
+                        : isPast ? 'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed'
+                        : sel  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400 hover:text-blue-600'].join(' ')}>
                       {slot}
                     </button>
                   )
