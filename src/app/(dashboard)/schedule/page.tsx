@@ -1310,16 +1310,51 @@ export default function SchedulePage() {
   return (
     <div className={span === 1 ? 'max-w-3xl mx-auto' : 'w-full'}>
       {/* Toolbar */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
+      <div className="flex items-center gap-3 mb-4">
 
-        {/* Combined view/span selector */}
-        <div className="flex bg-gray-100 rounded-lg p-0.5">
-          {[
-            { label: '☰ Список', s: 1 as const, v: 'list'  as const },
-            { label: '⊞ 1 день', s: 1 as const, v: 'grid'  as const },
-            { label: '5 дней',   s: 5 as const, v: 'grid'  as const },
-            { label: '7 дней',   s: 7 as const, v: 'grid'  as const },
-          ].map(opt => {
+        {/* LEFT: create */}
+        <button onClick={() => setShowCreate(true)}
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5 flex-shrink-0">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+          </svg>
+          Записать
+        </button>
+
+        {/* CENTER: date navigation */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button onClick={() => shiftDate(-1)}
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500 text-base transition-colors">‹</button>
+          <div className="relative">
+            <input type="date" value={date} onChange={e => setDate(e.target.value)}
+              className="sr-only" id="sched-date" />
+            <label htmlFor="sched-date"
+              className="text-sm font-semibold text-gray-900 capitalize cursor-pointer hover:text-blue-600 px-2 py-1 rounded-lg hover:bg-gray-50 transition-colors block">
+              {dateLabel}
+            </label>
+          </div>
+          <button onClick={() => shiftDate(1)}
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500 text-base transition-colors">›</button>
+        </div>
+
+        <button onClick={() => setDate(new Date().toISOString().slice(0, 10))}
+          className="text-xs text-blue-600 font-medium px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-50 transition-colors flex-shrink-0">
+          Сегодня
+        </button>
+
+        <span className="text-xs text-gray-400 flex-shrink-0">{appointments.length} зап.</span>
+
+        {/* SPACER */}
+        <div className="flex-1" />
+
+        {/* RIGHT: view switcher */}
+        <div className="flex bg-gray-100 rounded-lg p-0.5 flex-shrink-0">
+          {([
+            { label: 'Список', s: 1 as const, v: 'list' as const },
+            { label: 'День',   s: 1 as const, v: 'grid' as const },
+            { label: '5 дней', s: 5 as const, v: 'grid' as const },
+            { label: '7 дней', s: 7 as const, v: 'grid' as const },
+          ] as const).map(opt => {
             const active = span === opt.s && (opt.s > 1 || view === opt.v)
             return (
               <button key={opt.label}
@@ -1334,35 +1369,6 @@ export default function SchedulePage() {
           })}
         </div>
 
-        <button onClick={() => shiftDate(-1)}
-          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500 text-lg leading-none">‹</button>
-
-        <div className="flex-1 text-center min-w-[180px]">
-          <input type="date" value={date} onChange={e => setDate(e.target.value)}
-            className="sr-only" id="sched-date" />
-          <label htmlFor="sched-date"
-            className="text-sm font-semibold text-gray-900 capitalize cursor-pointer hover:text-blue-600">
-            {dateLabel}
-          </label>
-        </div>
-
-        <button onClick={() => shiftDate(1)}
-          className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500 text-lg leading-none">›</button>
-
-        <button onClick={() => setDate(new Date().toISOString().slice(0, 10))}
-          className="text-sm text-blue-600 font-medium px-3 py-2 rounded-lg hover:bg-blue-50">
-          Сегодня
-        </button>
-
-        <span className="text-sm text-gray-400">{appointments.length} записей</span>
-
-        <button onClick={() => setShowCreate(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5">
-          <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
-          </svg>
-          Записать
-        </button>
       </div>
 
       {/* Search bar */}
