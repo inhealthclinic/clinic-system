@@ -106,7 +106,7 @@ function TimeGrid({ appointments, onCardClick }: {
                 </p>
                 {heightPx > 36 && (
                   <p className="text-xs text-gray-500 truncate leading-tight">
-                    {a.time_start.slice(0,5)} · {doctor ? `${doctor.last_name}` : ''}
+                    {a.time_start.slice(0,5)} · {(a.doctor as { last_name: string } | undefined)?.last_name ?? ''}
                   </p>
                 )}
               </div>
@@ -281,8 +281,8 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     notes: '',
     is_walkin: false,
   })
-  const [apptType, setApptType] = useState(APPT_TYPES[0].key)
-  const [apptColor, setApptColor] = useState(APPT_TYPES[0].color)
+  const [apptType, setApptType] = useState<string>(APPT_TYPES[0].key)
+  const [apptColor, setApptColor] = useState<string>(APPT_TYPES[0].color)
   const [customDuration, setCustomDuration] = useState<number | null>(null) // null = use doctor default
   const [takenSlots, setTakenSlots]   = useState<string[]>([])
   const [saving, setSaving]           = useState(false)
