@@ -140,9 +140,14 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     notes: '',
     is_walkin: false,
   })
-  const [takenSlots, setTakenSlots] = useState<string[]>([])
-  const [saving, setSaving]   = useState(false)
-  const [error, setError]     = useState('')
+  const [takenSlots, setTakenSlots]   = useState<string[]>([])
+  const [saving, setSaving]           = useState(false)
+  const [error, setError]             = useState('')
+
+  /* ── clinic working hours ── */
+  const [workStart, setWorkStart] = useState('08:00')
+  const [workEnd, setWorkEnd]     = useState('20:00')
+  const [workDayOff, setWorkDayOff] = useState(false)
 
   const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition bg-white'
   const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
@@ -164,6 +169,55 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
         if (list[0]) setForm(f => ({ ...f, doctor_id: list[0].id }))
       })
   }, [])
+
+  /* ── load clinic working hours ── */
+  useEffect(() => {
+    if (!clinicId) return
+    supabase
+      .from('clinics')
+      .select('settings')
+      .eq('id', clinicId)
+      .single()
+      .then(({ data }) => {
+        const wh = data?.settings?.working_hours
+        if (!wh) return
+        // map day of week from date
+        const applyDay = (dateStr: string) => {
+          const dayIdx = new Date(dateStr + 'T12:00:00').getDay() // 0=Sun
+          const KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+          const key = KEYS[dayIdx]
+          const day = wh[key]
+          if (!day) return
+          if (!day.active) { setWorkDayOff(true); return }
+          setWorkDayOff(false)
+          setWorkStart(day.from ?? '08:00')
+          setWorkEnd(day.to ?? '20:00')
+        }
+        applyDay(form.date)
+      })
+  }, [clinicId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── re-apply working hours when date changes ── */
+  useEffect(() => {
+    if (!clinicId) return
+    supabase
+      .from('clinics')
+      .select('settings')
+      .eq('id', clinicId)
+      .single()
+      .then(({ data }) => {
+        const wh = data?.settings?.working_hours
+        if (!wh) return
+        const dayIdx = new Date(form.date + 'T12:00:00').getDay()
+        const KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+        const day = wh[KEYS[dayIdx]]
+        if (!day) return
+        if (!day.active) { setWorkDayOff(true); return }
+        setWorkDayOff(false)
+        setWorkStart(day.from ?? '08:00')
+        setWorkEnd(day.to ?? '20:00')
+      })
+  }, [form.date]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── load taken slots when doctor or date changes ── */
   useEffect(() => {
@@ -249,11 +303,18 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
   }
 
-  /* generate 15-min slots 08:00–19:45 */
-  const ALL_SLOTS = Array.from({ length: 48 }, (_, i) => {
-    const totalMin = 8 * 60 + i * 15
-    return `${String(Math.floor(totalMin / 60)).padStart(2, '0')}:${String(totalMin % 60).padStart(2, '0')}`
-  })
+  /* generate 15-min slots from workStart to workEnd */
+  const ALL_SLOTS = (() => {
+    const [sh, sm] = workStart.split(':').map(Number)
+    const [eh, em] = workEnd.split(':').map(Number)
+    const startMin = (sh ?? 8) * 60 + (sm ?? 0)
+    const endMin   = (eh ?? 20) * 60 + (em ?? 0)
+    const slots: string[] = []
+    for (let t = startMin; t < endMin; t += 15) {
+      slots.push(`${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`)
+    }
+    return slots
+  })()
 
   /* ── submit ── */
   const handleSubmit = async (e: React.FormEvent) => {
@@ -480,36 +541,60 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className={labelCls + ' mb-0'}>Время <span className="text-red-400">*</span></label>
-              {selectedDoctor && form.time_start && (
-                <span className="text-xs text-gray-400">
-                  ⏱ {duration} мин · до {calcEnd(form.time_start, duration)}
+              <div className="flex items-center gap-2">
+                {selectedDoctor && form.time_start && (
+                  <span className="text-xs text-gray-400">
+                    ⏱ {duration} мин · до {calcEnd(form.time_start, duration)}
+                  </span>
+                )}
+                <span className="text-xs text-gray-300">
+                  {workStart}–{workEnd}
                 </span>
-              )}
+              </div>
             </div>
-            {/* Visual slot grid */}
-            <div className="grid grid-cols-6 gap-1.5">
-              {ALL_SLOTS.map(slot => {
-                const taken   = takenSlots.includes(slot)
-                const selected = form.time_start === slot
-                return (
-                  <button
-                    key={slot} type="button"
-                    disabled={taken}
-                    onClick={() => setForm(f => ({ ...f, time_start: slot }))}
-                    className={[
-                      'py-1.5 rounded-lg text-xs font-medium transition-colors',
-                      taken    ? 'bg-red-100 text-red-400 cursor-not-allowed line-through'
-                      : selected ? 'bg-blue-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-blue-100 hover:text-blue-700',
-                    ].join(' ')}
-                  >
-                    {slot}
-                  </button>
-                )
-              })}
-            </div>
-            {takenSlots.length > 0 && (
-              <p className="text-xs text-gray-400 mt-1.5">🔴 — занято</p>
+
+            {/* Day-off warning */}
+            {workDayOff ? (
+              <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2.5 text-sm text-orange-700">
+                🚫 В этот день клиника не работает по расписанию.{' '}
+                <a href="/settings/clinic" target="_blank" className="underline font-medium">
+                  Изменить расписание
+                </a>
+              </div>
+            ) : (
+              <>
+                {/* Visual slot grid */}
+                <div className="grid grid-cols-6 gap-1.5">
+                  {ALL_SLOTS.map(slot => {
+                    const taken   = takenSlots.includes(slot)
+                    const selected = form.time_start === slot
+                    return (
+                      <button
+                        key={slot} type="button"
+                        disabled={taken}
+                        onClick={() => setForm(f => ({ ...f, time_start: slot }))}
+                        className={[
+                          'py-1.5 rounded-lg text-xs font-medium transition-colors',
+                          taken    ? 'bg-red-100 text-red-400 cursor-not-allowed line-through'
+                          : selected ? 'bg-blue-600 text-white shadow-sm'
+                          : 'bg-gray-100 text-gray-700 hover:bg-blue-100 hover:text-blue-700',
+                        ].join(' ')}
+                      >
+                        {slot}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="flex items-center justify-between mt-1.5">
+                  {takenSlots.length > 0 && (
+                    <p className="text-xs text-gray-400">🔴 — занято</p>
+                  )}
+                  <a href="/settings/clinic" target="_blank"
+                    className="text-xs text-gray-300 hover:text-gray-500 transition-colors ml-auto">
+                    ⚙ изменить часы работы
+                  </a>
+                </div>
+              </>
             )}
           </div>
 
