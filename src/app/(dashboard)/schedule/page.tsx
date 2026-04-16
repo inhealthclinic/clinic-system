@@ -4,6 +4,12 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Appointment, Doctor } from '@/types'
+import {
+  PHONE_PREFIX,
+  formatPhoneInput,
+  normalizePhoneKZ,
+  onPhoneKeyDown,
+} from '@/lib/utils/phone'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -117,7 +123,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
 
   // New patient registration inline
   const [showNewPatient, setShowNewPatient] = useState(false)
-  const [newPatient, setNewPatient] = useState({ full_name: '', phone: '', gender: 'other' as 'male' | 'female' | 'other', birth_date: '' })
+  const [newPatient, setNewPatient] = useState({ full_name: '', phone: PHONE_PREFIX, gender: 'other' as 'male' | 'female' | 'other', birth_date: '' })
   const [registeringPatient, setRegisteringPatient] = useState(false)
 
   const [form, setForm] = useState({
@@ -169,10 +175,11 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   const registerNewPatient = async () => {
     if (!newPatient.full_name.trim()) return
     setRegisteringPatient(true)
+    const normalizedPhone = normalizePhoneKZ(newPatient.phone)
     const { data: pat, error: pErr } = await supabase.from('patients').insert({
       clinic_id: clinicId,
       full_name: newPatient.full_name.trim(),
-      phones: newPatient.phone.trim() ? [newPatient.phone.trim()] : [],
+      phones: normalizedPhone ? [normalizedPhone] : [],
       gender: newPatient.gender,
       birth_date: newPatient.birth_date || null,
       status: 'new',
@@ -344,10 +351,12 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
                       <div>
                         <label className="text-xs font-medium text-gray-600 block mb-1">Телефон</label>
                         <input
+                          type="tel"
                           className={inputCls}
-                          placeholder="+7 700 000 0000"
+                          placeholder={PHONE_PREFIX + ' XXXXXXXXX'}
                           value={newPatient.phone}
-                          onChange={e => setNewPatient(p => ({ ...p, phone: e.target.value }))}
+                          onChange={e => setNewPatient(p => ({ ...p, phone: formatPhoneInput(e.target.value) }))}
+                          onKeyDown={onPhoneKeyDown}
                         />
                       </div>
                       <div>

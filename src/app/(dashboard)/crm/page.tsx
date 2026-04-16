@@ -4,6 +4,22 @@ import { useEffect, useMemo, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import {
+  SOURCE_OPTIONS,
+  normalizeSource,
+  sourceLabel,
+  PRIORITY_OPTIONS,
+  LOST_REASON_OPTIONS,
+  INTERACTION_TYPE_OPTIONS,
+} from '@/lib/crm/constants'
+import {
+  PHONE_PREFIX,
+  formatPhoneInput,
+  normalizePhoneKZ,
+  isValidPhoneKZ,
+  formatPhoneDisplay,
+  onPhoneKeyDown,
+} from '@/lib/utils/phone'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -32,7 +48,10 @@ const DEFAULT_MEDICAL_STAGES = [
   { key: 'closed',              label: 'Закрыто',                            color: '#6b7280' },
 ]
 
-const DEFAULT_SOURCES = ['Таргет', 'Instagram', 'WhatsApp', 'Рекомендация', 'Сайт', '2GIS']
+// Display list (Russian labels) — but every <select> below uses SOURCE_OPTIONS
+// directly to ensure the DB-safe value is sent.  Kept only for legacy
+// fallback when reading settings written by older versions.
+const DEFAULT_SOURCES: string[] = SOURCE_OPTIONS.map(o => o.label)
 
 // ─── settings (localStorage) ─────────────────────────────────────────────────
 
@@ -62,30 +81,21 @@ function loadSettings(): CrmSettings {
   } catch { return { leads_stages: DEFAULT_LEADS_STAGES, medical_stages: DEFAULT_MEDICAL_STAGES, sources: DEFAULT_SOURCES } }
 }
 
-const LOST_REASONS = [
-  { value: 'expensive', label: 'Дорого' },
-  { value: 'no_time',   label: 'Нет времени' },
-  { value: 'no_answer', label: 'Не отвечает' },
-  { value: 'not_ready', label: 'Не готов' },
-  { value: 'other',     label: 'Другое' },
-]
+// Backed by the central dictionary — same shape as before.
+const LOST_REASONS = LOST_REASON_OPTIONS.map(o => ({ value: o.value, label: o.label }))
 
-const PRIORITY_STYLE: Record<string, { bg: string; text: string; label: string }> = {
-  hot:  { bg: 'bg-red-100',    text: 'text-red-600',    label: 'Горячий' },
-  warm: { bg: 'bg-orange-100', text: 'text-orange-600', label: 'Тёплый' },
-  cold: { bg: 'bg-blue-100',   text: 'text-blue-600',   label: 'Холодный' },
-}
+const PRIORITY_STYLE: Record<string, { bg: string; text: string; label: string }> =
+  Object.fromEntries(
+    PRIORITY_OPTIONS.map(o => [o.value, { bg: o.bg, text: o.text, label: o.label }]),
+  )
 
-const INT_TYPES = [
-  { value: 'call',     label: 'Звонок' },
-  { value: 'whatsapp', label: 'WhatsApp' },
-  { value: 'note',     label: 'Заметка' },
-  { value: 'email',    label: 'Email' },
-]
+const INT_TYPES = INTERACTION_TYPE_OPTIONS
+  .filter(o => ['call', 'whatsapp', 'note', 'email'].includes(o.value))
+  .map(o => ({ value: o.value, label: o.label }))
 
-const INT_ICON: Record<string, string> = {
-  call: '📞', whatsapp: '💬', note: '📝', email: '✉️', visit: '🏥', sms: '📱',
-}
+const INT_ICON: Record<string, string> = Object.fromEntries(
+  INTERACTION_TYPE_OPTIONS.map(o => [o.value, o.icon]),
+)
 
 const PERIOD_OPTS = [
   { key: 'all',   label: 'Все' },
@@ -230,30 +240,57 @@ function TransferModal({ deal, medicalStages, onClose, onTransferred }: {
 
 // ─── QuickAddForm ─────────────────────────────────────────────────────────────
 
-function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
+function QuickAddForm({ stageKey, clinicId, onCreated, onCancel }: {
   stageKey: string
   clinicId: string
-  sources: string[]
   onCreated: () => void
   onCancel: () => void
 }) {
   const supabase = createClient()
-  const [name, setName] = useState('')
-  const [phone, setPhone] = useState('')
-  const [source, setSource] = useState('')
+  const [name, setName]     = useState('')
+  const [phone, setPhone]   = useState(PHONE_PREFIX)
+  const [source, setSource] = useState<string>('')  // stores normalized DB value
+  const [notes, setNotes]   = useState('')
   const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState<string | null>(null)
+
+  const phoneValid = isValidPhoneKZ(phone)
+  const phoneTouched = phone.length > PHONE_PREFIX.length
+  const canSubmit = name.trim().length > 0 && (!phoneTouched || phoneValid)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return
+    if (!canSubmit) return
+    setError(null)
     setSaving(true)
     try {
-      const { data: patient } = await supabase
+      const normalizedPhone = normalizePhoneKZ(phone)
+      if (phoneTouched && !normalizedPhone) {
+        setError('Введите полный номер телефона (+77XXXXXXXXX)')
+        setSaving(false)
+        return
+      }
+
+      // Dedup by phone
+      if (normalizedPhone) {
+        const { data: existing } = await supabase
+          .from('patients')
+          .select('id, full_name')
+          .contains('phones', [normalizedPhone])
+          .limit(1)
+        if (existing?.[0]) {
+          setError(`Пациент уже существует: ${existing[0].full_name}`)
+          setSaving(false)
+          return
+        }
+      }
+
+      const { data: patient, error: pErr } = await supabase
         .from('patients')
         .insert({
           clinic_id: clinicId,
           full_name: name.trim(),
-          phones: phone.trim() ? [phone.trim()] : [],
+          phones: normalizedPhone ? [normalizedPhone] : [],
           gender: 'other',
           status: 'new',
           is_vip: false,
@@ -264,57 +301,73 @@ function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
         .select('id')
         .single()
 
-      if (!patient) { setSaving(false); return }
+      if (pErr || !patient) { setError(pErr?.message ?? 'Ошибка создания пациента'); setSaving(false); return }
 
-      const { data: deal } = await supabase
+      const { data: deal, error: dErr } = await supabase
         .from('deals')
         .insert({
           clinic_id: clinicId,
           patient_id: patient.id,
           funnel: 'leads',
           stage: stageKey,
-          source: source || null,
+          source: normalizeSource(source),      // null or DB-safe enum
           priority: 'warm',
+          notes: notes.trim() || null,
         })
         .select('id')
         .single()
 
-      if (deal) {
-        const due = new Date()
-        due.setHours(due.getHours() + 1)
-        await supabase.from('tasks').insert({
-          clinic_id: clinicId,
-          title: `Позвонить: ${name.trim()}`,
-          type: 'call',
-          priority: 'high',
-          status: 'new',
-          patient_id: patient.id,
-          deal_id: deal.id,
-          due_at: due.toISOString(),
-        })
-      }
+      if (dErr || !deal) { setError(dErr?.message ?? 'Ошибка создания сделки'); setSaving(false); return }
+
+      // Auto-create the first "call" task — always linked via deal_id.
+      const due = new Date()
+      due.setHours(due.getHours() + 1)
+      await supabase.from('tasks').insert({
+        clinic_id: clinicId,
+        title: `Позвонить: ${name.trim()}`,
+        type: 'call',
+        priority: 'high',
+        status: 'new',
+        patient_id: patient.id,
+        deal_id: deal.id,
+        due_at: due.toISOString(),
+      })
+
       onCreated()
-    } catch {
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Ошибка')
       setSaving(false)
     }
   }
 
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+
   return (
     <form onSubmit={handleSubmit} className="bg-white rounded-lg border border-blue-200 p-3 shadow-sm space-y-2">
       <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Имя *"
-        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-      <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="Телефон"
-        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+        className={inputCls} />
+      <input
+        type="tel"
+        value={phone}
+        onChange={e => setPhone(formatPhoneInput(e.target.value))}
+        onKeyDown={onPhoneKeyDown}
+        placeholder={PHONE_PREFIX + ' XXXXXXXXX'}
+        className={inputCls + (phoneTouched && !phoneValid ? ' border-orange-300' : '')} />
       <select value={source} onChange={e => setSource(e.target.value)}
-        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+        className={inputCls + ' bg-white'}>
         <option value="">Источник</option>
-        {sources.map(s => <option key={s} value={s}>{s}</option>)}
+        {SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
+      <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Заметка"
+        rows={2} className={inputCls + ' resize-none'} />
+      {error && (
+        <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-2 py-1">{error}</p>
+      )}
       <div className="flex gap-2">
         <button type="button" onClick={onCancel} className="flex-1 border border-gray-200 text-gray-500 rounded-lg py-1.5 text-xs font-medium hover:bg-gray-50">
           Отмена
         </button>
-        <button type="submit" disabled={saving || !name.trim()} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-1.5 text-xs font-medium">
+        <button type="submit" disabled={saving || !canSubmit} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-1.5 text-xs font-medium">
           {saving ? '...' : 'Добавить'}
         </button>
       </div>
@@ -376,10 +429,10 @@ function DealCard({ deal, owners, selected, selectMode, onToggleSelect, onDragSt
       )}
 
       {deal.patient?.phones?.[0] && (
-        <p className="text-xs text-gray-400 mb-1">{deal.patient.phones[0]}</p>
+        <p className="text-xs text-gray-400 mb-1">{formatPhoneDisplay(deal.patient.phones[0])}</p>
       )}
       {deal.source && (
-        <p className="text-xs text-gray-400">{deal.source}</p>
+        <p className="text-xs text-gray-400">{sourceLabel(deal.source)}</p>
       )}
 
       {/* Tags */}
@@ -434,13 +487,12 @@ function DealCard({ deal, owners, selected, selectMode, onToggleSelect, onDragSt
 // ─── KanbanColumn ─────────────────────────────────────────────────────────────
 
 function KanbanColumn({
-  col, deals, owners, sources, clinicId, showQuickAdd, selectedIds, selectMode,
+  col, deals, owners, clinicId, showQuickAdd, selectedIds, selectMode,
   onDragStart, onDrop, onCardClick, onTransfer, onQuickAddToggle, onCreated, onToggleSelect,
 }: {
   col: Stage
   deals: DealRow[]
   owners: UserOption[]
-  sources: string[]
   clinicId: string
   showQuickAdd: boolean
   selectedIds: Set<string>
@@ -512,7 +564,6 @@ function KanbanColumn({
           <QuickAddForm
             stageKey={col.key}
             clinicId={clinicId}
-            sources={sources}
             onCreated={onCreated}
             onCancel={onQuickAddToggle}
           />
@@ -544,10 +595,9 @@ const STAGE_TASKS: Record<string, string> = {
 
 // ─── DealDrawer ───────────────────────────────────────────────────────────────
 
-function DealDrawer({ deal, stages, sources, owners, clinicId, onClose, onUpdate, onTransfer }: {
+function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTransfer }: {
   deal: DealRow
   stages: Stage[]
-  sources: string[]
   owners: UserOption[]
   clinicId: string
   onClose: () => void
@@ -624,7 +674,7 @@ function DealDrawer({ deal, stages, sources, owners, clinicId, onClose, onUpdate
         updates.priority = priorityVal
       }
       if ((deal.source ?? '') !== sourceVal) {
-        updates.source = sourceVal || null
+        updates.source = normalizeSource(sourceVal) // null or DB-safe enum
       }
       if (Object.keys(updates).length > 0) {
         supabase.from('deals').update(updates).eq('id', deal.id).then(() => onUpdate())
@@ -865,7 +915,7 @@ function DealDrawer({ deal, stages, sources, owners, clinicId, onClose, onUpdate
                 className="w-full mt-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               >
                 <option value="">— не указан —</option>
-                {sources.map(s => <option key={s} value={s}>{s}</option>)}
+                {SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
             <div>
@@ -1103,60 +1153,66 @@ function DealDrawer({ deal, stages, sources, owners, clinicId, onClose, onUpdate
 
 // ─── CreateDealModal ──────────────────────────────────────────────────────────
 
-function CreateDealModal({ clinicId, sources, owners, onClose, onCreated }: {
+// amoCRM-style "fast lead": only 4 fields — name, phone, source, note.
+// Everything else (gender, priority, value, owner, doctor, birth date,
+// tags…) is filled in later from the deal card / drawer.
+function CreateDealModal({ clinicId, defaultStage, onClose, onCreated }: {
   clinicId: string
-  sources: string[]
-  owners: UserOption[]
+  defaultStage: string
   onClose: () => void
   onCreated: () => void
 }) {
   const supabase = createClient()
-  const [form, setForm] = useState({
-    full_name: '',
-    phone: '',
-    gender: 'other' as 'male' | 'female' | 'other',
-    source: '',
-    priority: 'warm',
-    notes: '',
-    deal_value: '',
-    assigned_to: '',
-  })
+  const [fullName, setFullName] = useState('')
+  const [phone, setPhone]       = useState(PHONE_PREFIX)
+  const [source, setSource]     = useState<string>('')   // DB-safe value
+  const [notes, setNotes]       = useState('')
+
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const [error,  setError]  = useState('')
   const [phoneWarning, setPhoneWarning] = useState<string | null>(null)
 
-  const set = (f: keyof typeof form) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
-      setForm(prev => ({ ...prev, [f]: e.target.value }))
+  const phoneTouched = phone.length > PHONE_PREFIX.length
+  const phoneValid   = isValidPhoneKZ(phone)
+  const canSubmit    = fullName.trim().length > 0 && (!phoneTouched || phoneValid)
 
+  // Debounced dedup check by normalized phone
   useEffect(() => {
-    if (form.phone.trim().length < 7) { setPhoneWarning(null); return }
+    if (!phoneTouched || !phoneValid) { setPhoneWarning(null); return }
+    const norm = normalizePhoneKZ(phone)
+    if (!norm) { setPhoneWarning(null); return }
     const t = setTimeout(async () => {
       const { data } = await supabase.from('patients')
         .select('id, full_name')
-        .contains('phones', [form.phone.trim()])
+        .contains('phones', [norm])
         .limit(1)
-      if (data?.[0]) {
-        setPhoneWarning(`Пациент с таким номером уже существует: ${data[0].full_name}`)
-      } else {
-        setPhoneWarning(null)
-      }
-    }, 500)
+      if (data?.[0]) setPhoneWarning(`Уже есть пациент: ${data[0].full_name}`)
+      else setPhoneWarning(null)
+    }, 400)
     return () => clearTimeout(t)
-  }, [form.phone])
+  }, [phone, phoneTouched, phoneValid, supabase])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
+    if (!canSubmit) return
     setSaving(true)
     try {
+      const normalizedPhone = phoneTouched ? normalizePhoneKZ(phone) : null
+      if (phoneTouched && !normalizedPhone) {
+        setError('Введите полный номер телефона: +77XXXXXXXXX')
+        setSaving(false); return
+      }
+
+      // 1) Patient — manual creation, NO WhatsApp dependency.
+      //    whatsapp_chat_id / whatsapp_contact_id остаются NULL — это ok.
       const { data: patient, error: pErr } = await supabase
         .from('patients')
         .insert({
           clinic_id: clinicId,
-          full_name: form.full_name.trim(),
-          phones: form.phone.trim() ? [form.phone.trim()] : [],
-          gender: form.gender,
+          full_name: fullName.trim(),
+          phones: normalizedPhone ? [normalizedPhone] : [],
+          gender: 'other',          // выбирается позже, в карточке
           status: 'new',
           is_vip: false,
           balance_amount: 0,
@@ -1166,43 +1222,38 @@ function CreateDealModal({ clinicId, sources, owners, onClose, onCreated }: {
         .select('id')
         .single()
 
-      if (pErr) { setError(pErr.message); setSaving(false); return }
+      if (pErr || !patient) { setError(pErr?.message ?? 'Ошибка создания пациента'); setSaving(false); return }
 
-      const dealVal = form.deal_value === '' ? null : Number(form.deal_value)
+      // 2) Deal — central entity in amoCRM model.
       const { data: deal, error: dErr } = await supabase
         .from('deals')
         .insert({
           clinic_id: clinicId,
           patient_id: patient.id,
           funnel: 'leads',
-          stage: 'new',
-          source: form.source || null,
-          priority: form.priority,
-          notes: form.notes.trim() || null,
-          deal_value: dealVal,
-          assigned_to: form.assigned_to || null,
+          stage:  defaultStage,                  // первый этап текущей воронки
+          source: normalizeSource(source),       // DB-safe enum value or null
+          priority: 'warm',                      // тёплый по умолчанию
+          notes: notes.trim() || null,
         })
         .select('id')
         .single()
 
-      if (dErr) { setError(dErr.message); setSaving(false); return }
+      if (dErr || !deal) { setError(dErr?.message ?? 'Ошибка создания сделки'); setSaving(false); return }
 
-      // Auto-create "call" task for new lead
-      if (deal) {
-        const due = new Date()
-        due.setHours(due.getHours() + 1)
-        await supabase.from('tasks').insert({
-          clinic_id: clinicId,
-          title: `Позвонить: ${form.full_name.trim()}`,
-          type: 'call',
-          priority: 'high',
-          status: 'new',
-          patient_id: patient.id,
-          deal_id: deal.id,
-          assigned_to: form.assigned_to || null,
-          due_at: due.toISOString(),
-        })
-      }
+      // 3) Auto-task "Позвонить" — always linked via deal_id.
+      const due = new Date()
+      due.setHours(due.getHours() + 1)
+      await supabase.from('tasks').insert({
+        clinic_id: clinicId,
+        title: `Позвонить: ${fullName.trim()}`,
+        type: 'call',         // valid: matches tasks.type CHECK
+        priority: 'high',     // valid: matches tasks.priority CHECK
+        status: 'new',        // valid: matches tasks.status CHECK
+        patient_id: patient.id,
+        deal_id: deal.id,
+        due_at: due.toISOString(),
+      })
 
       onCreated()
     } catch (err: unknown) {
@@ -1218,7 +1269,7 @@ function CreateDealModal({ clinicId, sources, owners, onClose, onCreated }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10 max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center justify-between mb-1">
           <h3 className="text-base font-semibold text-gray-900">Новый лид</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
@@ -1226,64 +1277,47 @@ function CreateDealModal({ clinicId, sources, owners, onClose, onCreated }: {
             </svg>
           </button>
         </div>
+        <p className="text-xs text-gray-400 mb-5">Минимум полей — детали добавите в карточке</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className={labelCls}>Имя <span className="text-red-400">*</span></label>
             <input className={inputCls} placeholder="Айгерим Бекова"
-              value={form.full_name} onChange={set('full_name')} required autoFocus />
+              value={fullName} onChange={e => setFullName(e.target.value)} required autoFocus />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>Телефон</label>
-              <input className={inputCls} placeholder="+7 700 000 0000" value={form.phone} onChange={set('phone')} />
-              {phoneWarning && (
-                <p className="text-xs text-orange-600 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 flex items-center gap-1.5 mt-1.5">
-                  ⚠️ {phoneWarning}
-                </p>
-              )}
-            </div>
-            <div>
-              <label className={labelCls}>Пол</label>
-              <select className={inputCls} value={form.gender} onChange={set('gender')}>
-                <option value="female">Женский</option>
-                <option value="male">Мужской</option>
-                <option value="other">Не указан</option>
-              </select>
-            </div>
-            <div>
-              <label className={labelCls}>Источник</label>
-              <select className={inputCls} value={form.source} onChange={set('source')}>
-                <option value="">— не указан —</option>
-                {sources.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className={labelCls}>Приоритет</label>
-              <select className={inputCls} value={form.priority} onChange={set('priority')}>
-                <option value="hot">🔥 Горячий</option>
-                <option value="warm">Тёплый</option>
-                <option value="cold">Холодный</option>
-              </select>
-            </div>
-            <div>
-              <label className={labelCls}>Сумма (₸)</label>
-              <input type="number" inputMode="decimal" className={inputCls} placeholder="0" value={form.deal_value} onChange={set('deal_value')} />
-            </div>
-            <div>
-              <label className={labelCls}>Ответственный</label>
-              <select className={inputCls} value={form.assigned_to} onChange={set('assigned_to')}>
-                <option value="">— не назначен —</option>
-                {owners.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-              </select>
-            </div>
+          <div>
+            <label className={labelCls}>Телефон</label>
+            <input
+              type="tel"
+              className={inputCls + (phoneTouched && !phoneValid ? ' border-orange-300 focus:ring-orange-400' : '')}
+              placeholder={PHONE_PREFIX + ' XXXXXXXXX'}
+              value={phone}
+              onChange={e => setPhone(formatPhoneInput(e.target.value))}
+              onKeyDown={onPhoneKeyDown}
+            />
+            {phoneTouched && !phoneValid && (
+              <p className="text-xs text-orange-600 mt-1.5">Номер должен быть полным: {PHONE_PREFIX} + 9 цифр</p>
+            )}
+            {phoneWarning && (
+              <p className="text-xs text-orange-600 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 flex items-center gap-1.5 mt-1.5">
+                ⚠️ {phoneWarning}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className={labelCls}>Источник</label>
+            <select className={inputCls} value={source} onChange={e => setSource(e.target.value)}>
+              <option value="">— не указан —</option>
+              {SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
           </div>
 
           <div>
             <label className={labelCls}>Заметка</label>
             <textarea className={inputCls + ' resize-none'} placeholder="Интересуется процедурой..."
-              rows={2} value={form.notes} onChange={set('notes')} />
+              rows={2} value={notes} onChange={e => setNotes(e.target.value)} />
           </div>
 
           {error && (
@@ -1295,7 +1329,7 @@ function CreateDealModal({ clinicId, sources, owners, onClose, onCreated }: {
               className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50">
               Отмена
             </button>
-            <button type="submit" disabled={saving}
+            <button type="submit" disabled={saving || !canSubmit}
               className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
               {saving ? 'Создание...' : 'Создать лид'}
             </button>
@@ -1394,7 +1428,7 @@ function ListView({ deals, stages, owners, selectedIds, onToggleSelect, onToggle
                   </td>
                   <td className="px-3 py-2.5">
                     <p className="font-medium text-gray-900 truncate max-w-[180px]">{d.patient?.full_name ?? '—'}</p>
-                    {d.patient?.phones?.[0] && <p className="text-xs text-gray-400">{d.patient.phones[0]}</p>}
+                    {d.patient?.phones?.[0] && <p className="text-xs text-gray-400">{formatPhoneDisplay(d.patient.phones[0])}</p>}
                   </td>
                   <td className="px-3 py-2.5">
                     {stage && (
@@ -1405,7 +1439,7 @@ function ListView({ deals, stages, owners, selectedIds, onToggleSelect, onToggle
                     )}
                   </td>
                   <td className="px-3 py-2.5 font-medium text-emerald-600 whitespace-nowrap">{fmtTenge(d.deal_value)}</td>
-                  <td className="px-3 py-2.5 text-gray-500">{d.source ?? '—'}</td>
+                  <td className="px-3 py-2.5 text-gray-500">{sourceLabel(d.source)}</td>
                   <td className="px-3 py-2.5">
                     <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.bg} ${p.text}`}>{p.label}</span>
                   </td>
@@ -1519,7 +1553,8 @@ export default function CrmPage() {
 
   const leadsStages = settings.leads_stages
   const medicalStages = settings.medical_stages
-  const sources = settings.sources
+  // Source dropdowns now read from the central SOURCE_OPTIONS dictionary
+  // (see /lib/crm/constants.ts) so we no longer need settings.sources.
 
   const stages = funnel === 'leads' ? leadsStages : medicalStages
 
@@ -1784,7 +1819,7 @@ export default function CrmPage() {
           <select value={filterSource} onChange={e => setFilterSource(e.target.value)}
             className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
             <option value="">Источник: все</option>
-            {sources.map(s => <option key={s} value={s}>{s}</option>)}
+            {SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
           <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)}
             className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
@@ -1830,7 +1865,6 @@ export default function CrmPage() {
                 col={col}
                 deals={filteredDeals.filter(d => d.stage === col.key)}
                 owners={owners}
-                sources={sources}
                 clinicId={clinicId}
                 showQuickAdd={quickAddStage === col.key && funnel === 'leads'}
                 selectedIds={selectedIds}
@@ -1910,7 +1944,6 @@ export default function CrmPage() {
         <DealDrawer
           deal={selected}
           stages={stages}
-          sources={sources}
           owners={owners}
           clinicId={clinicId}
           onClose={() => setSelected(null)}
@@ -1922,8 +1955,7 @@ export default function CrmPage() {
       {showCreate && clinicId && (
         <CreateDealModal
           clinicId={clinicId}
-          sources={sources}
-          owners={owners}
+          defaultStage={leadsStages[0]?.key ?? 'new'}
           onClose={() => setShowCreate(false)}
           onCreated={() => { load(); setShowCreate(false) }}
         />
