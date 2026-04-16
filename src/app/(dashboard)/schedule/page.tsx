@@ -128,7 +128,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   const [selectedPatient, setSelectedPatient] = useState<{ id: string; full_name: string; phone: string } | null>(null)
 
   /* new patient form */
-  const [newPat, setNewPat] = useState({ full_name: '', phone: '', gender: 'other' as 'male' | 'female' | 'other', birth_date: '' })
+  const [newPat, setNewPat] = useState({ full_name: '', phone: '+7 7', gender: 'other' as 'male' | 'female' | 'other', birth_date: '' })
   const [newPatSaving, setNewPatSaving] = useState(false)
   const [newPatError, setNewPatError]   = useState('')
 
@@ -322,6 +322,11 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     return slots
   })()
 
+  /* current time in minutes (for greying out past slots on today) */
+  const todayStr   = new Date().toISOString().slice(0, 10)
+  const isToday    = form.date === todayStr
+  const nowMinutes = (() => { const n = new Date(); return n.getHours() * 60 + n.getMinutes() })()
+
   /* ── submit ── */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -459,21 +464,32 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
               <div className="border border-green-200 rounded-xl p-4 bg-green-50/40 space-y-3">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold text-green-700 uppercase tracking-wide">Новый пациент</p>
-                  <button type="button" onClick={() => setPatientMode('search')}
+                  <button type="button" onClick={() => { setPatientMode('search'); setNewPat({ full_name: '', phone: '+7 7', gender: 'other', birth_date: '' }) }}
                     className="text-xs text-gray-400 hover:text-gray-600">← Назад к поиску</button>
                 </div>
                 <div>
                   <label className="text-xs font-medium text-gray-600 block mb-1">ФИО <span className="text-red-400">*</span></label>
                   <input className={inputCls} placeholder="Айгерим Бекова" autoFocus
                     value={newPat.full_name}
-                    onChange={e => setNewPat(p => ({ ...p, full_name: e.target.value }))} />
+                    onChange={e => {
+                      const val = e.target.value.replace(/\b(\S)/g, c => c.toUpperCase())
+                      setNewPat(p => ({ ...p, full_name: val }))
+                    }} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="text-xs font-medium text-gray-600 block mb-1">Телефон</label>
                     <input className={inputCls} placeholder="+7 700 000 0000"
                       value={newPat.phone}
-                      onChange={e => setNewPat(p => ({ ...p, phone: e.target.value }))} />
+                      onChange={e => {
+                        const val = e.target.value
+                        if (!val.startsWith('+7 7')) return
+                        setNewPat(p => ({ ...p, phone: val }))
+                      }}
+                      onFocus={e => {
+                        if (!newPat.phone) setNewPat(p => ({ ...p, phone: '+7 7' }))
+                        setTimeout(() => e.target.setSelectionRange(e.target.value.length, e.target.value.length), 0)
+                      }} />
                   </div>
                   <div>
                     <label className="text-xs font-medium text-gray-600 block mb-1">Пол</label>
@@ -486,7 +502,14 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
                   </div>
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-600 block mb-1">Дата рождения</label>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">
+                    Дата рождения
+                    {newPat.birth_date && (() => {
+                      const diff = Date.now() - new Date(newPat.birth_date).getTime()
+                      const age  = Math.floor(diff / (365.25 * 24 * 3600 * 1000))
+                      return age >= 0 ? <span className="text-gray-400 font-normal ml-1">({age} лет)</span> : null
+                    })()}
+                  </label>
                   <input type="date" className={inputCls} value={newPat.birth_date}
                     onChange={e => setNewPat(p => ({ ...p, birth_date: e.target.value }))} />
                 </div>
@@ -572,16 +595,20 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
                 {/* Visual slot grid */}
                 <div className="grid grid-cols-6 gap-1.5">
                   {ALL_SLOTS.map(slot => {
-                    const taken   = takenSlots.includes(slot)
+                    const taken    = takenSlots.includes(slot)
                     const selected = form.time_start === slot
+                    const [slotH, slotM] = slot.split(':').map(Number)
+                    const isPast   = isToday && (slotH! * 60 + (slotM ?? 0)) < nowMinutes
+                    const disabled = taken || isPast
                     return (
                       <button
                         key={slot} type="button"
-                        disabled={taken}
+                        disabled={disabled}
                         onClick={() => setForm(f => ({ ...f, time_start: slot }))}
                         className={[
                           'py-1.5 rounded-lg text-xs font-medium transition-colors',
                           taken    ? 'bg-red-100 text-red-400 cursor-not-allowed line-through'
+                          : isPast   ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
                           : selected ? 'bg-blue-600 text-white shadow-sm'
                           : 'bg-gray-100 text-gray-700 hover:bg-blue-100 hover:text-blue-700',
                         ].join(' ')}
@@ -591,15 +618,9 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
                     )
                   })}
                 </div>
-                <div className="flex items-center justify-between mt-1.5">
-                  {takenSlots.length > 0 && (
-                    <p className="text-xs text-gray-400">🔴 — занято</p>
-                  )}
-                  <a href="/settings/clinic" target="_blank"
-                    className="text-xs text-gray-300 hover:text-gray-500 transition-colors ml-auto">
-                    ⚙ изменить часы работы
-                  </a>
-                </div>
+                {takenSlots.length > 0 && (
+                  <p className="text-xs text-gray-400 mt-1.5">🔴 — занято</p>
+                )}
               </>
             )}
           </div>
