@@ -360,7 +360,66 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
     return vitals
   }
 
+  const validateVitals = (): string | null => {
+    if (form.bp) {
+      const parts = form.bp.split('/')
+      const sys = parseInt(parts[0] ?? '')
+      const dia = parseInt(parts[1] ?? '')
+      if (isNaN(sys) || isNaN(dia) || sys < 60 || sys > 260 || dia < 30 || dia > 160) {
+        return 'АД указано некорректно. Формат: 120/80, диапазон: 60–260 / 30–160 мм рт.ст.'
+      }
+    }
+    if (form.pulse) {
+      const p = parseInt(form.pulse)
+      if (isNaN(p) || p < 30 || p > 220) {
+        return 'Пульс вне нормы: укажите значение 30–220 уд/мин.'
+      }
+    }
+    if (form.temperature) {
+      const t = parseFloat(form.temperature.replace(',', '.'))
+      if (isNaN(t) || t < 34.0 || t > 43.0) {
+        return 'Температура вне диапазона: 34–43°C.'
+      }
+    }
+    if (form.spo2) {
+      const s = parseInt(form.spo2)
+      if (isNaN(s) || s < 70 || s > 100) {
+        return 'SpO₂ вне диапазона: 70–100%.'
+      }
+    }
+    if (form.weight) {
+      const w = parseFloat(form.weight)
+      if (isNaN(w) || w < 1 || w > 500) {
+        return 'Вес вне диапазона: 1–500 кг.'
+      }
+    }
+    if (form.height) {
+      const h = parseFloat(form.height)
+      if (isNaN(h) || h < 30 || h > 250) {
+        return 'Рост вне диапазона: 30–250 см.'
+      }
+    }
+    return null
+  }
+
   const handleSave = async (sign = false) => {
+    // Vitals validation
+    const vitalsError = validateVitals()
+    if (vitalsError) {
+      alert(`⚠️ ${vitalsError}`)
+      return
+    }
+    // Pre-sign checks
+    if (sign) {
+      if (!form.icd10_code && !form.diagnosis_text.trim()) {
+        alert('⛔ Для подписания медзаписи необходимо указать диагноз (МКБ-10 или формулировку).')
+        return
+      }
+      if (!form.complaints.trim() && !form.objective.trim()) {
+        alert('⚠️ Рекомендуется заполнить жалобы или объективный статус перед подписанием.')
+        // Not blocking — just warn
+      }
+    }
     setSaving(true)
     const payload = {
       clinic_id: visit.clinic_id, visit_id: visit.id,
@@ -850,13 +909,18 @@ export default function VisitPage() {
               </button>
             </>)}
             {visit.status === 'in_progress' && (
-              <div className="mt-3 space-y-1">
-                <p className={`text-xs flex items-center gap-1.5 ${visit.has_charges ? 'text-green-600' : 'text-red-400'}`}>
-                  {visit.has_charges ? '✓' : '○'} Начисления
-                </p>
-                <p className={`text-xs flex items-center gap-1.5 ${visit.finance_settled ? 'text-green-600' : 'text-gray-400'}`}>
-                  {visit.finance_settled ? '✓' : '○'} Оплачено
-                </p>
+              <div className="mt-3 bg-gray-50 rounded-lg p-3 space-y-1.5 text-xs">
+                <p className="font-semibold text-gray-500 uppercase tracking-wide mb-2 text-[10px]">Чеклист</p>
+                {[
+                  { ok: visit.has_charges,      label: 'Начисления добавлены',   req: true },
+                  { ok: visit.finance_settled,  label: 'Оплата зафиксирована',   req: false },
+                ].map((item, i) => (
+                  <p key={i} className={`flex items-center gap-1.5 ${item.ok ? 'text-green-600' : item.req ? 'text-red-500' : 'text-gray-400'}`}>
+                    <span className="flex-shrink-0">{item.ok ? '✓' : item.req ? '✕' : '○'}</span>
+                    {item.label}
+                    {!item.ok && item.req && <span className="text-red-400 font-medium ml-auto">обязательно</span>}
+                  </p>
+                ))}
               </div>
             )}
           </div>

@@ -246,6 +246,8 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
 }) {
   const supabase = createClient()
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [assignTo, setAssignTo] = useState(task.assigned_to ?? '')
 
   const updateStatus = async (status: string) => {
@@ -256,6 +258,14 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
       assigned_to: assignTo || null,
     }).eq('id', task.id)
     setSaving(false)
+    onUpdate()
+    onClose()
+  }
+
+  const deleteTask = async () => {
+    setDeleting(true)
+    await supabase.from('tasks').delete().eq('id', task.id)
+    setDeleting(false)
     onUpdate()
     onClose()
   }
@@ -356,6 +366,26 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
               Отменить
             </button>
           )}
+          {/* Delete */}
+          {!confirmDelete ? (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="w-full border border-red-100 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-lg py-2 text-sm font-medium transition-colors"
+            >
+              🗑 Удалить задачу
+            </button>
+          ) : (
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmDelete(false)}
+                className="flex-1 border border-gray-200 text-gray-500 hover:bg-gray-50 rounded-lg py-2 text-sm font-medium">
+                Нет
+              </button>
+              <button onClick={deleteTask} disabled={deleting}
+                className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-60 text-white rounded-lg py-2 text-sm font-medium">
+                {deleting ? '...' : 'Удалить'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -373,6 +403,8 @@ export default function TasksPage() {
   const [users, setUsers] = useState<UserRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'active' | 'done'>('active')
+  const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [myTasks, setMyTasks] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [selected, setSelected] = useState<Task | null>(null)
 
@@ -386,19 +418,26 @@ export default function TasksPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const q = supabase
+    let q = supabase
       .from('tasks')
       .select('*, patient:patients(id, full_name), assignee:user_profiles(id, first_name, last_name)')
       .order('due_at', { ascending: true, nullsFirst: false })
-      .limit(100)
+      .limit(200)
 
-    const { data } = filter === 'active'
-      ? await q.in('status', ['new', 'in_progress', 'overdue'])
-      : await q.eq('status', 'done')
+    if (filter === 'active') {
+      q = q.in('status', ['new', 'in_progress', 'overdue'])
+    } else {
+      q = q.eq('status', 'done')
+    }
 
+    if (myTasks && profile?.id) {
+      q = q.eq('assigned_to', profile.id)
+    }
+
+    const { data } = await q
     setTasks(data ?? [])
     setLoading(false)
-  }, [filter])
+  }, [filter, myTasks, profile?.id])
 
   useEffect(() => { load() }, [load])
 
@@ -409,15 +448,19 @@ export default function TasksPage() {
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t))
   }
 
-  const urgentCount = tasks.filter(t => t.priority === 'urgent').length
-  const overdueCount = tasks.filter(t => t.status === 'overdue' ||
-    (t.due_at && new Date(t.due_at) < new Date() && t.status !== 'done')).length
+  const visibleTasks = typeFilter === 'all'
+    ? tasks
+    : tasks.filter(t => t.type === typeFilter)
+
+  const urgentCount  = tasks.filter(t => t.priority === 'urgent').length
+  const overdueCount = tasks.filter(t =>
+    t.due_at && new Date(t.due_at) < new Date() && t.status !== 'done').length
 
   return (
     <div className="max-w-3xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="flex bg-gray-100 rounded-lg p-0.5">
             {(['active', 'done'] as const).map(f => (
               <button key={f} onClick={() => setFilter(f)}
@@ -429,15 +472,15 @@ export default function TasksPage() {
               </button>
             ))}
           </div>
-          <span className="text-sm text-gray-400">{tasks.length}</span>
+          <span className="text-sm text-gray-400">{visibleTasks.length}</span>
           {filter === 'active' && overdueCount > 0 && (
             <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">
-              {overdueCount} просрочено
+              ⚠️ {overdueCount} просрочено
             </span>
           )}
           {filter === 'active' && urgentCount > 0 && (
-            <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">
-              {urgentCount} срочных
+            <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-medium">
+              🔴 {urgentCount} срочных
             </span>
           )}
         </div>
@@ -452,9 +495,43 @@ export default function TasksPage() {
         </button>
       </div>
 
+      {/* Filters row */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {/* My tasks toggle */}
+        <button
+          onClick={() => setMyTasks(v => !v)}
+          className={[
+            'px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+            myTasks
+              ? 'bg-blue-600 border-blue-600 text-white'
+              : 'border-gray-200 text-gray-500 hover:bg-gray-50',
+          ].join(' ')}>
+          👤 Мои задачи
+        </button>
+        {/* Type filter chips */}
+        {[
+          { value: 'all',      label: 'Все' },
+          { value: 'call',     label: '📞 Звонок' },
+          { value: 'follow_up', label: '🔄 Follow-up' },
+          { value: 'confirm',  label: '✓ Подтверждение' },
+          { value: 'reminder', label: '🔔 Напоминание' },
+        ].map(t => (
+          <button key={t.value}
+            onClick={() => setTypeFilter(t.value)}
+            className={[
+              'px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+              typeFilter === t.value
+                ? 'bg-gray-800 border-gray-800 text-white'
+                : 'border-gray-200 text-gray-500 hover:bg-gray-50',
+            ].join(' ')}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {loading ? (
         <div className="text-center py-12 text-sm text-gray-400">Загрузка...</div>
-      ) : tasks.length === 0 ? (
+      ) : visibleTasks.length === 0 ? (
         <div className="text-center py-16">
           <p className="text-sm text-gray-400 mb-3">
             {filter === 'active' ? 'Активных задач нет 🎉' : 'Выполненных задач нет'}
@@ -468,7 +545,7 @@ export default function TasksPage() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-100 divide-y divide-gray-50 overflow-hidden">
-          {tasks.map(task => {
+          {visibleTasks.map(task => {
             const isOverdue = task.due_at && new Date(task.due_at) < new Date() && task.status !== 'done'
             const pStyle = PRIORITY_STYLE[task.priority] ?? PRIORITY_STYLE.normal
             const assignee = task.assignee as { first_name: string; last_name: string } | null | undefined

@@ -132,6 +132,41 @@ const CONDITION_STATUS_LABEL: Record<ConditionStatus, string> = {
 
 const BLOOD_TYPES = ['', '0(I)', 'A(II)', 'B(III)', 'AB(IV)']
 
+// ─── OpenVisitButton ──────────────────────────────────────────────────────────
+// Позволяет открыть визит прямо с карточки пациента
+
+function OpenVisitButton({ patientId }: { patientId: string }) {
+  const supabase = createClient()
+  const router   = useRouter()
+  const [hasOpen, setHasOpen] = useState<string | null>(null)
+  const [checked, setChecked] = useState(false)
+
+  useEffect(() => {
+    if (!patientId) return
+    supabase.from('visits').select('id').eq('patient_id', patientId)
+      .in('status', ['open', 'in_progress']).maybeSingle()
+      .then(({ data }) => { if (data) setHasOpen(data.id); setChecked(true) })
+  }, [patientId])
+
+  if (!checked) return null
+
+  if (hasOpen) {
+    return (
+      <button onClick={() => router.push(`/visits/${hasOpen}`)}
+        className="text-xs bg-orange-500 hover:bg-orange-600 text-white font-medium px-3 py-1.5 rounded-lg transition-colors">
+        ▶ Открытый визит
+      </button>
+    )
+  }
+
+  return (
+    <Link href="/visits"
+      className="text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 py-1.5 rounded-lg transition-colors inline-block">
+      + Открыть визит
+    </Link>
+  )
+}
+
 // ─── component ───────────────────────────────────────────────────────────────
 
 export default function PatientCardPage() {
@@ -266,20 +301,43 @@ export default function PatientCardPage() {
     if (activeTab === 'finance') loadFinance()
   }, [activeTab, loadFinance])
 
-  // ── save patient edit
+  // ── save patient edit (with validation)
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({})
+
   const saveEdit = async () => {
     if (!patient) return
+    const errors: Record<string, string> = {}
+    if (!editForm.full_name?.trim() || editForm.full_name.trim().length < 3) {
+      errors.full_name = 'ФИО должно содержать минимум 3 символа'
+    }
+    if (editForm.iin && editForm.iin.trim().length !== 12) {
+      errors.iin = 'ИИН должен содержать ровно 12 цифр'
+    }
+    if (editForm.iin && !/^\d{12}$/.test(editForm.iin.trim())) {
+      errors.iin = 'ИИН должен состоять только из цифр (12 штук)'
+    }
+    if (editForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(editForm.email)) {
+      errors.email = 'Укажите корректный email'
+    }
+    if (editForm.phones?.[0] && editForm.phones[0].trim().length < 7) {
+      errors.phone = 'Укажите корректный номер телефона'
+    }
+    if (Object.keys(errors).length > 0) {
+      setEditErrors(errors)
+      return
+    }
+    setEditErrors({})
     setSaving(true)
     const { data } = await supabase
       .from('patients')
       .update({
-        full_name: editForm.full_name,
+        full_name: editForm.full_name?.trim(),
         phones: editForm.phones,
         gender: editForm.gender,
         birth_date: editForm.birth_date || null,
         city: editForm.city || null,
         email: editForm.email || null,
-        iin: editForm.iin || null,
+        iin: editForm.iin?.trim() || null,
         notes: editForm.notes || null,
       })
       .eq('id', patient.id)
@@ -398,21 +456,23 @@ export default function PatientCardPage() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
-                <label className="block text-xs font-medium text-gray-500 mb-1">ФИО</label>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ФИО *</label>
                 <input
-                  className={inputCls}
+                  className={inputCls + (editErrors.full_name ? ' border-red-300 ring-1 ring-red-300' : '')}
                   value={editForm.full_name ?? ''}
-                  onChange={e => setEditForm(f => ({ ...f, full_name: e.target.value }))}
+                  onChange={e => { setEditForm(f => ({ ...f, full_name: e.target.value })); setEditErrors(er => ({ ...er, full_name: '' })) }}
                 />
+                {editErrors.full_name && <p className="text-xs text-red-500 mt-1">{editErrors.full_name}</p>}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Телефон</label>
                 <input
-                  className={inputCls}
+                  className={inputCls + (editErrors.phone ? ' border-red-300 ring-1 ring-red-300' : '')}
                   value={editForm.phones?.[0] ?? ''}
-                  onChange={e => setEditForm(f => ({ ...f, phones: e.target.value ? [e.target.value] : [] }))}
+                  onChange={e => { setEditForm(f => ({ ...f, phones: e.target.value ? [e.target.value] : [] })); setEditErrors(er => ({ ...er, phone: '' })) }}
                   placeholder="+7 700 000 0000"
                 />
+                {editErrors.phone && <p className="text-xs text-red-500 mt-1">{editErrors.phone}</p>}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Пол</label>
@@ -436,23 +496,26 @@ export default function PatientCardPage() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">ИИН</label>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ИИН (12 цифр)</label>
                 <input
-                  className={inputCls}
+                  className={inputCls + (editErrors.iin ? ' border-red-300 ring-1 ring-red-300' : '')}
                   value={editForm.iin ?? ''}
-                  onChange={e => setEditForm(f => ({ ...f, iin: e.target.value }))}
+                  onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(0, 12); setEditForm(f => ({ ...f, iin: v })); setEditErrors(er => ({ ...er, iin: '' })) }}
                   placeholder="000000000000"
                   maxLength={12}
+                  inputMode="numeric"
                 />
+                {editErrors.iin && <p className="text-xs text-red-500 mt-1">{editErrors.iin}</p>}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Email</label>
                 <input
                   type="email"
-                  className={inputCls}
+                  className={inputCls + (editErrors.email ? ' border-red-300 ring-1 ring-red-300' : '')}
                   value={editForm.email ?? ''}
-                  onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))}
+                  onChange={e => { setEditForm(f => ({ ...f, email: e.target.value })); setEditErrors(er => ({ ...er, email: '' })) }}
                 />
+                {editErrors.email && <p className="text-xs text-red-500 mt-1">{editErrors.email}</p>}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Город</label>
@@ -531,6 +594,8 @@ export default function PatientCardPage() {
               )}
             </div>
             <div className="flex flex-col items-end gap-2 flex-shrink-0">
+              {/* Quick action: open visit */}
+              <OpenVisitButton patientId={patient.id} />
               <button
                 onClick={() => setEditing(true)}
                 className="text-xs text-gray-400 hover:text-blue-600 border border-gray-200 hover:border-blue-300 px-3 py-1.5 rounded-lg transition-colors"
