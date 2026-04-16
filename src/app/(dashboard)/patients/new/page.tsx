@@ -5,16 +5,14 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
-
-const SOURCES = [
-  { value: 'instagram', label: 'Instagram' },
-  { value: 'whatsapp',  label: 'WhatsApp' },
-  { value: 'target',    label: 'Таргет' },
-  { value: 'referral',  label: 'Рекомендация' },
-  { value: 'organic',   label: 'Органика' },
-  { value: 'repeat',    label: 'Повторный' },
-  { value: 'other',     label: 'Другое' },
-]
+import { SOURCE_OPTIONS } from '@/lib/crm/constants'
+import {
+  PHONE_PREFIX,
+  formatPhoneInput,
+  normalizePhoneKZ,
+  isValidPhoneKZ,
+  onPhoneKeyDown,
+} from '@/lib/utils/phone'
 
 export default function NewPatientPage() {
   const router = useRouter()
@@ -24,8 +22,8 @@ export default function NewPatientPage() {
 
   const [form, setForm] = useState({
     full_name: '',
-    phone: '',
-    phone2: '',
+    phone: PHONE_PREFIX,
+    phone2: PHONE_PREFIX,
     gender: 'other' as 'male' | 'female' | 'other',
     birth_date: '',
     iin: '',
@@ -47,7 +45,13 @@ export default function NewPatientPage() {
     setError('')
     setSaving(true)
 
-    const phones = [form.phone.trim(), form.phone2.trim()].filter(Boolean)
+    // Only attach phones that the user actually filled in past the +77 prefix
+    // AND that normalise to a valid +77XXXXXXXXX form.
+    const p1 = form.phone.length  > PHONE_PREFIX.length ? normalizePhoneKZ(form.phone)  : null
+    const p2 = form.phone2.length > PHONE_PREFIX.length ? normalizePhoneKZ(form.phone2) : null
+    if (form.phone.length  > PHONE_PREFIX.length && !p1) { setError('Телефон 1: нужно +77 и 9 цифр'); setSaving(false); return }
+    if (form.phone2.length > PHONE_PREFIX.length && !p2) { setError('Телефон 2: нужно +77 и 9 цифр'); setSaving(false); return }
+    const phones = [p1, p2].filter((x): x is string => Boolean(x))
 
     const { data, error: err } = await supabase
       .from('patients')
@@ -139,11 +143,25 @@ export default function NewPatientPage() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Телефон 1</label>
-                <input className={inputCls} placeholder="+7 700 000 0000" value={form.phone} onChange={set('phone')} />
+                <input
+                  type="tel"
+                  className={inputCls + (form.phone.length > PHONE_PREFIX.length && !isValidPhoneKZ(form.phone) ? ' border-orange-300' : '')}
+                  placeholder={PHONE_PREFIX + ' XXXXXXXXX'}
+                  value={form.phone}
+                  onChange={e => setForm(p => ({ ...p, phone: formatPhoneInput(e.target.value) }))}
+                  onKeyDown={onPhoneKeyDown}
+                />
               </div>
               <div>
                 <label className={labelCls}>Телефон 2</label>
-                <input className={inputCls} placeholder="+7 700 000 0000" value={form.phone2} onChange={set('phone2')} />
+                <input
+                  type="tel"
+                  className={inputCls + (form.phone2.length > PHONE_PREFIX.length && !isValidPhoneKZ(form.phone2) ? ' border-orange-300' : '')}
+                  placeholder={PHONE_PREFIX + ' XXXXXXXXX'}
+                  value={form.phone2}
+                  onChange={e => setForm(p => ({ ...p, phone2: formatPhoneInput(e.target.value) }))}
+                  onKeyDown={onPhoneKeyDown}
+                />
               </div>
               <div>
                 <label className={labelCls}>Email</label>
@@ -164,7 +182,7 @@ export default function NewPatientPage() {
                 <label className={labelCls}>Источник</label>
                 <select className={inputCls} value={form.source_text} onChange={set('source_text')}>
                   <option value="">— не указан —</option>
-                  {SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  {SOURCE_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>
               </div>
               <div>

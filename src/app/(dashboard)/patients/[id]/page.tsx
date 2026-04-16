@@ -6,6 +6,13 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Patient, Appointment } from '@/types'
+import {
+  PHONE_PREFIX,
+  formatPhoneInput,
+  normalizePhoneKZ,
+  formatPhoneDisplay,
+  onPhoneKeyDown,
+} from '@/lib/utils/phone'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -270,11 +277,15 @@ export default function PatientCardPage() {
   const saveEdit = async () => {
     if (!patient) return
     setSaving(true)
+    // Normalise every phone we save back; drop entries that don't validate.
+    const normalisedPhones = (editForm.phones ?? [])
+      .map(p => normalizePhoneKZ(p))
+      .filter((x): x is string => Boolean(x))
     const { data } = await supabase
       .from('patients')
       .update({
         full_name: editForm.full_name,
-        phones: editForm.phones,
+        phones: normalisedPhones,
         gender: editForm.gender,
         birth_date: editForm.birth_date || null,
         city: editForm.city || null,
@@ -408,10 +419,15 @@ export default function PatientCardPage() {
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Телефон</label>
                 <input
+                  type="tel"
                   className={inputCls}
-                  value={editForm.phones?.[0] ?? ''}
-                  onChange={e => setEditForm(f => ({ ...f, phones: e.target.value ? [e.target.value] : [] }))}
-                  placeholder="+7 700 000 0000"
+                  value={editForm.phones?.[0] ?? PHONE_PREFIX}
+                  onChange={e => {
+                    const v = formatPhoneInput(e.target.value)
+                    setEditForm(f => ({ ...f, phones: v.length > PHONE_PREFIX.length ? [v] : [] }))
+                  }}
+                  onKeyDown={onPhoneKeyDown}
+                  placeholder={PHONE_PREFIX + ' XXXXXXXXX'}
                 />
               </div>
               <div>
@@ -508,7 +524,7 @@ export default function PatientCardPage() {
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
-                {patient.phones[0] && <span>📞 {patient.phones[0]}</span>}
+                {patient.phones[0] && <span>📞 {formatPhoneDisplay(patient.phones[0])}</span>}
                 {patient.birth_date && (
                   <span>🎂 {new Date(patient.birth_date).toLocaleDateString('ru-RU')}{age ? ` (${age} лет)` : ''}</span>
                 )}
@@ -582,7 +598,7 @@ export default function PatientCardPage() {
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Телефон</p>
-              <p className="text-gray-800">{patient.phones?.[0] ?? '—'}</p>
+              <p className="text-gray-800">{patient.phones?.[0] ? formatPhoneDisplay(patient.phones[0]) : '—'}</p>
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Дата рождения</p>

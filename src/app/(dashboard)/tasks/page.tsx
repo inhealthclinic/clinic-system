@@ -4,31 +4,49 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Task } from '@/types'
+import {
+  TASK_TYPE_OPTIONS,
+  TASK_PRIORITY_OPTIONS,
+  TASK_STATUS_OPTIONS,
+} from '@/lib/crm/constants'
 
 // ─── constants ───────────────────────────────────────────────────────────────
+// Visual styling stays here; values & labels come from the central
+// dictionary so we can never drift from the DB CHECK constraints.
 
-const PRIORITY_STYLE: Record<string, { cls: string; label: string }> = {
-  low:    { cls: 'bg-gray-100 text-gray-500',   label: 'Низкий' },
-  normal: { cls: 'bg-blue-100 text-blue-600',   label: 'Обычный' },
-  high:   { cls: 'bg-orange-100 text-orange-600', label: 'Высокий' },
-  urgent: { cls: 'bg-red-100 text-red-600',     label: 'Срочный' },
+const PRIORITY_CLS: Record<string, string> = {
+  low:    'bg-gray-100 text-gray-500',
+  normal: 'bg-blue-100 text-blue-600',
+  high:   'bg-orange-100 text-orange-600',
+  urgent: 'bg-red-100 text-red-600',
 }
+const PRIORITY_STYLE: Record<string, { cls: string; label: string }> =
+  Object.fromEntries(
+    TASK_PRIORITY_OPTIONS.map(o => [o.value, { cls: PRIORITY_CLS[o.value] ?? '', label: o.label }]),
+  )
 
-const STATUS_STYLE: Record<string, { cls: string; label: string }> = {
-  new:         { cls: 'bg-gray-100 text-gray-600',   label: 'Новая' },
-  in_progress: { cls: 'bg-blue-100 text-blue-700',   label: 'В работе' },
-  done:        { cls: 'bg-green-100 text-green-700', label: 'Готово' },
-  overdue:     { cls: 'bg-red-100 text-red-600',     label: 'Просрочена' },
-  cancelled:   { cls: 'bg-gray-50 text-gray-400',    label: 'Отменена' },
+const STATUS_CLS: Record<string, string> = {
+  new:         'bg-gray-100 text-gray-600',
+  in_progress: 'bg-blue-100 text-blue-700',
+  done:        'bg-green-100 text-green-700',
+  overdue:     'bg-red-100 text-red-600',
+  cancelled:   'bg-gray-50 text-gray-400',
 }
+const STATUS_STYLE: Record<string, { cls: string; label: string }> =
+  Object.fromEntries(
+    TASK_STATUS_OPTIONS.map(o => [o.value, { cls: STATUS_CLS[o.value] ?? '', label: o.label }]),
+  )
 
-const TASK_TYPES = [
-  { value: 'call',       label: '📞 Звонок' },
-  { value: 'follow_up',  label: '🔄 Follow-up' },
-  { value: 'confirm',    label: '✓ Подтверждение' },
-  { value: 'reminder',   label: '🔔 Напоминание' },
-  { value: 'other',      label: '📋 Другое' },
-]
+// Slim subset shown in the manual "create task" modal — full taxonomy
+// lives in TASK_TYPE_OPTIONS and is used by drawers / system-generated tasks.
+const TASK_TYPE_ICONS: Record<string, string> = {
+  call: '📞', follow_up: '🔄', confirm: '✓', reminder: '🔔',
+  lab_ready: '🧪', lab_critical: '🚨', resample: '🔁', control: '🩺',
+  referral: '➡️', other: '📋',
+}
+const TASK_TYPES = TASK_TYPE_OPTIONS
+  .filter(o => ['call', 'follow_up', 'confirm', 'reminder', 'other'].includes(o.value))
+  .map(o => ({ value: o.value, label: `${TASK_TYPE_ICONS[o.value] ?? ''} ${o.label}`.trim() }))
 
 interface UserRow { id: string; first_name: string; last_name: string }
 
