@@ -19,6 +19,24 @@ const STATUS_STYLE: Record<string, { cls: string; label: string }> = {
 
 type DoctorRow = Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color' | 'consultation_duration'>
 
+// ─── Appointment type presets ─────────────────────────────────────────────────
+
+const APPT_TYPES = [
+  { key: 'consultation', label: 'Консультация', color: '#3b82f6' },
+  { key: 'procedure',    label: 'Процедура',    color: '#8b5cf6' },
+  { key: 'checkup',      label: 'Осмотр',       color: '#10b981' },
+  { key: 'followup',     label: 'Повторный',     color: '#06b6d4' },
+  { key: 'surgery',      label: 'Операция',      color: '#f59e0b' },
+  { key: 'emergency',    label: 'Срочно',        color: '#ef4444' },
+  { key: 'other',        label: 'Другое',        color: '#6b7280' },
+] as const
+
+function apptColor(appt: Appointment): string {
+  if (appt.color) return appt.color
+  const doc = appt.doctor as { color?: string } | undefined
+  return doc?.color ?? '#3b82f6'
+}
+
 // ─── TimeGrid ─────────────────────────────────────────────────────────────────
 
 function TimeGrid({ appointments, onCardClick }: {
@@ -68,7 +86,7 @@ function TimeGrid({ appointments, onCardClick }: {
             const duration = a.duration_min ?? 30
             const topPx = (startMin / 60) * HOUR_HEIGHT
             const heightPx = Math.max((duration / 60) * HOUR_HEIGHT, 24)
-            const doctor = a.doctor as { color?: string; first_name: string; last_name: string } | undefined
+            const color = apptColor(a)
             const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
 
             return (
@@ -79,8 +97,8 @@ function TimeGrid({ appointments, onCardClick }: {
                 style={{
                   top: topPx,
                   height: heightPx,
-                  backgroundColor: doctor?.color ? `${doctor.color}20` : '#eff6ff',
-                  borderLeftColor: doctor?.color ?? '#3b82f6',
+                  backgroundColor: `${color}22`,
+                  borderLeftColor: color,
                 }}
               >
                 <p className="text-xs font-semibold text-gray-900 truncate leading-tight">
@@ -196,12 +214,13 @@ function MultiDayGrid({ dates, appointments, onCardClick, onDayClick }: {
                 const topPx  = (startMin / 60) * HOUR_HEIGHT
                 const htPx   = Math.max((dur / 60) * HOUR_HEIGHT, 22)
                 const doc = a.doctor as { color?: string; last_name: string } | undefined
+                const aColor = apptColor(a)
                 return (
                   <div key={a.id} onClick={() => onCardClick(a)}
                     className="absolute left-0.5 right-0.5 rounded-md px-1 py-0.5 cursor-pointer hover:brightness-95 transition-all overflow-hidden border-l-2 shadow-sm"
                     style={{ top: topPx, height: htPx,
-                      backgroundColor: doc?.color ? `${doc.color}22` : '#eff6ff',
-                      borderLeftColor: doc?.color ?? '#3b82f6' }}>
+                      backgroundColor: `${aColor}22`,
+                      borderLeftColor: aColor }}>
                     <p className="text-[11px] font-semibold text-gray-900 truncate leading-tight">
                       {a.patient?.full_name ?? 'Walk-in'}
                     </p>
@@ -262,6 +281,8 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     notes: '',
     is_walkin: false,
   })
+  const [apptType, setApptType] = useState(APPT_TYPES[0].key)
+  const [apptColor, setApptColor] = useState(APPT_TYPES[0].color)
   const [customDuration, setCustomDuration] = useState<number | null>(null) // null = use doctor default
   const [takenSlots, setTakenSlots]   = useState<string[]>([])
   const [saving, setSaving]           = useState(false)
@@ -485,6 +506,8 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
       is_walkin: form.is_walkin,
       source: 'admin',
       notes: form.notes.trim() || null,
+      color: apptColor,
+      appt_type: apptType,
     }).select('id').single()
 
     if (err || !appt) { setError(err?.message ?? 'Ошибка'); setSaving(false); return }
@@ -768,7 +791,37 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
             )}
           </div>
 
-          {/* ── 4. NOTES + WALK-IN ── */}
+          {/* ── 4. TYPE / COLOR ── */}
+          <div>
+            <label className={labelCls}>Тип приёма</label>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {APPT_TYPES.map(t => (
+                <button key={t.key} type="button"
+                  onClick={() => { setApptType(t.key); setApptColor(t.color) }}
+                  className={[
+                    'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all',
+                    apptType === t.key
+                      ? 'text-white border-transparent shadow-sm'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300',
+                  ].join(' ')}
+                  style={apptType === t.key ? { backgroundColor: t.color, borderColor: t.color } : {}}>
+                  <span className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ background: t.color }} />
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {/* Custom color override */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-400">Свой цвет:</span>
+              <input type="color" value={apptColor}
+                onChange={e => { setApptColor(e.target.value); setApptType('other') }}
+                className="w-7 h-7 rounded-md border border-gray-200 cursor-pointer p-0.5 bg-white" />
+              <span className="text-xs text-gray-400 font-mono">{apptColor}</span>
+            </div>
+          </div>
+
+          {/* ── 5. NOTES + WALK-IN ── */}
           <div>
             <label className={labelCls}>Причина обращения</label>
             <textarea className={inputCls + ' resize-none'} rows={2}
@@ -1181,12 +1234,23 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             🕐 {appt.time_start.slice(0, 5)} — {appt.time_end.slice(0, 5)}
             <span className="text-gray-400 text-xs ml-2">({appt.duration_min} мин)</span>
           </p>
-          {appt.is_walkin && (
-            <span className="inline-block text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full">Walk-in</span>
-          )}
-          <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full border ${st.cls}`}>
-            {st.label}
-          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {appt.appt_type && (() => {
+              const t = APPT_TYPES.find(x => x.key === appt.appt_type)
+              return t ? (
+                <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full text-white"
+                  style={{ backgroundColor: apptColor(appt) }}>
+                  {t.label}
+                </span>
+              ) : null
+            })()}
+            {appt.is_walkin && (
+              <span className="inline-block text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full">Walk-in</span>
+            )}
+            <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full border ${st.cls}`}>
+              {st.label}
+            </span>
+          </div>
           {appt.notes && (
             <div className="pt-1">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Заметка</p>
@@ -1452,12 +1516,10 @@ export default function SchedulePage() {
                     <p className="text-sm font-mono text-gray-700">{a.time_start.slice(0, 5)}</p>
                     <p className="text-xs text-gray-300">{a.time_end.slice(0, 5)}</p>
                   </div>
-                  {doctor && (
-                    <div
-                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ background: doctor.color ?? '#6B7280' }}
-                    />
-                  )}
+                  <div
+                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                    style={{ background: apptColor(a) }}
+                  />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">
                       {a.patient?.full_name ?? 'Walk-in'}
