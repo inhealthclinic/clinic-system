@@ -115,22 +115,9 @@ const NAV: NavItem[] = [
     ),
   },
   {
-    label: 'Врачи',
-    href: '/settings/doctors',
-    dividerBefore: true,
-    icon: (
-      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
-        <circle cx="12" cy="7" r="3.5" stroke="currentColor" strokeWidth="1.5"/>
-        <path d="M5 20c0-3.038 3.134-5.5 7-5.5s7 2.462 7 5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        <path d="M16 10.5c1.5.5 2.5 1.5 2.5 3s-1 2.5-2.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        <path d="M16 10.5v5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        <path d="M14.5 13.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-      </svg>
-    ),
-  },
-  {
     label: 'Настройки',
-    href: '/settings/users',
+    href: '/settings/clinic',
+    dividerBefore: true,
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" strokeWidth="1.5"/>
@@ -152,9 +139,8 @@ export function Sidebar({ onClose }: SidebarProps) {
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/'
     // Settings sub-pages all start with /settings — match any of them when href is /settings/users
-    if (href === '/settings/users') {
-      return pathname.startsWith('/settings/users') ||
-        pathname.startsWith('/settings/roles')
+    if (href === '/settings/clinic') {
+      return pathname.startsWith('/settings')
     }
     return pathname.startsWith(href)
   }

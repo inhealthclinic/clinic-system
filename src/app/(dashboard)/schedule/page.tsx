@@ -144,10 +144,11 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
 
-  /* ── clinic working hours ── */
-  const [workStart, setWorkStart] = useState('08:00')
-  const [workEnd, setWorkEnd]     = useState('20:00')
-  const [workDayOff, setWorkDayOff] = useState(false)
+  /* ── clinic working hours + slot interval ── */
+  const [workStart, setWorkStart]     = useState('08:00')
+  const [workEnd, setWorkEnd]         = useState('20:00')
+  const [workDayOff, setWorkDayOff]   = useState(false)
+  const [slotInterval, setSlotInterval] = useState(15)
 
   const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition bg-white'
   const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
@@ -182,6 +183,10 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
         const wh = data?.settings?.working_hours
         if (!wh) return
         // map day of week from date
+        // Read slot interval
+        if (data?.settings?.slot_interval_min) {
+          setSlotInterval(data.settings.slot_interval_min as number)
+        }
         const applyDay = (dateStr: string) => {
           const dayIdx = new Date(dateStr + 'T12:00:00').getDay() // 0=Sun
           const KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
@@ -303,14 +308,15 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
     return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
   }
 
-  /* generate 15-min slots from workStart to workEnd */
+  /* generate slots from workStart to workEnd at slotInterval */
   const ALL_SLOTS = (() => {
     const [sh, sm] = workStart.split(':').map(Number)
     const [eh, em] = workEnd.split(':').map(Number)
     const startMin = (sh ?? 8) * 60 + (sm ?? 0)
     const endMin   = (eh ?? 20) * 60 + (em ?? 0)
+    const step     = slotInterval ?? 15
     const slots: string[] = []
-    for (let t = startMin; t < endMin; t += 15) {
+    for (let t = startMin; t < endMin; t += step) {
       slots.push(`${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`)
     }
     return slots

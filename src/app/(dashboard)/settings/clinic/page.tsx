@@ -16,7 +16,13 @@ type WorkingHours = Record<string, DayHours>
 interface ClinicSettings {
   working_hours: WorkingHours
   default_appointment_duration: number
+  slot_interval_min: number
+  booking_advance_hours_min: number
+  booking_days_max: number
   sms_sender_name: string
+  receipt_bin: string
+  receipt_legal_name: string
+  receipt_address: string
 }
 
 interface ClinicData {
@@ -70,8 +76,14 @@ export default function ClinicSettingsPage() {
   const [phone, setPhone]     = useState('')
   const [email, setEmail]     = useState('')
   const [timezone, setTimezone] = useState('Asia/Almaty')
-  const [duration, setDuration] = useState(30)
-  const [smsSender, setSmsSender] = useState('')
+  const [duration, setDuration]       = useState(30)
+  const [slotInterval, setSlotInterval] = useState(15)
+  const [advanceHours, setAdvanceHours] = useState(0)
+  const [daysMax, setDaysMax]         = useState(60)
+  const [smsSender, setSmsSender]     = useState('')
+  const [receiptBin, setReceiptBin]   = useState('')
+  const [receiptLegal, setReceiptLegal] = useState('')
+  const [receiptAddress, setReceiptAddress] = useState('')
   const [workingHours, setWorkingHours] = useState<WorkingHours>({ ...DEFAULT_HOURS })
 
   const load = useCallback(async () => {
@@ -97,7 +109,13 @@ export default function ClinicSettingsPage() {
 
     const s = d.settings
     setDuration(s?.default_appointment_duration ?? 30)
+    setSlotInterval(s?.slot_interval_min ?? 15)
+    setAdvanceHours(s?.booking_advance_hours_min ?? 0)
+    setDaysMax(s?.booking_days_max ?? 60)
     setSmsSender(s?.sms_sender_name ?? '')
+    setReceiptBin(s?.receipt_bin ?? '')
+    setReceiptLegal(s?.receipt_legal_name ?? '')
+    setReceiptAddress(s?.receipt_address ?? '')
     setWorkingHours({ ...DEFAULT_HOURS, ...(s?.working_hours ?? {}) })
 
     setLoading(false)
@@ -117,9 +135,15 @@ export default function ClinicSettingsPage() {
     setError('')
 
     const newSettings: ClinicSettings = {
-      working_hours: workingHours,
+      working_hours:                workingHours,
       default_appointment_duration: duration,
-      sms_sender_name: smsSender,
+      slot_interval_min:            slotInterval,
+      booking_advance_hours_min:    advanceHours,
+      booking_days_max:             daysMax,
+      sms_sender_name:              smsSender,
+      receipt_bin:                  receiptBin.trim(),
+      receipt_legal_name:           receiptLegal.trim(),
+      receipt_address:              receiptAddress.trim(),
     }
 
     const { error: err } = await supabase
@@ -250,19 +274,38 @@ export default function ClinicSettingsPage() {
 
         {/* Section: Настройки записи */}
         <div className="bg-white rounded-xl border border-gray-100 p-6">
-          <h2 className={sectionHd}>Настройки записи</h2>
+          <h2 className={sectionHd}>Расписание и запись</h2>
           <div className="space-y-4">
-            <div>
-              <label className={lbl}>Длительность приёма по умолчанию (мин)</label>
-              <input
-                type="number"
-                min={5}
-                max={480}
-                step={5}
-                className={inp}
-                value={duration}
-                onChange={e => setDuration(Number(e.target.value))}
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={lbl}>Длительность приёма по умолчанию (мин)</label>
+                <input type="number" min={5} max={480} step={5} className={inp}
+                  value={duration} onChange={e => setDuration(Number(e.target.value))} />
+              </div>
+              <div>
+                <label className={lbl}>Интервал слотов (мин)</label>
+                <select className={inp} value={slotInterval} onChange={e => setSlotInterval(Number(e.target.value))}>
+                  <option value={10}>10 минут</option>
+                  <option value={15}>15 минут</option>
+                  <option value={20}>20 минут</option>
+                  <option value={30}>30 минут</option>
+                  <option value={60}>1 час</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={lbl}>Минимум часов до записи</label>
+                <input type="number" min={0} max={72} step={1} className={inp}
+                  value={advanceHours} onChange={e => setAdvanceHours(Number(e.target.value))}
+                  placeholder="0 = без ограничений" />
+                <p className="text-xs text-gray-400 mt-1">0 — без ограничений</p>
+              </div>
+              <div>
+                <label className={lbl}>Запись вперёд максимум (дней)</label>
+                <input type="number" min={1} max={365} step={1} className={inp}
+                  value={daysMax} onChange={e => setDaysMax(Number(e.target.value))} />
+              </div>
             </div>
             <div>
               <label className={lbl}>Часовой пояс</label>
@@ -272,16 +315,50 @@ export default function ClinicSettingsPage() {
                 ))}
               </select>
             </div>
+          </div>
+        </div>
+
+        {/* Section: Реквизиты (чек) */}
+        <div className="bg-white rounded-xl border border-gray-100 p-6">
+          <h2 className={sectionHd}>Реквизиты для чеков и квитанций</h2>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={lbl}>БИН / ИНН организации</label>
+                <input className={inp} value={receiptBin}
+                  onChange={e => setReceiptBin(e.target.value)}
+                  placeholder="123456789012" maxLength={12} />
+              </div>
+              <div>
+                <label className={lbl}>Юридическое название</label>
+                <input className={inp} value={receiptLegal}
+                  onChange={e => setReceiptLegal(e.target.value)}
+                  placeholder='ТОО "ИН ХЭЛС"' />
+              </div>
+            </div>
+            <div>
+              <label className={lbl}>Юридический адрес</label>
+              <input className={inp} value={receiptAddress}
+                onChange={e => setReceiptAddress(e.target.value)}
+                placeholder="г. Алматы, ул. Примерная, д. 1" />
+            </div>
+          </div>
+        </div>
+
+        {/* Section: Уведомления */}
+        <div className="bg-white rounded-xl border border-gray-100 p-6">
+          <h2 className={sectionHd}>SMS и уведомления</h2>
+          <div className="space-y-4">
             <div>
               <label className={lbl}>Имя отправителя SMS</label>
-              <input
-                className={inp}
-                value={smsSender}
+              <input className={inp} value={smsSender}
                 onChange={e => setSmsSender(e.target.value)}
-                placeholder="MyClinic"
-                maxLength={11}
-              />
-              <p className="text-xs text-gray-400 mt-1">Латиница, до 11 символов</p>
+                placeholder="INHEALTH" maxLength={11} />
+              <p className="text-xs text-gray-400 mt-1">Латиница, до 11 символов. Отображается у получателя вместо номера.</p>
+            </div>
+            <div className="bg-blue-50 rounded-lg px-4 py-3 text-sm text-blue-700">
+              Шаблоны текстов SMS и WhatsApp настраиваются в разделе{' '}
+              <a href="/settings/notifications" className="font-medium underline">Уведомления →</a>
             </div>
           </div>
         </div>
