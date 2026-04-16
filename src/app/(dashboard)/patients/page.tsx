@@ -5,6 +5,67 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { Patient } from '@/types'
 
+/* ─── MedElement: Print patient card (карточка пациента) ─── */
+function printPatientCard(p: Patient) {
+  const w = window.open('', '_blank', 'width=600,height=680')
+  if (!w) return
+  const dob = p.birth_date
+    ? new Date(p.birth_date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '—'
+  const created = new Date(p.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  const balance = p.balance_amount > 0
+    ? `+${p.balance_amount.toLocaleString('ru-RU')} ₸ (депозит)`
+    : p.debt_amount > 0
+    ? `-${p.debt_amount.toLocaleString('ru-RU')} ₸ (долг)`
+    : '0 ₸'
+  const genderRu = p.gender === 'male' ? 'Мужской' : p.gender === 'female' ? 'Женский' : '—'
+  const statusRu = (STATUS_LABEL as Record<string, string>)[p.status] ?? p.status
+
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Карточка пациента</title>
+  <style>
+    body{font-family:Arial,sans-serif;max-width:560px;margin:24px auto;font-size:13px;color:#111}
+    .header{display:flex;align-items:center;gap:14px;margin-bottom:18px;padding-bottom:14px;border-bottom:2px solid #111}
+    .avatar{width:52px;height:52px;border-radius:50%;background:#dbeafe;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#1d4ed8;flex-shrink:0}
+    h1{font-size:20px;margin:0 0 2px}
+    .num{font-size:12px;color:#777}
+    .section{margin-bottom:14px}
+    .section h3{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#999;border-bottom:1px solid #eee;padding-bottom:4px;margin:0 0 8px}
+    .row{display:flex;gap:12px;padding:3px 0}
+    .lbl{color:#666;min-width:140px;flex-shrink:0}
+    .badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;background:#e0f2fe;color:#0369a1}
+    .foot{margin-top:20px;font-size:10px;color:#ccc;border-top:1px dashed #ddd;padding-top:8px;text-align:center}
+  </style></head><body>
+  <div class="header">
+    <div class="avatar">${p.full_name[0]}</div>
+    <div><h1>${p.full_name}</h1><div class="num">Карта № ${p.patient_number ?? '—'} &nbsp;·&nbsp; <span class="badge">${statusRu}</span></div></div>
+  </div>
+  <div class="section">
+    <h3>Личные данные</h3>
+    <div class="row"><span class="lbl">Дата рождения</span><span>${dob}</span></div>
+    <div class="row"><span class="lbl">Пол</span><span>${genderRu}</span></div>
+    <div class="row"><span class="lbl">ИИН</span><span>${p.iin ?? '—'}</span></div>
+  </div>
+  <div class="section">
+    <h3>Контакты</h3>
+    <div class="row"><span class="lbl">Телефоны</span><span>${(p.phones ?? []).join(', ') || '—'}</span></div>
+    <div class="row"><span class="lbl">Email</span><span>${p.email ?? '—'}</span></div>
+    <div class="row"><span class="lbl">Город</span><span>${p.city ?? '—'}</span></div>
+  </div>
+  <div class="section">
+    <h3>Финансы</h3>
+    <div class="row"><span class="lbl">Баланс / долг</span><span>${balance}</span></div>
+  </div>
+  ${p.notes ? `<div class="section"><h3>Примечания</h3><p style="margin:0;color:#444">${p.notes}</p></div>` : ''}
+  <div class="section">
+    <h3>Дата регистрации</h3>
+    <div class="row"><span class="lbl">Зарегистрирован</span><span>${created}</span></div>
+  </div>
+  <div class="foot">Сформировано: ${new Date().toLocaleString('ru-RU')} &nbsp;·&nbsp; IN HEALTH Медицинский центр</div>
+  <script>window.onload=()=>{window.print()}</script>
+  </body></html>`)
+  w.document.close()
+}
+
 const STATUS_LABEL: Record<string, string> = {
   new: 'Новый',
   active: 'Активный',
@@ -94,6 +155,7 @@ export default function PatientsPage() {
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Статус</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Баланс</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Карта</th>
+                <th className="px-5 py-3" />
               </tr>
             </thead>
             <tbody>
@@ -132,6 +194,14 @@ export default function PatientsPage() {
                     {p.balance_amount === 0 && p.debt_amount === 0 && '—'}
                   </td>
                   <td className="px-5 py-4 text-xs text-gray-400">{p.patient_number ?? '—'}</td>
+                  <td className="px-5 py-4">
+                    <button
+                      onClick={() => printPatientCard(p)}
+                      title="Печать карточки пациента"
+                      className="text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-colors">
+                      📄 Карточка
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

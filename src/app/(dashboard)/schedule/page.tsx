@@ -486,6 +486,52 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
   )
 }
 
+// ─── AMO CRM: Print appointment slip (талон на приём) ────────────────────────
+
+function printAppointmentSlip(appt: Appointment) {
+  const w = window.open('', '_blank', 'width=420,height=480')
+  if (!w) return
+  const patient = appt.patient as { full_name: string; phones: string[] } | undefined
+  const doctor  = appt.doctor  as { last_name: string; first_name: string } | undefined
+  const dateStr = new Date(appt.date + 'T12:00:00').toLocaleDateString('ru-RU', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  })
+  const statusRu = ({ pending: 'Ожидает', confirmed: 'Подтверждено', arrived: 'Прибыл', completed: 'Завершено', no_show: 'Не явился', cancelled: 'Отменено' } as Record<string, string>)[appt.status] ?? appt.status
+
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Талон на приём</title>
+  <style>
+    body{font-family:Arial,sans-serif;max-width:360px;margin:24px auto;font-size:13px;color:#111}
+    .logo{text-align:center;font-size:18px;font-weight:700;margin-bottom:2px}
+    .sub{text-align:center;font-size:11px;color:#777;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #111}
+    .big{font-size:22px;font-weight:700;text-align:center;margin:12px 0 4px;letter-spacing:-0.5px}
+    .time-row{display:flex;justify-content:center;gap:12px;margin-bottom:14px}
+    .timebox{background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:8px 18px;text-align:center}
+    .timebox .lbl{font-size:10px;color:#0284c7;text-transform:uppercase;letter-spacing:.5px}
+    .timebox .val{font-size:20px;font-weight:700;color:#0369a1}
+    .row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dotted #eee}
+    .lbl2{color:#777}
+    .status{text-align:center;margin:14px 0 0;font-size:12px;color:#16a34a;font-weight:600}
+    .foot{text-align:center;font-size:10px;color:#ccc;margin-top:16px;border-top:1px dashed #ddd;padding-top:8px}
+  </style></head><body>
+  <div class="logo">IN HEALTH</div>
+  <div class="sub">Медицинский центр — Талон на приём</div>
+  <div class="big">${patient?.full_name ?? 'Walk-in'}</div>
+  <div class="time-row">
+    <div class="timebox"><div class="lbl">Начало</div><div class="val">${appt.time_start.slice(0,5)}</div></div>
+    <div class="timebox"><div class="lbl">Конец</div><div class="val">${appt.time_end.slice(0,5)}</div></div>
+  </div>
+  <div class="row"><span class="lbl2">Дата</span><span>${dateStr}</span></div>
+  <div class="row"><span class="lbl2">Врач</span><span>${doctor ? `${doctor.last_name} ${doctor.first_name}` : '—'}</span></div>
+  <div class="row"><span class="lbl2">Длительность</span><span>${appt.duration_min ?? 30} мин</span></div>
+  ${patient?.phones?.[0] ? `<div class="row"><span class="lbl2">Телефон</span><span>${patient.phones[0]}</span></div>` : ''}
+  ${appt.notes ? `<div class="row"><span class="lbl2">Примечание</span><span style="max-width:180px;text-align:right">${appt.notes}</span></div>` : ''}
+  <div class="status">Статус: ${statusRu}</div>
+  <div class="foot">IN HEALTH · Распечатано: ${new Date().toLocaleString('ru-RU')}</div>
+  <script>window.onload=()=>{window.print()}</script>
+  </body></html>`)
+  w.document.close()
+}
+
 // ─── AppointmentDetailDrawer ──────────────────────────────────────────────────
 
 function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
@@ -543,11 +589,19 @@ function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
             <p className="text-base font-semibold text-gray-900">{patient?.full_name ?? 'Walk-in'}</p>
             {patient?.phones?.[0] && <p className="text-xs text-gray-400 mt-0.5">{patient.phones[0]}</p>}
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 mt-0.5">
-            <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
-              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-          </button>
+          <div className="flex items-center gap-2 mt-0.5">
+            <button
+              onClick={() => printAppointmentSlip(appt)}
+              title="Печать талона"
+              className="text-gray-400 hover:text-blue-600 transition-colors text-sm px-2 py-1 rounded-lg hover:bg-blue-50">
+              🖨
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
