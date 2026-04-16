@@ -1321,9 +1321,59 @@ export default function SchedulePage() {
   const [showCreate, setShowCreate] = useState(false)
   const [selected, setSelected] = useState<Appointment | null>(null)
   const [search, setSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
 
+  // Sidebar state
+  const [doctors, setDoctors] = useState<DoctorRow[]>([])
+  const [activeDoctors, setActiveDoctors] = useState<Set<string>>(new Set())
+  const [birthdays, setBirthdays] = useState<{ id: string; full_name: string }[]>([])
+  const searchWrapRef = useRef<HTMLDivElement>(null)
+
   const dates = getDatesForSpan(date, span)
+
+  // Load doctors once
+  useEffect(() => {
+    supabase.from('doctors')
+      .select('id,first_name,last_name,color,consultation_duration')
+      .eq('is_active', true).order('last_name')
+      .then(({ data }) => {
+        const list = (data ?? []) as DoctorRow[]
+        setDoctors(list)
+        setActiveDoctors(new Set(list.map(d => d.id)))
+      })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load birthdays when date changes
+  useEffect(() => {
+    if (!date) return
+    const d = new Date(date + 'T12:00:00')
+    const month = d.getMonth() + 1
+    const day = d.getDate()
+    supabase.from('patients')
+      .select('id, full_name, birth_date')
+      .not('birth_date', 'is', null)
+      .is('deleted_at', null)
+      .then(({ data }) => {
+        const bdays = (data ?? []).filter((p: { birth_date: string | null; id: string; full_name: string }) => {
+          if (!p.birth_date) return false
+          const bd = new Date(p.birth_date + 'T12:00:00')
+          return bd.getMonth() + 1 === month && bd.getDate() === day
+        })
+        setBirthdays(bdays as { id: string; full_name: string }[])
+      })
+  }, [date]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close search dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) {
+        setSearchOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1370,6 +1420,7 @@ export default function SchedulePage() {
 
   // Shared filter logic for both list and grid views
   const filteredAppts = appointments.filter(a => {
+    if (activeDoctors.size > 0 && !activeDoctors.has(a.doctor_id)) return false
     if (!search.trim()) return true
     const q = search.toLowerCase()
     const patName = (a.patient?.full_name ?? '').toLowerCase()
@@ -1378,8 +1429,31 @@ export default function SchedulePage() {
     return patName.includes(q) || docName.includes(q)
   })
 
+  // Search dropdown results (limited to 8)
+  const searchDropdownResults = search.trim().length >= 2
+    ? appointments.filter(a => {
+        const q = search.toLowerCase()
+        const patName = (a.patient?.full_name ?? '').toLowerCase()
+        const doc = a.doctor as { last_name: string; first_name: string } | undefined
+        const docName = doc ? `${doc.last_name} ${doc.first_name}`.toLowerCase() : ''
+        return patName.includes(q) || docName.includes(q)
+      }).slice(0, 8)
+    : []
+
+  // All doctors checked = show all
+  const allActive = doctors.length > 0 && activeDoctors.size === doctors.length
+  const toggleDoctor = (id: string) => {
+    setActiveDoctors(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const countByDoctor = (docId: string) => appointments.filter(a => a.doctor_id === docId).length
+
   return (
-    <div className={span === 1 ? 'max-w-3xl mx-auto' : 'w-full'}>
+    <div className={span === 1 ? 'max-w-5xl mx-auto' : 'w-full'}>
       {/* Toolbar */}
       <div className="flex items-center gap-3 mb-4">
 
@@ -1452,94 +1526,182 @@ export default function SchedulePage() {
 
       </div>
 
-      {/* Search bar */}
-      <div className="relative mb-4">
-        <svg width="16" height="16" fill="none" viewBox="0 0 24 24"
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
-          <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5"/>
-          <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Поиск по имени пациента или врача..."
-          className="w-full pl-9 pr-10 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
-        />
-        {search && (
-          <button onClick={() => setSearch('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-            <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
-              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-          </button>
-        )}
-      </div>
+      {/* Body: sidebar + main */}
+      <div className="flex gap-3">
 
-      {/* Content */}
-      {loading ? (
-        <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
-          Загрузка...
-        </div>
-      ) : span > 1 ? (
-        <MultiDayGrid
-          dates={dates}
-          appointments={filteredAppts}
-          onCardClick={setSelected}
-          onDayClick={d => { setDate(d); setSpan(1); setView('list') }}
-        />
-      ) : appointments.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
-          <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
-          <button onClick={() => setShowCreate(true)}
-            className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-            + Создать первую запись
-          </button>
-        </div>
-      ) : filteredAppts.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
-          Ничего не найдено по запросу «{search}»
-        </div>
-      ) : view === 'list' ? (
-        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <div className="divide-y divide-gray-50">
-            {filteredAppts.map(a => {
-              const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
-              const doctor = a.doctor as { last_name: string; first_name: string; color: string } | undefined
-              return (
-                <div
-                  key={a.id}
-                  onClick={() => setSelected(a)}
-                  className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50 transition-colors cursor-pointer"
+        {/* ── Left sidebar ── */}
+        <div className="w-44 flex-shrink-0 space-y-2">
+
+          {/* Birthdays */}
+          {birthdays.length > 0 && (
+            <div className="bg-pink-50 border border-pink-100 rounded-lg px-2.5 py-2">
+              <p className="text-xs text-pink-600 font-medium flex items-center gap-1">
+                🎂 <span>{birthdays.length} дн. рождения</span>
+              </p>
+              <div className="mt-1 space-y-0.5">
+                {birthdays.map(b => (
+                  <p key={b.id} className="text-[11px] text-pink-500 truncate">{b.full_name}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Doctors */}
+          {doctors.length > 0 && (
+            <div className="bg-white border border-gray-100 rounded-lg px-2.5 py-2">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Врачи</span>
+                <button
+                  onClick={() => setActiveDoctors(allActive ? new Set() : new Set(doctors.map(d => d.id)))}
+                  className="text-[10px] text-blue-500 hover:text-blue-700 font-medium"
                 >
-                  <div className="w-20 flex-shrink-0">
-                    <p className="text-sm font-mono text-gray-700">{a.time_start.slice(0, 5)}</p>
-                    <p className="text-xs text-gray-300">{a.time_end.slice(0, 5)}</p>
-                  </div>
-                  <div
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ background: apptColor(a) }}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {a.patient?.full_name ?? 'Walk-in'}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {doctor ? `${doctor.last_name} ${doctor.first_name}` : ''}
-                      {a.is_walkin && <span className="ml-2 text-orange-400">walk-in</span>}
-                    </p>
-                  </div>
-                  <span className={`text-xs font-medium px-2.5 py-1 rounded-full border flex-shrink-0 ${st.cls}`}>
-                    {st.label}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
+                  {allActive ? 'скрыть все' : 'показать все'}
+                </button>
+              </div>
+              <div className="space-y-0.5">
+                {doctors.map(d => {
+                  const cnt = countByDoctor(d.id)
+                  const checked = activeDoctors.has(d.id)
+                  return (
+                    <button key={d.id} onClick={() => toggleDoctor(d.id)}
+                      className={`w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors ${checked ? 'opacity-100' : 'opacity-40'} hover:bg-gray-50`}>
+                      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: d.color ?? '#94a3b8' }} />
+                      <span className="text-[11px] text-gray-700 truncate flex-1">
+                        {d.last_name} {d.first_name[0]}.
+                      </span>
+                      {cnt > 0 && (
+                        <span className="text-[10px] text-gray-400 flex-shrink-0">{cnt}</span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
-      ) : (
-        <TimeGrid appointments={filteredAppts} onCardClick={setSelected} />
-      )}
+
+        {/* ── Main content ── */}
+        <div className="flex-1 min-w-0">
+
+          {/* Search bar with dropdown */}
+          <div ref={searchWrapRef} className="relative mb-3">
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24"
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+              <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={e => { setSearch(e.target.value); setSearchOpen(true) }}
+              onFocus={() => search.trim().length >= 2 && setSearchOpen(true)}
+              placeholder="Поиск по пациенту или врачу..."
+              className="w-full pl-9 pr-9 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+            />
+            {search && (
+              <button onClick={() => { setSearch(''); setSearchOpen(false) }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
+                  <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </button>
+            )}
+            {/* Dropdown */}
+            {searchOpen && search.trim().length >= 2 && (
+              <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden">
+                {searchDropdownResults.length === 0 ? (
+                  <p className="px-4 py-3 text-sm text-gray-400">Ничего не найдено</p>
+                ) : (
+                  searchDropdownResults.map(a => {
+                    const doc = a.doctor as { last_name: string; first_name: string; color: string } | undefined
+                    return (
+                      <button key={a.id} type="button"
+                        onClick={() => { setSelected(a); setSearchOpen(false) }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-blue-50 transition-colors text-left border-b border-gray-50 last:border-0">
+                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: apptColor(a) }} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{a.patient?.full_name ?? 'Walk-in'}</p>
+                          {doc && <p className="text-xs text-gray-400 truncate">{doc.last_name} {doc.first_name}</p>}
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <p className="text-xs font-mono text-gray-600">{a.time_start.slice(0, 5)}</p>
+                          {span > 1 && <p className="text-[10px] text-gray-400">{new Date(a.date + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}</p>}
+                        </div>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Content */}
+          {loading ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+              Загрузка...
+            </div>
+          ) : span > 1 ? (
+            <MultiDayGrid
+              dates={dates}
+              appointments={filteredAppts}
+              onCardClick={setSelected}
+              onDayClick={d => { setDate(d); setSpan(1); setView('list') }}
+            />
+          ) : appointments.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
+              <p className="text-sm text-gray-400 mb-3">Записей на этот день нет</p>
+              <button onClick={() => setShowCreate(true)}
+                className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+                + Создать первую запись
+              </button>
+            </div>
+          ) : filteredAppts.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+              Ничего не найдено по запросу «{search}»
+            </div>
+          ) : view === 'list' ? (
+            <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+              <div className="divide-y divide-gray-50">
+                {filteredAppts.map(a => {
+                  const st = STATUS_STYLE[a.status] ?? STATUS_STYLE.pending
+                  const doctor = a.doctor as { last_name: string; first_name: string; color: string } | undefined
+                  return (
+                    <div
+                      key={a.id}
+                      onClick={() => setSelected(a)}
+                      className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50 transition-colors cursor-pointer"
+                    >
+                      <div className="w-20 flex-shrink-0">
+                        <p className="text-sm font-mono text-gray-700">{a.time_start.slice(0, 5)}</p>
+                        <p className="text-xs text-gray-300">{a.time_end.slice(0, 5)}</p>
+                      </div>
+                      <div
+                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        style={{ background: apptColor(a) }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">
+                          {a.patient?.full_name ?? 'Walk-in'}
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          {doctor ? `${doctor.last_name} ${doctor.first_name}` : ''}
+                          {a.is_walkin && <span className="ml-2 text-orange-400">walk-in</span>}
+                        </p>
+                      </div>
+                      <span className={`text-xs font-medium px-2.5 py-1 rounded-full border flex-shrink-0 ${st.cls}`}>
+                        {st.label}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ) : (
+            <TimeGrid appointments={filteredAppts} onCardClick={setSelected} />
+          )}
+
+        </div>{/* /main content */}
+      </div>{/* /body flex */}
 
       {showCreate && clinicId && (
         <CreateAppointmentModal
