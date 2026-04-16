@@ -852,15 +852,252 @@ function printAppointmentSlip(appt: Appointment) {
   w.document.close()
 }
 
+// ─── RescheduleModal ─────────────────────────────────────────────────────────
+
+function RescheduleModal({ appt, clinicId, mode, onClose, onDone }: {
+  appt: Appointment
+  clinicId: string
+  mode: 'move' | 'copy'
+  onClose: () => void
+  onDone: () => void
+}) {
+  const supabase = createClient()
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+
+  const [doctors, setDoctors]     = useState<DoctorRow[]>([])
+  const [doctorId, setDoctorId]   = useState(appt.doctor_id ?? '')
+  const [date, setDate]           = useState(tomorrow)
+  const [timeStart, setTimeStart] = useState(appt.time_start.slice(0, 5))
+  const [dur, setDur]             = useState(appt.duration_min ?? 30)
+  const [notes, setNotes]         = useState(appt.notes ?? '')
+  const [workStart, setWorkStart] = useState('08:00')
+  const [workEnd, setWorkEnd]     = useState('20:00')
+  const [workDayOff, setWorkDayOff] = useState(false)
+  const [slotInterval, setSlotInterval] = useState(15)
+  const [takenSlots, setTakenSlots] = useState<string[]>([])
+  const [saving, setSaving]       = useState(false)
+  const [error, setError]         = useState('')
+
+  // load doctors
+  useEffect(() => {
+    supabase.from('doctors').select('id,first_name,last_name,color,consultation_duration')
+      .eq('is_active', true).order('last_name')
+      .then(({ data }) => setDoctors((data ?? []) as DoctorRow[]))
+  }, [])
+
+  // load working hours for selected date
+  useEffect(() => {
+    if (!clinicId) return
+    supabase.from('clinics').select('settings').eq('id', clinicId).single()
+      .then(({ data }) => {
+        const s = data?.settings as { working_hours?: Record<string, { active: boolean; from: string; to: string }>; slot_interval_min?: number } | null
+        const DAY_KEY = ['sun','mon','tue','wed','thu','fri','sat']
+        const dow = new Date(date + 'T12:00:00').getDay()
+        const dayKey = DAY_KEY[dow]!
+        const wh = s?.working_hours?.[dayKey]
+        setWorkDayOff(wh ? !wh.active : false)
+        setWorkStart(wh?.from ?? '08:00')
+        setWorkEnd(wh?.to ?? '20:00')
+        setSlotInterval(s?.slot_interval_min ?? 15)
+      })
+  }, [clinicId, date])
+
+  // load taken slots for doctor+date (exclude self if moving)
+  useEffect(() => {
+    if (!doctorId || !date) return
+    let q = supabase.from('appointments').select('time_start')
+      .eq('doctor_id', doctorId).eq('date', date).neq('status', 'cancelled')
+    if (mode === 'move') q = q.neq('id', appt.id)
+    q.then(({ data }) => setTakenSlots((data ?? []).map(r => r.time_start.slice(0, 5))))
+  }, [doctorId, date])
+
+  const ALL_SLOTS = (() => {
+    const [sh, sm] = workStart.split(':').map(Number)
+    const [eh, em] = workEnd.split(':').map(Number)
+    const start = (sh ?? 8) * 60 + (sm ?? 0)
+    const end   = (eh ?? 20) * 60 + (em ?? 0)
+    const slots: string[] = []
+    for (let t = start; t < end; t += slotInterval)
+      slots.push(`${String(Math.floor(t / 60)).padStart(2,'0')}:${String(t % 60).padStart(2,'0')}`)
+    return slots
+  })()
+
+  const calcEnd = (start: string, min: number) => {
+    const [h, m] = start.split(':').map(Number)
+    const total = (h ?? 0) * 60 + (m ?? 0) + min
+    return `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`
+  }
+
+  const todayStr   = new Date().toISOString().slice(0, 10)
+  const isToday    = date === todayStr
+  const nowMinutes = (() => { const n = new Date(); return n.getHours() * 60 + n.getMinutes() })()
+
+  const handleSubmit = async () => {
+    if (!doctorId || !date || !timeStart) { setError('Заполните все поля'); return }
+    setSaving(true); setError('')
+    const timeEndStr = calcEnd(timeStart, dur)
+
+    if (mode === 'move') {
+      // update existing appointment in-place
+      const { error: err } = await supabase.from('appointments').update({
+        doctor_id: doctorId,
+        date,
+        time_start: timeStart + ':00',
+        time_end:   timeEndStr + ':00',
+        duration_min: dur,
+        notes: notes.trim() || null,
+        status: 'pending',
+      }).eq('id', appt.id)
+      if (err) { setError(err.message); setSaving(false); return }
+    } else {
+      // duplicate: insert new appointment
+      const { error: err } = await supabase.from('appointments').insert({
+        clinic_id:   appt.clinic_id,
+        patient_id:  appt.patient_id,
+        doctor_id:   doctorId,
+        date,
+        time_start:  timeStart + ':00',
+        time_end:    timeEndStr + ':00',
+        duration_min: dur,
+        notes: notes.trim() || null,
+        status: 'pending',
+        is_walkin: appt.is_walkin ?? false,
+      })
+      if (err) { setError(err.message); setSaving(false); return }
+    }
+    setSaving(false)
+    onDone()
+  }
+
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition bg-white'
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md z-10 max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">
+              {mode === 'move' ? '📅 Перенести запись' : '📋 Дублировать запись'}
+            </h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {(appt.patient as { full_name: string } | undefined)?.full_name ?? 'Пациент'}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {/* Doctor */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Врач</label>
+            <div className="space-y-1.5">
+              {doctors.map(d => (
+                <label key={d.id} className={['flex items-center gap-3 border rounded-xl px-3 py-2.5 cursor-pointer transition-colors',
+                  doctorId === d.id ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-gray-300'].join(' ')}>
+                  <input type="radio" name="rs-doctor" value={d.id} checked={doctorId === d.id}
+                    onChange={() => setDoctorId(d.id)} className="accent-blue-600" />
+                  <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: d.color ?? '#9ca3af' }} />
+                  <p className="text-sm font-medium text-gray-900">{d.last_name} {d.first_name}</p>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Date */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Дата</label>
+            <input type="date" className={inputCls} value={date} onChange={e => setDate(e.target.value)} />
+          </div>
+
+          {/* Duration + Time */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-medium text-gray-600">Время</label>
+              <span className="text-xs text-gray-300">{workStart}–{workEnd}</span>
+            </div>
+            <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+              <span className="text-xs text-gray-400">Длительность:</span>
+              {[15, 30, 45, 60, 90, 120].map(m => (
+                <button key={m} type="button" onClick={() => setDur(m)}
+                  className={['px-2 py-0.5 rounded-md text-xs font-medium transition-colors',
+                    dur === m ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'].join(' ')}>
+                  {m < 60 ? `${m}м` : m === 60 ? '1ч' : `${m/60}ч`}
+                </button>
+              ))}
+              {timeStart && <span className="text-xs text-gray-400 ml-auto">до {calcEnd(timeStart, dur)}</span>}
+            </div>
+            {workDayOff ? (
+              <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 text-sm text-orange-700">
+                🚫 Клиника не работает в этот день
+              </div>
+            ) : (
+              <div className="grid grid-cols-6 gap-1.5">
+                {ALL_SLOTS.map(slot => {
+                  const taken    = takenSlots.includes(slot)
+                  const sel      = timeStart === slot
+                  const [sh, sm] = slot.split(':').map(Number)
+                  const isPast   = isToday && ((sh ?? 0) * 60 + (sm ?? 0)) < nowMinutes
+                  const disabled = taken || isPast
+                  return (
+                    <button key={slot} type="button" disabled={disabled}
+                      onClick={() => setTimeStart(slot)}
+                      className={['py-1.5 rounded-lg text-xs font-medium transition-colors',
+                        taken  ? 'bg-red-100 text-red-400 cursor-not-allowed line-through'
+                        : isPast ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                        : sel  ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-700 hover:bg-blue-100 hover:text-blue-700'].join(' ')}>
+                      {slot}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Причина обращения</label>
+            <textarea className={inputCls + ' resize-none'} rows={2} value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Первичный приём / контроль..." />
+          </div>
+
+          {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-100 flex gap-3 flex-shrink-0">
+          <button type="button" onClick={onClose} disabled={saving}
+            className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50">
+            Отмена
+          </button>
+          <button type="button" onClick={handleSubmit} disabled={saving || !timeStart}
+            className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            {saving ? 'Сохранение...' : mode === 'move' ? 'Перенести' : 'Создать копию'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── AppointmentDetailDrawer ──────────────────────────────────────────────────
 
-function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
+function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   appt: Appointment
+  clinicId: string
   onClose: () => void
   onUpdate: () => void
 }) {
   const supabase = createClient()
   const [saving, setSaving] = useState(false)
+  const [rescheduleMode, setRescheduleMode] = useState<'move' | 'copy' | null>(null)
 
   const updateStatus = async (status: string) => {
     setSaving(true)
@@ -954,6 +1191,25 @@ function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
           )}
         </div>
 
+        {/* Reschedule / Duplicate actions */}
+        <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 flex gap-2">
+          <button onClick={() => setRescheduleMode('move')}
+            className="flex-1 border border-gray-200 text-gray-600 hover:bg-orange-50 hover:border-orange-300 hover:text-orange-600 rounded-lg py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5">
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
+              <path d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1-4l-3 3m0 0l-3-3m3 3V4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            Перенести
+          </button>
+          <button onClick={() => setRescheduleMode('copy')}
+            className="flex-1 border border-gray-200 text-gray-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 rounded-lg py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5">
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
+              <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            Дублировать
+          </button>
+        </div>
+
         {nextActions.length > 0 && (
           <div className="px-5 py-4 border-t border-gray-100 flex-shrink-0 space-y-2">
             {nextActions.map(a => (
@@ -969,6 +1225,16 @@ function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
           </div>
         )}
       </div>
+
+      {rescheduleMode && (
+        <RescheduleModal
+          appt={appt}
+          clinicId={clinicId}
+          mode={rescheduleMode}
+          onClose={() => setRescheduleMode(null)}
+          onDone={() => { setRescheduleMode(null); onUpdate(); onClose() }}
+        />
+      )}
     </>
   )
 }
@@ -1205,6 +1471,7 @@ export default function SchedulePage() {
       {selected && (
         <AppointmentDetailDrawer
           appt={selected}
+          clinicId={clinicId}
           onClose={() => setSelected(null)}
           onUpdate={load}
         />
