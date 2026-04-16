@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -87,6 +87,14 @@ const INT_ICON: Record<string, string> = {
   call: '📞', whatsapp: '💬', note: '📝', email: '✉️', visit: '🏥', sms: '📱',
 }
 
+const PERIOD_OPTS = [
+  { key: 'all',   label: 'Все' },
+  { key: 'today', label: 'Сегодня' },
+  { key: 'week',  label: '7 дней' },
+  { key: 'month', label: '30 дней' },
+] as const
+type PeriodKey = typeof PERIOD_OPTS[number]['key']
+
 // ─── types ───────────────────────────────────────────────────────────────────
 
 interface DealRow {
@@ -99,6 +107,12 @@ interface DealRow {
   notes: string | null
   status: string
   created_at: string
+  // amoCRM extensions (may be undefined if migration not yet run)
+  deal_value?: number | null
+  expected_close_date?: string | null
+  tags?: string[] | null
+  assigned_to?: string | null
+  first_owner_id?: string | null
   patient: { id: string; full_name: string; phones: string[] } | null
 }
 
@@ -111,14 +125,53 @@ interface Interaction {
   created_at: string
 }
 
+interface TaskRow {
+  id: string
+  title: string
+  type: string | null
+  priority: string
+  status: string
+  due_at: string | null
+  assigned_to: string | null
+  created_at: string
+}
+
+interface UserOption {
+  id: string
+  name: string
+  avatar_url: string | null
+}
+
 interface Stage { key: string; label: string; color: string }
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+const fmtTenge = (n: number | null | undefined) => {
+  if (n === null || n === undefined || isNaN(Number(n))) return ''
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Number(n)) + ' ₸'
+}
+
+const daysSince = (iso: string) =>
+  Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+
+const periodCutoff = (p: PeriodKey): number | null => {
+  const now = Date.now()
+  if (p === 'today') return now - 86400000
+  if (p === 'week')  return now - 7 * 86400000
+  if (p === 'month') return now - 30 * 86400000
+  return null
+}
+
+const initials = (name: string) => {
+  const parts = name.trim().split(/\s+/)
+  return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '·'
+}
 
 // ─── TransferModal ────────────────────────────────────────────────────────────
 
-function TransferModal({ deal, medicalStages, clinicId, onClose, onTransferred }: {
+function TransferModal({ deal, medicalStages, onClose, onTransferred }: {
   deal: DealRow
   medicalStages: Stage[]
-  clinicId: string
   onClose: () => void
   onTransferred: () => void
 }) {
@@ -163,17 +216,10 @@ function TransferModal({ deal, medicalStages, clinicId, onClose, onTransferred }
         </div>
 
         <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-50"
-          >
+          <button onClick={onClose} className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-50">
             Отмена
           </button>
-          <button
-            onClick={handleTransfer}
-            disabled={saving}
-            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium"
-          >
+          <button onClick={handleTransfer} disabled={saving} className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
             {saving ? 'Перевод...' : '→ Перевести'}
           </button>
         </div>
@@ -243,6 +289,7 @@ function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
           priority: 'high',
           status: 'new',
           patient_id: patient.id,
+          deal_id: deal.id,
           due_at: due.toISOString(),
         })
       }
@@ -254,40 +301,20 @@ function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
 
   return (
     <form onSubmit={handleSubmit} className="bg-white rounded-lg border border-blue-200 p-3 shadow-sm space-y-2">
-      <input
-        autoFocus
-        value={name}
-        onChange={e => setName(e.target.value)}
-        placeholder="Имя *"
-        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-      />
-      <input
-        value={phone}
-        onChange={e => setPhone(e.target.value)}
-        placeholder="Телефон"
-        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-      />
-      <select
-        value={source}
-        onChange={e => setSource(e.target.value)}
-        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-      >
+      <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Имя *"
+        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+      <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="Телефон"
+        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+      <select value={source} onChange={e => setSource(e.target.value)}
+        className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
         <option value="">Источник</option>
         {sources.map(s => <option key={s} value={s}>{s}</option>)}
       </select>
       <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="flex-1 border border-gray-200 text-gray-500 rounded-lg py-1.5 text-xs font-medium hover:bg-gray-50"
-        >
+        <button type="button" onClick={onCancel} className="flex-1 border border-gray-200 text-gray-500 rounded-lg py-1.5 text-xs font-medium hover:bg-gray-50">
           Отмена
         </button>
-        <button
-          type="submit"
-          disabled={saving || !name.trim()}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-1.5 text-xs font-medium"
-        >
+        <button type="submit" disabled={saving || !name.trim()} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-1.5 text-xs font-medium">
           {saving ? '...' : 'Добавить'}
         </button>
       </div>
@@ -297,56 +324,107 @@ function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
 
 // ─── DealCard ────────────────────────────────────────────────────────────────
 
-function DealCard({ deal, sources, onDragStart, onClick, onTransfer }: {
+function DealCard({ deal, owners, selected, selectMode, onToggleSelect, onDragStart, onClick, onTransfer }: {
   deal: DealRow
-  sources: string[]
+  owners: UserOption[]
+  selected: boolean
+  selectMode: boolean
+  onToggleSelect: (id: string) => void
   onDragStart: (id: string) => void
   onClick: (deal: DealRow) => void
   onTransfer?: (deal: DealRow) => void
 }) {
   const p = PRIORITY_STYLE[deal.priority] ?? PRIORITY_STYLE.warm
-  const daysInStage = Math.floor((Date.now() - new Date(deal.created_at).getTime()) / (1000 * 60 * 60 * 24))
+  const days = daysSince(deal.created_at)
+  const stale = days > 7
+  const owner = owners.find(o => o.id === (deal.assigned_to ?? deal.first_owner_id))
+
   return (
     <div
-      draggable
+      draggable={!selectMode}
       onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart(deal.id) }}
-      onClick={() => onClick(deal)}
-      className="bg-white rounded-lg border border-gray-100 p-3 shadow-sm hover:shadow-md transition-all cursor-pointer active:opacity-60 select-none"
+      onClick={() => selectMode ? onToggleSelect(deal.id) : onClick(deal)}
+      className={[
+        'rounded-lg border p-3 shadow-sm hover:shadow-md transition-all cursor-pointer active:opacity-60 select-none',
+        selected ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200' : 'bg-white border-gray-100',
+        stale && !selected ? 'border-l-2 border-l-orange-400' : '',
+      ].join(' ')}
     >
       <div className="flex items-start justify-between gap-2 mb-1.5">
-        <p className="text-sm font-medium text-gray-900 leading-tight">
-          {deal.patient?.full_name ?? '—'}
-        </p>
+        <div className="flex items-start gap-2 min-w-0">
+          {selectMode && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={(e) => { e.stopPropagation(); onToggleSelect(deal.id) }}
+              onClick={(e) => e.stopPropagation()}
+              className="mt-0.5 w-4 h-4 accent-blue-600 flex-shrink-0"
+            />
+          )}
+          <p className="text-sm font-medium text-gray-900 leading-tight truncate">
+            {deal.patient?.full_name ?? '—'}
+          </p>
+        </div>
         <span className={`text-xs font-medium px-1.5 py-0.5 rounded flex-shrink-0 ${p.bg} ${p.text}`}>
           {p.label}
         </span>
       </div>
+
+      {/* Value (highlighted) */}
+      {deal.deal_value != null && Number(deal.deal_value) > 0 && (
+        <p className="text-sm font-semibold text-emerald-600 mb-1">{fmtTenge(deal.deal_value)}</p>
+      )}
+
       {deal.patient?.phones?.[0] && (
         <p className="text-xs text-gray-400 mb-1">{deal.patient.phones[0]}</p>
       )}
       {deal.source && (
         <p className="text-xs text-gray-400">{deal.source}</p>
       )}
+
+      {/* Tags */}
+      {deal.tags && deal.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {deal.tags.slice(0, 3).map(t => (
+            <span key={t} className="text-[10px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded">#{t}</span>
+          ))}
+          {deal.tags.length > 3 && <span className="text-[10px] text-gray-400">+{deal.tags.length - 3}</span>}
+        </div>
+      )}
+
       {deal.notes && (
         <p className="text-xs text-gray-500 mt-1.5 line-clamp-2 leading-relaxed">{deal.notes}</p>
       )}
-      <div className="flex items-center justify-between mt-2">
-        <p className="text-xs text-gray-300">
-          {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
-        </p>
-        {deal.funnel === 'leads' && onTransfer && (
+
+      <div className="flex items-center justify-between mt-2 gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {/* Owner avatar */}
+          {owner && (
+            <span
+              title={owner.name}
+              className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 text-white flex items-center justify-center text-[9px] font-bold flex-shrink-0"
+            >
+              {initials(owner.name)}
+            </span>
+          )}
+          <p className="text-xs text-gray-300 truncate">
+            {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+          </p>
+        </div>
+        {deal.funnel === 'leads' && onTransfer && !selectMode && (
           <button
             onClick={(e) => { e.stopPropagation(); onTransfer(deal) }}
-            className="text-xs text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 rounded px-1.5 py-0.5 font-medium transition-colors"
+            className="text-xs text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 rounded px-1.5 py-0.5 font-medium transition-colors flex-shrink-0"
             title="Перевести в медицинскую воронку"
           >
             → В мед.
           </button>
         )}
       </div>
-      {daysInStage > 0 && (
-        <span className={`text-xs ${daysInStage > 7 ? 'text-red-400' : daysInStage > 3 ? 'text-orange-400' : 'text-gray-300'}`}>
-          {daysInStage} дн.
+
+      {days > 0 && (
+        <span className={`text-xs ${days > 7 ? 'text-red-400' : days > 3 ? 'text-orange-400' : 'text-gray-300'}`}>
+          {days} дн.
         </span>
       )}
     </div>
@@ -355,23 +433,33 @@ function DealCard({ deal, sources, onDragStart, onClick, onTransfer }: {
 
 // ─── KanbanColumn ─────────────────────────────────────────────────────────────
 
-function KanbanColumn({ col, deals, sources, clinicId, showQuickAdd, onDragStart, onDrop, onCardClick, onTransfer, onQuickAddToggle, onCreated }: {
+function KanbanColumn({
+  col, deals, owners, sources, clinicId, showQuickAdd, selectedIds, selectMode,
+  onDragStart, onDrop, onCardClick, onTransfer, onQuickAddToggle, onCreated, onToggleSelect,
+}: {
   col: Stage
   deals: DealRow[]
+  owners: UserOption[]
   sources: string[]
   clinicId: string
   showQuickAdd: boolean
+  selectedIds: Set<string>
+  selectMode: boolean
   onDragStart: (id: string) => void
   onDrop: (stage: string) => void
   onCardClick: (deal: DealRow) => void
   onTransfer?: (deal: DealRow) => void
   onQuickAddToggle: () => void
   onCreated: () => void
+  onToggleSelect: (id: string) => void
 }) {
   const [over, setOver] = useState(false)
+
+  const sumValue = deals.reduce((sum, d) => sum + Number(d.deal_value ?? 0), 0)
+
   return (
-    <div className="flex-shrink-0 w-56">
-      <div className="flex items-center justify-between mb-2.5">
+    <div className="flex-shrink-0 w-60">
+      <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: col.color }} />
           <span className="text-xs font-semibold text-gray-600 truncate">{col.label}</span>
@@ -380,6 +468,12 @@ function KanbanColumn({ col, deals, sources, clinicId, showQuickAdd, onDragStart
           {deals.length}
         </span>
       </div>
+
+      {/* Stage value sum */}
+      {sumValue > 0 && (
+        <p className="text-[11px] text-emerald-600 font-medium mb-2 px-1">{fmtTenge(sumValue)}</p>
+      )}
+
       <div
         onDragOver={(e) => { e.preventDefault(); setOver(true) }}
         onDragLeave={() => setOver(false)}
@@ -393,7 +487,10 @@ function KanbanColumn({ col, deals, sources, clinicId, showQuickAdd, onDragStart
           <DealCard
             key={deal.id}
             deal={deal}
-            sources={sources}
+            owners={owners}
+            selected={selectedIds.has(deal.id)}
+            selectMode={selectMode}
+            onToggleSelect={onToggleSelect}
             onDragStart={onDragStart}
             onClick={onCardClick}
             onTransfer={onTransfer}
@@ -447,10 +544,11 @@ const STAGE_TASKS: Record<string, string> = {
 
 // ─── DealDrawer ───────────────────────────────────────────────────────────────
 
-function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTransfer }: {
+function DealDrawer({ deal, stages, sources, owners, clinicId, onClose, onUpdate, onTransfer }: {
   deal: DealRow
   stages: Stage[]
   sources: string[]
+  owners: UserOption[]
   clinicId: string
   onClose: () => void
   onUpdate: () => void
@@ -458,6 +556,7 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
 }) {
   const supabase = createClient()
   const [interactions, setInteractions] = useState<Interaction[]>([])
+  const [tasks, setTasks] = useState<TaskRow[]>([])
   const [loadingInt, setLoadingInt] = useState(true)
   const [showLost, setShowLost] = useState(false)
   const [lostReason, setLostReason] = useState('no_answer')
@@ -467,20 +566,73 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
   const [intSummary, setIntSummary] = useState('')
   const [savingInt, setSavingInt] = useState(false)
 
+  // Editable fields
+  const [dealValue, setDealValue]      = useState<string>(String(deal.deal_value ?? ''))
+  const [expectedDate, setExpectedDate] = useState<string>(deal.expected_close_date ?? '')
+  const [tagsInput, setTagsInput]      = useState<string>(deal.tags?.join(', ') ?? '')
+  const [assignedTo, setAssignedTo]    = useState<string>(deal.assigned_to ?? '')
+  const [priorityVal, setPriorityVal]  = useState<string>(deal.priority)
+  const [sourceVal, setSourceVal]      = useState<string>(deal.source ?? '')
+
+  // New task quick form
+  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [newTaskDue, setNewTaskDue]     = useState('')
+  const [newTaskType, setNewTaskType]   = useState('call')
+  const [savingTask, setSavingTask]     = useState(false)
+
   const stageIdx = stages.findIndex(s => s.key === deal.stage)
 
   const loadInteractions = useCallback(async () => {
     setLoadingInt(true)
-    const { data } = await supabase
-      .from('crm_interactions')
-      .select('id, type, direction, summary, outcome, created_at')
-      .eq('deal_id', deal.id)
-      .order('created_at', { ascending: false })
-    setInteractions(data ?? [])
+    const [intRes, taskRes] = await Promise.all([
+      supabase.from('crm_interactions')
+        .select('id, type, direction, summary, outcome, created_at')
+        .eq('deal_id', deal.id)
+        .order('created_at', { ascending: false }),
+      supabase.from('tasks')
+        .select('id, title, type, priority, status, due_at, assigned_to, created_at')
+        .eq('deal_id', deal.id)
+        .order('due_at', { ascending: true, nullsFirst: false }),
+    ])
+    setInteractions((intRes.data ?? []) as Interaction[])
+    setTasks((taskRes.data ?? []) as TaskRow[])
     setLoadingInt(false)
   }, [deal.id])
 
   useEffect(() => { loadInteractions() }, [loadInteractions])
+
+  // Debounced auto-save for inline fields
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const updates: Record<string, unknown> = {}
+      const parsedVal = dealValue === '' ? null : Number(dealValue)
+      if ((deal.deal_value ?? null) !== parsedVal && !isNaN(parsedVal as number)) {
+        updates.deal_value = parsedVal
+      }
+      if ((deal.expected_close_date ?? '') !== expectedDate) {
+        updates.expected_close_date = expectedDate || null
+      }
+      const parsedTags = tagsInput.split(',').map(s => s.trim()).filter(Boolean)
+      const currentTags = deal.tags ?? []
+      if (JSON.stringify(currentTags) !== JSON.stringify(parsedTags)) {
+        updates.tags = parsedTags
+      }
+      if ((deal.assigned_to ?? '') !== assignedTo) {
+        updates.assigned_to = assignedTo || null
+      }
+      if (deal.priority !== priorityVal) {
+        updates.priority = priorityVal
+      }
+      if ((deal.source ?? '') !== sourceVal) {
+        updates.source = sourceVal || null
+      }
+      if (Object.keys(updates).length > 0) {
+        supabase.from('deals').update(updates).eq('id', deal.id).then(() => onUpdate())
+      }
+    }, 600)
+    return () => clearTimeout(t)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dealValue, expectedDate, tagsInput, assignedTo, priorityVal, sourceVal])
 
   const moveStage = async (stage: string) => {
     await supabase.from('deals').update({ stage }).eq('id', deal.id)
@@ -491,10 +643,11 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
       await supabase.from('tasks').insert({
         clinic_id: clinicId,
         title: taskTitle.replace('{name}', deal.patient?.full_name ?? ''),
-        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'message' : 'call',
-        priority: stage === 'no_show' ? 'high' : 'medium',
+        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'follow_up' : 'call',
+        priority: stage === 'no_show' ? 'high' : 'normal',
         status: 'new',
         patient_id: deal.patient_id,
+        deal_id: deal.id,
         due_at: due.toISOString(),
       })
     }
@@ -537,12 +690,47 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
     loadInteractions()
   }
 
+  const addTask = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newTaskTitle.trim()) return
+    setSavingTask(true)
+    const due = newTaskDue ? new Date(newTaskDue).toISOString() : null
+    await supabase.from('tasks').insert({
+      clinic_id: clinicId,
+      title: newTaskTitle.trim(),
+      type: newTaskType,
+      priority: 'normal',
+      status: 'new',
+      patient_id: deal.patient_id,
+      deal_id: deal.id,
+      assigned_to: assignedTo || null,
+      due_at: due,
+    })
+    setNewTaskTitle('')
+    setNewTaskDue('')
+    setSavingTask(false)
+    loadInteractions()
+  }
+
+  const toggleTaskDone = async (task: TaskRow) => {
+    const isDone = task.status === 'done'
+    await supabase.from('tasks').update({
+      status: isDone ? 'new' : 'done',
+      done_at: isDone ? null : new Date().toISOString(),
+    }).eq('id', task.id)
+    loadInteractions()
+  }
+
   const currentStage = stages.find(s => s.key === deal.stage)
+  const phone = deal.patient?.phones?.[0]
+  const waLink = phone
+    ? `https://wa.me/${phone.replace(/[^\d]/g, '')}?text=${encodeURIComponent(`Здравствуйте, ${deal.patient?.full_name ?? ''}!`)}`
+    : null
 
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
-      <div className="fixed right-0 top-0 h-full w-96 bg-white shadow-2xl z-50 flex flex-col">
+      <div className="fixed right-0 top-0 h-full w-[420px] bg-white shadow-2xl z-50 flex flex-col">
 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
@@ -550,28 +738,48 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
             <h3 className="text-base font-semibold text-gray-900 leading-tight">
               {deal.patient?.full_name ?? '—'}
             </h3>
-            <div className="flex items-center gap-2 mt-1">
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
               {currentStage && (
                 <span className="flex items-center gap-1 text-xs text-gray-500">
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: currentStage.color }} />
                   {currentStage.label}
                 </span>
               )}
-              {deal.patient?.phones?.[0] && (
-                <span className="text-xs text-gray-400">{deal.patient.phones[0]}</span>
+              {phone && (
+                <span className="text-xs text-gray-400">{phone}</span>
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {waLink && (
+              <a
+                href={waLink}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs bg-green-50 hover:bg-green-100 text-green-700 rounded-lg px-2.5 py-1.5 font-medium transition-colors flex items-center gap-1"
+                title="Написать в WhatsApp"
+              >
+                💬 WA
+              </a>
+            )}
+            {phone && (
+              <a
+                href={`tel:${phone}`}
+                className="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg px-2.5 py-1.5 font-medium transition-colors"
+                title="Позвонить"
+              >
+                📞
+              </a>
+            )}
             {deal.funnel === 'leads' && onTransfer && (
               <button
                 onClick={() => onTransfer(deal)}
                 className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg px-2.5 py-1.5 font-medium transition-colors"
               >
-                → В медицинскую
+                → В мед.
               </button>
             )}
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 mt-0.5">
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 ml-1">
               <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
                 <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
@@ -602,27 +810,151 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto">
-          {/* Meta */}
-          <div className="px-5 py-4 border-b border-gray-50">
-            <div className="flex items-center gap-2 flex-wrap">
-              {(() => {
-                const p = PRIORITY_STYLE[deal.priority] ?? PRIORITY_STYLE.warm
-                return (
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${p.bg} ${p.text}`}>
-                    {p.label}
-                  </span>
-                )
-              })()}
-              {deal.source && (
-                <span className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{deal.source}</span>
-              )}
-              <span className="text-xs text-gray-400">
-                {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
-              </span>
+          {/* Inline edit fields */}
+          <div className="px-5 py-4 border-b border-gray-50 grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Сумма (₸)</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={dealValue}
+                onChange={e => setDealValue(e.target.value)}
+                placeholder="0"
+                className="w-full mt-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Закрыть до</label>
+              <input
+                type="date"
+                value={expectedDate}
+                onChange={e => setExpectedDate(e.target.value)}
+                className="w-full mt-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Ответственный</label>
+              <select
+                value={assignedTo}
+                onChange={e => setAssignedTo(e.target.value)}
+                className="w-full mt-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              >
+                <option value="">— не назначен —</option>
+                {owners.map(u => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Приоритет</label>
+              <select
+                value={priorityVal}
+                onChange={e => setPriorityVal(e.target.value)}
+                className="w-full mt-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              >
+                <option value="hot">🔥 Горячий</option>
+                <option value="warm">Тёплый</option>
+                <option value="cold">Холодный</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Источник</label>
+              <select
+                value={sourceVal}
+                onChange={e => setSourceVal(e.target.value)}
+                className="w-full mt-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              >
+                <option value="">— не указан —</option>
+                {sources.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Создан</label>
+              <p className="text-sm text-gray-600 mt-1.5">
+                {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </p>
+            </div>
+            <div className="col-span-2">
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Теги (через запятую)</label>
+              <input
+                type="text"
+                value={tagsInput}
+                onChange={e => setTagsInput(e.target.value)}
+                placeholder="vip, повтор, рекомендация"
+                className="w-full mt-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              />
             </div>
             {deal.notes && (
-              <p className="text-sm text-gray-600 mt-2 leading-relaxed">{deal.notes}</p>
+              <div className="col-span-2">
+                <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-lg px-3 py-2">{deal.notes}</p>
+              </div>
             )}
+          </div>
+
+          {/* Tasks */}
+          <div className="px-5 py-4 border-b border-gray-50">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+              Задачи {tasks.length > 0 && <span className="text-gray-300 ml-1">{tasks.filter(t => t.status !== 'done').length} активных</span>}
+            </p>
+            {tasks.length > 0 && (
+              <div className="space-y-1.5 mb-3">
+                {tasks.map(t => {
+                  const overdue = t.due_at && new Date(t.due_at) < new Date() && t.status !== 'done'
+                  return (
+                    <div key={t.id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={t.status === 'done'}
+                        onChange={() => toggleTaskDone(t)}
+                        className="w-4 h-4 accent-blue-600"
+                      />
+                      <span className={['flex-1 truncate', t.status === 'done' ? 'line-through text-gray-400' : 'text-gray-700'].join(' ')}>
+                        {t.title}
+                      </span>
+                      {t.due_at && (
+                        <span className={['text-xs', overdue ? 'text-red-500 font-medium' : 'text-gray-400'].join(' ')}>
+                          {new Date(t.due_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <form onSubmit={addTask} className="space-y-2">
+              <input
+                value={newTaskTitle}
+                onChange={e => setNewTaskTitle(e.target.value)}
+                placeholder="Новая задача..."
+                className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <div className="flex gap-2">
+                <select
+                  value={newTaskType}
+                  onChange={e => setNewTaskType(e.target.value)}
+                  className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+                >
+                  <option value="call">📞 Звонок</option>
+                  <option value="follow_up">💬 Касание</option>
+                  <option value="confirm">✅ Подтвердить</option>
+                  <option value="reminder">⏰ Напомнить</option>
+                  <option value="other">Другое</option>
+                </select>
+                <input
+                  type="datetime-local"
+                  value={newTaskDue}
+                  onChange={e => setNewTaskDue(e.target.value)}
+                  className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs"
+                />
+                <button
+                  type="submit"
+                  disabled={savingTask || !newTaskTitle.trim()}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-3 text-sm font-medium"
+                >
+                  +
+                </button>
+              </div>
+            </form>
           </div>
 
           {/* Add interaction */}
@@ -771,9 +1103,10 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
 
 // ─── CreateDealModal ──────────────────────────────────────────────────────────
 
-function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
+function CreateDealModal({ clinicId, sources, owners, onClose, onCreated }: {
   clinicId: string
   sources: string[]
+  owners: UserOption[]
   onClose: () => void
   onCreated: () => void
 }) {
@@ -785,6 +1118,8 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
     source: '',
     priority: 'warm',
     notes: '',
+    deal_value: '',
+    assigned_to: '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -833,6 +1168,7 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
 
       if (pErr) { setError(pErr.message); setSaving(false); return }
 
+      const dealVal = form.deal_value === '' ? null : Number(form.deal_value)
       const { data: deal, error: dErr } = await supabase
         .from('deals')
         .insert({
@@ -843,13 +1179,15 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
           source: form.source || null,
           priority: form.priority,
           notes: form.notes.trim() || null,
+          deal_value: dealVal,
+          assigned_to: form.assigned_to || null,
         })
         .select('id')
         .single()
 
       if (dErr) { setError(dErr.message); setSaving(false); return }
 
-      // Auto-create "call" task for new lead (rule D1)
+      // Auto-create "call" task for new lead
       if (deal) {
         const due = new Date()
         due.setHours(due.getHours() + 1)
@@ -860,6 +1198,8 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
           priority: 'high',
           status: 'new',
           patient_id: patient.id,
+          deal_id: deal.id,
+          assigned_to: form.assigned_to || null,
           due_at: due.toISOString(),
         })
       }
@@ -877,7 +1217,7 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10">
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
           <h3 className="text-base font-semibold text-gray-900">Новый лид</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
@@ -890,11 +1230,8 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className={labelCls}>Имя <span className="text-red-400">*</span></label>
-            <input
-              className={inputCls} placeholder="Айгерим Бекова"
-              value={form.full_name} onChange={set('full_name')}
-              required autoFocus
-            />
+            <input className={inputCls} placeholder="Айгерим Бекова"
+              value={form.full_name} onChange={set('full_name')} required autoFocus />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -930,40 +1267,217 @@ function CreateDealModal({ clinicId, sources, onClose, onCreated }: {
                 <option value="cold">Холодный</option>
               </select>
             </div>
+            <div>
+              <label className={labelCls}>Сумма (₸)</label>
+              <input type="number" inputMode="decimal" className={inputCls} placeholder="0" value={form.deal_value} onChange={set('deal_value')} />
+            </div>
+            <div>
+              <label className={labelCls}>Ответственный</label>
+              <select className={inputCls} value={form.assigned_to} onChange={set('assigned_to')}>
+                <option value="">— не назначен —</option>
+                {owners.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </div>
           </div>
 
           <div>
             <label className={labelCls}>Заметка</label>
-            <textarea
-              className={inputCls + ' resize-none'}
-              placeholder="Интересуется процедурой..."
-              rows={2}
-              value={form.notes}
-              onChange={set('notes')}
-            />
+            <textarea className={inputCls + ' resize-none'} placeholder="Интересуется процедурой..."
+              rows={2} value={form.notes} onChange={set('notes')} />
           </div>
 
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
-              {error}
-            </p>
+            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">{error}</p>
           )}
 
           <div className="flex gap-3 pt-1">
-            <button
-              type="button" onClick={onClose} disabled={saving}
-              className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50"
-            >
+            <button type="button" onClick={onClose} disabled={saving}
+              className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50">
               Отмена
             </button>
-            <button
-              type="submit" disabled={saving}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium"
-            >
+            <button type="submit" disabled={saving}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
               {saving ? 'Создание...' : 'Создать лид'}
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// ─── BulkActionBar ───────────────────────────────────────────────────────────
+
+function BulkActionBar({ count, stages, owners, onClear, onMove, onAssign, onLost }: {
+  count: number
+  stages: Stage[]
+  owners: UserOption[]
+  onClear: () => void
+  onMove: (stage: string) => void
+  onAssign: (userId: string) => void
+  onLost: () => void
+}) {
+  return (
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white rounded-xl shadow-2xl px-5 py-3 z-50 flex items-center gap-4 min-w-max">
+      <span className="text-sm font-medium">Выбрано: {count}</span>
+      <div className="h-6 w-px bg-gray-700" />
+      <select onChange={e => { if (e.target.value) { onMove(e.target.value); e.target.value = '' } }}
+        className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm cursor-pointer">
+        <option value="">→ Этап</option>
+        {stages.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+      </select>
+      <select onChange={e => { if (e.target.value !== '__none__') { onAssign(e.target.value); e.target.value = '__none__' } }}
+        defaultValue="__none__"
+        className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm cursor-pointer">
+        <option value="__none__">Назначить</option>
+        <option value="">— снять —</option>
+        {owners.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+      </select>
+      <button onClick={onLost} className="bg-red-600 hover:bg-red-700 rounded-lg px-3 py-1.5 text-sm font-medium">
+        Отказ
+      </button>
+      <button onClick={onClear} className="text-gray-400 hover:text-white text-sm">
+        Отмена
+      </button>
+    </div>
+  )
+}
+
+// ─── ListView (Реестр) ──────────────────────────────────────────────────────
+
+function ListView({ deals, stages, owners, selectedIds, onToggleSelect, onToggleAll, onCardClick, onTransfer }: {
+  deals: DealRow[]
+  stages: Stage[]
+  owners: UserOption[]
+  selectedIds: Set<string>
+  onToggleSelect: (id: string) => void
+  onToggleAll: () => void
+  onCardClick: (deal: DealRow) => void
+  onTransfer?: (deal: DealRow) => void
+}) {
+  const allSelected = deals.length > 0 && deals.every(d => selectedIds.has(d.id))
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-100">
+            <tr className="text-left text-xs text-gray-500 uppercase tracking-wider">
+              <th className="px-3 py-2 w-10">
+                <input type="checkbox" checked={allSelected} onChange={onToggleAll} className="w-4 h-4 accent-blue-600" />
+              </th>
+              <th className="px-3 py-2">Клиент</th>
+              <th className="px-3 py-2">Этап</th>
+              <th className="px-3 py-2">Сумма</th>
+              <th className="px-3 py-2">Источник</th>
+              <th className="px-3 py-2">Приоритет</th>
+              <th className="px-3 py-2">Ответственный</th>
+              <th className="px-3 py-2">Дней</th>
+              <th className="px-3 py-2">Создан</th>
+              <th className="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {deals.length === 0 ? (
+              <tr><td colSpan={10} className="text-center py-12 text-gray-300 text-sm">Нет сделок</td></tr>
+            ) : deals.map(d => {
+              const stage = stages.find(s => s.key === d.stage)
+              const owner = owners.find(o => o.id === (d.assigned_to ?? d.first_owner_id))
+              const p = PRIORITY_STYLE[d.priority] ?? PRIORITY_STYLE.warm
+              const days = daysSince(d.created_at)
+              const isSelected = selectedIds.has(d.id)
+              return (
+                <tr key={d.id}
+                  className={['hover:bg-gray-50 cursor-pointer', isSelected ? 'bg-blue-50' : ''].join(' ')}
+                  onClick={() => onCardClick(d)}>
+                  <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(d.id)} className="w-4 h-4 accent-blue-600" />
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <p className="font-medium text-gray-900 truncate max-w-[180px]">{d.patient?.full_name ?? '—'}</p>
+                    {d.patient?.phones?.[0] && <p className="text-xs text-gray-400">{d.patient.phones[0]}</p>}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {stage && (
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: stage.color }} />
+                        {stage.label}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 font-medium text-emerald-600 whitespace-nowrap">{fmtTenge(d.deal_value)}</td>
+                  <td className="px-3 py-2.5 text-gray-500">{d.source ?? '—'}</td>
+                  <td className="px-3 py-2.5">
+                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.bg} ${p.text}`}>{p.label}</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-500 truncate max-w-[120px]">{owner?.name ?? '—'}</td>
+                  <td className={['px-3 py-2.5 text-xs', days > 7 ? 'text-red-500 font-medium' : days > 3 ? 'text-orange-500' : 'text-gray-400'].join(' ')}>
+                    {days}
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-400 text-xs whitespace-nowrap">
+                    {new Date(d.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+                  </td>
+                  <td className="px-3 py-2.5 text-right" onClick={e => e.stopPropagation()}>
+                    {d.funnel === 'leads' && onTransfer && (
+                      <button onClick={() => onTransfer(d)}
+                        className="text-xs text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 rounded px-1.5 py-0.5 font-medium">
+                        → В мед.
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── AnalyticsBar ───────────────────────────────────────────────────────────
+
+function AnalyticsBar({ stages, deals, totalValue }: {
+  stages: Stage[]
+  deals: DealRow[]
+  totalValue: number
+}) {
+  const totalCount = deals.length
+  const wonStages = ['booked', 'success', 'closed'] // funnel-end stages
+  const wonCount = deals.filter(d => wonStages.includes(d.stage)).length
+  const conversion = totalCount > 0 ? Math.round((wonCount / totalCount) * 100) : 0
+
+  return (
+    <div className="px-6 py-3 bg-white border-b border-gray-100 flex items-center gap-6 overflow-x-auto">
+      <div className="flex flex-col flex-shrink-0">
+        <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Сделок</span>
+        <span className="text-lg font-semibold text-gray-900">{totalCount}</span>
+      </div>
+      <div className="flex flex-col flex-shrink-0">
+        <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Сумма</span>
+        <span className="text-lg font-semibold text-emerald-600">{fmtTenge(totalValue) || '0 ₸'}</span>
+      </div>
+      <div className="flex flex-col flex-shrink-0">
+        <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Конверсия</span>
+        <span className="text-lg font-semibold text-blue-600">{conversion}%</span>
+      </div>
+      <div className="h-10 w-px bg-gray-200 flex-shrink-0" />
+      <div className="flex items-center gap-3 overflow-x-auto">
+        {stages.map(s => {
+          const stageDeals = deals.filter(d => d.stage === s.key)
+          const sum = stageDeals.reduce((a, b) => a + Number(b.deal_value ?? 0), 0)
+          const pct = totalCount > 0 ? Math.round((stageDeals.length / totalCount) * 100) : 0
+          return (
+            <div key={s.key} className="flex items-center gap-2 flex-shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: s.color }} />
+              <div className="text-xs">
+                <p className="text-gray-700 font-medium whitespace-nowrap">{s.label}</p>
+                <p className="text-gray-400">
+                  {stageDeals.length} · {pct}%{sum > 0 && ` · ${fmtTenge(sum)}`}
+                </p>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -977,8 +1491,10 @@ export default function CrmPage() {
   const clinicId = profile?.clinic_id ?? ''
 
   const [deals, setDeals] = useState<DealRow[]>([])
+  const [owners, setOwners] = useState<UserOption[]>([])
   const [loading, setLoading] = useState(true)
   const [funnel, setFunnel] = useState<'leads' | 'medical'>('leads')
+  const [view, setView] = useState<'kanban' | 'list'>('kanban')
   const [selected, setSelected] = useState<DealRow | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
@@ -986,18 +1502,50 @@ export default function CrmPage() {
   const [quickAddStage, setQuickAddStage] = useState<string | null>(null)
   const [settings, setSettings] = useState<CrmSettings>(() => loadSettings())
 
+  // Filters
+  const [search, setSearch]           = useState('')
+  const [period, setPeriod]           = useState<PeriodKey>('all')
+  const [filterSource, setFilterSource]     = useState('')
+  const [filterPriority, setFilterPriority] = useState('')
+  const [filterOwner, setFilterOwner]       = useState('')
+  const [filterTag, setFilterTag]           = useState('')
+  const [showFilters, setShowFilters]       = useState(false)
+
+  // Bulk select
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const selectMode = selectedIds.size > 0
+  const [bulkLost, setBulkLost] = useState(false)
+  const [bulkLostReason, setBulkLostReason] = useState('no_answer')
+
   const leadsStages = settings.leads_stages
   const medicalStages = settings.medical_stages
   const sources = settings.sources
 
   const stages = funnel === 'leads' ? leadsStages : medicalStages
 
-  // Reload settings from localStorage when page gains focus (settings page may have updated)
+  // Reload settings when page gains focus
   useEffect(() => {
     const onFocus = () => setSettings(loadSettings())
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [])
+
+  // Load owners (user profiles)
+  useEffect(() => {
+    if (!clinicId) return
+    supabase.from('user_profiles')
+      .select('id, first_name, last_name, avatar_url')
+      .eq('clinic_id', clinicId)
+      .eq('is_active', true)
+      .then(({ data }) => {
+        const list = (data ?? []).map((u: { id: string; first_name: string; last_name: string; avatar_url: string | null }) => ({
+          id: u.id,
+          name: `${u.first_name} ${u.last_name}`.trim(),
+          avatar_url: u.avatar_url,
+        }))
+        setOwners(list)
+      })
+  }, [clinicId])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1009,9 +1557,40 @@ export default function CrmPage() {
       .order('created_at', { ascending: false })
     setDeals((data ?? []) as DealRow[])
     setLoading(false)
+    setSelectedIds(new Set())
   }, [funnel])
 
   useEffect(() => { load() }, [load])
+
+  // ── Filtered deals ────────────────────────────────────────────────────
+  const filteredDeals = useMemo(() => {
+    const cutoff = periodCutoff(period)
+    const q = search.trim().toLowerCase()
+    return deals.filter(d => {
+      if (cutoff !== null && new Date(d.created_at).getTime() < cutoff) return false
+      if (filterSource && d.source !== filterSource) return false
+      if (filterPriority && d.priority !== filterPriority) return false
+      if (filterOwner && (d.assigned_to ?? d.first_owner_id) !== filterOwner) return false
+      if (filterTag && !(d.tags ?? []).includes(filterTag)) return false
+      if (q) {
+        const name = (d.patient?.full_name ?? '').toLowerCase()
+        const phone = (d.patient?.phones?.[0] ?? '').toLowerCase()
+        const notes = (d.notes ?? '').toLowerCase()
+        if (!name.includes(q) && !phone.includes(q) && !notes.includes(q)) return false
+      }
+      return true
+    })
+  }, [deals, period, search, filterSource, filterPriority, filterOwner, filterTag])
+
+  const totalValue = filteredDeals.reduce((sum, d) => sum + Number(d.deal_value ?? 0), 0)
+
+  const allTags = useMemo(() => {
+    const set = new Set<string>()
+    deals.forEach(d => (d.tags ?? []).forEach(t => set.add(t)))
+    return Array.from(set).sort()
+  }, [deals])
+
+  const staleCount = deals.filter(d => daysSince(d.created_at) > 7).length
 
   const handleDrop = async (stage: string) => {
     if (!dragId) return
@@ -1028,10 +1607,11 @@ export default function CrmPage() {
       await supabase.from('tasks').insert({
         clinic_id: clinicId,
         title: taskTitle.replace('{name}', deal.patient?.full_name ?? ''),
-        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'message' : 'call',
-        priority: stage === 'no_show' ? 'high' : 'medium',
+        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'follow_up' : 'call',
+        priority: stage === 'no_show' ? 'high' : 'normal',
         status: 'new',
         patient_id: deal.patient_id,
+        deal_id: deal.id,
         due_at: due.toISOString(),
       })
     }
@@ -1042,11 +1622,57 @@ export default function CrmPage() {
     load()
   }
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id); else n.add(id)
+      return n
+    })
+  }
+
+  const toggleAll = () => {
+    if (filteredDeals.every(d => selectedIds.has(d.id))) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredDeals.map(d => d.id)))
+    }
+  }
+
+  const bulkMove = async (stage: string) => {
+    const ids = Array.from(selectedIds)
+    await supabase.from('deals').update({ stage }).in('id', ids)
+    setSelectedIds(new Set())
+    load()
+  }
+
+  const bulkAssign = async (userId: string) => {
+    const ids = Array.from(selectedIds)
+    await supabase.from('deals').update({ assigned_to: userId || null }).in('id', ids)
+    setSelectedIds(new Set())
+    load()
+  }
+
+  const bulkMarkLost = async () => {
+    const ids = Array.from(selectedIds)
+    await supabase.from('deals').update({
+      status: 'lost',
+      lost_reason: bulkLostReason,
+    }).in('id', ids)
+    setSelectedIds(new Set())
+    setBulkLost(false)
+    load()
+  }
+
+  const clearFilters = () => {
+    setSearch(''); setPeriod('all'); setFilterSource(''); setFilterPriority(''); setFilterOwner(''); setFilterTag('')
+  }
+  const hasFilters = search || period !== 'all' || filterSource || filterPriority || filterOwner || filterTag
+
   return (
     <div className="flex flex-col h-full -m-6 overflow-hidden">
 
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-100 bg-white flex-shrink-0">
+      <div className="flex items-center gap-3 px-6 py-3 border-b border-gray-100 bg-white flex-shrink-0 flex-wrap">
         <div className="flex bg-gray-100 rounded-lg p-0.5">
           {(['leads', 'medical'] as const).map(f => (
             <button
@@ -1061,12 +1687,74 @@ export default function CrmPage() {
             </button>
           ))}
         </div>
-        <span className="text-sm text-gray-400">{deals.length} сделок</span>
-        {deals.filter(d => Math.floor((Date.now() - new Date(d.created_at).getTime()) / 86400000) > 7).length > 0 && (
+
+        {/* View toggle */}
+        <div className="flex bg-gray-100 rounded-lg p-0.5">
+          {(['kanban', 'list'] as const).map(v => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={[
+                'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                view === v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+              ].join(' ')}
+            >
+              {v === 'kanban' ? '📋 Канбан' : '📊 Реестр'}
+            </button>
+          ))}
+        </div>
+
+        {/* Search */}
+        <div className="relative">
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Поиск имя/телефон..."
+            className="border border-gray-200 rounded-lg pl-8 pr-3 py-1.5 text-sm w-56 outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+          <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" width="14" height="14" fill="none" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </div>
+
+        {/* Period */}
+        <div className="flex bg-gray-100 rounded-lg p-0.5">
+          {PERIOD_OPTS.map(p => (
+            <button
+              key={p.key}
+              onClick={() => setPeriod(p.key)}
+              className={[
+                'px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors',
+                period === p.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+              ].join(' ')}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Filters toggle */}
+        <button
+          onClick={() => setShowFilters(s => !s)}
+          className={[
+            'border rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors flex items-center gap-1',
+            showFilters || hasFilters ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50',
+          ].join(' ')}
+        >
+          <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
+            <path d="M3 6h18M6 12h12M10 18h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          Фильтры
+          {hasFilters && <span className="bg-blue-600 text-white rounded-full w-4 h-4 flex items-center justify-center text-[9px]">●</span>}
+        </button>
+
+        {staleCount > 0 && (
           <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full">
-            ⚠ {deals.filter(d => Math.floor((Date.now() - new Date(d.created_at).getTime()) / 86400000) > 7).length} зависших
+            ⚠ {staleCount} зависших
           </span>
         )}
+
         <div className="ml-auto flex items-center gap-2">
           <Link
             href="/crm/settings"
@@ -1074,7 +1762,7 @@ export default function CrmPage() {
           >
             <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
               <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" strokeWidth="1.5"/>
-              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" strokeWidth="1.5"/>
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5"/>
             </svg>
             Настройки
           </Link>
@@ -1090,37 +1778,140 @@ export default function CrmPage() {
         </div>
       </div>
 
-      {/* Board */}
+      {/* Filters row */}
+      {showFilters && (
+        <div className="px-6 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-3 flex-wrap text-sm">
+          <select value={filterSource} onChange={e => setFilterSource(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
+            <option value="">Источник: все</option>
+            {sources.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
+            <option value="">Приоритет: все</option>
+            <option value="hot">🔥 Горячий</option>
+            <option value="warm">Тёплый</option>
+            <option value="cold">Холодный</option>
+          </select>
+          <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
+            <option value="">Ответственный: все</option>
+            {owners.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+          {allTags.length > 0 && (
+            <select value={filterTag} onChange={e => setFilterTag(e.target.value)}
+              className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
+              <option value="">Тег: все</option>
+              {allTags.map(t => <option key={t} value={t}>#{t}</option>)}
+            </select>
+          )}
+          {hasFilters && (
+            <button onClick={clearFilters} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+              Сбросить
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Analytics summary */}
+      {!loading && (
+        <AnalyticsBar stages={stages} deals={filteredDeals} totalValue={totalValue} />
+      )}
+
+      {/* Board / List */}
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="flex items-center justify-center h-full text-sm text-gray-400">Загрузка...</div>
-        ) : (
+        ) : view === 'kanban' ? (
           <div className="flex gap-4 p-6 items-start min-w-max">
             {stages.map(col => (
               <KanbanColumn
                 key={col.key}
                 col={col}
-                deals={deals.filter(d => d.stage === col.key)}
+                deals={filteredDeals.filter(d => d.stage === col.key)}
+                owners={owners}
                 sources={sources}
                 clinicId={clinicId}
                 showQuickAdd={quickAddStage === col.key && funnel === 'leads'}
+                selectedIds={selectedIds}
+                selectMode={selectMode}
                 onDragStart={setDragId}
                 onDrop={handleDrop}
                 onCardClick={setSelected}
                 onTransfer={funnel === 'leads' ? setTransferDeal : undefined}
                 onQuickAddToggle={() => setQuickAddStage(prev => prev === col.key ? null : col.key)}
                 onCreated={handleQuickCreated}
+                onToggleSelect={toggleSelect}
               />
             ))}
           </div>
+        ) : (
+          <div className="p-6">
+            <ListView
+              deals={filteredDeals}
+              stages={stages}
+              owners={owners}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onToggleAll={toggleAll}
+              onCardClick={setSelected}
+              onTransfer={funnel === 'leads' ? setTransferDeal : undefined}
+            />
+          </div>
         )}
       </div>
+
+      {/* Bulk action bar */}
+      {selectMode && (
+        <BulkActionBar
+          count={selectedIds.size}
+          stages={stages}
+          owners={owners}
+          onClear={() => setSelectedIds(new Set())}
+          onMove={bulkMove}
+          onAssign={bulkAssign}
+          onLost={() => setBulkLost(true)}
+        />
+      )}
+
+      {/* Bulk lost modal */}
+      {bulkLost && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setBulkLost(false)} />
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 z-10">
+            <h3 className="text-base font-semibold text-gray-900 mb-1">Закрыть как отказ</h3>
+            <p className="text-sm text-gray-400 mb-4">{selectedIds.size} сделок будут закрыты</p>
+            <div className="space-y-2 mb-5">
+              {LOST_REASONS.map(r => (
+                <label key={r.value} className="flex items-center gap-3 cursor-pointer">
+                  <input type="radio" name="bulk_lost" value={r.value}
+                    checked={bulkLostReason === r.value}
+                    onChange={() => setBulkLostReason(r.value)}
+                    className="accent-red-500 w-4 h-4" />
+                  <span className="text-sm text-gray-700">{r.label}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setBulkLost(false)}
+                className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-50">
+                Отмена
+              </button>
+              <button onClick={bulkMarkLost}
+                className="flex-1 bg-red-500 hover:bg-red-600 text-white rounded-lg py-2.5 text-sm font-medium">
+                Закрыть {selectedIds.size}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selected && (
         <DealDrawer
           deal={selected}
           stages={stages}
           sources={sources}
+          owners={owners}
           clinicId={clinicId}
           onClose={() => setSelected(null)}
           onUpdate={load}
@@ -1132,6 +1923,7 @@ export default function CrmPage() {
         <CreateDealModal
           clinicId={clinicId}
           sources={sources}
+          owners={owners}
           onClose={() => setShowCreate(false)}
           onCreated={() => { load(); setShowCreate(false) }}
         />
@@ -1141,7 +1933,6 @@ export default function CrmPage() {
         <TransferModal
           deal={transferDeal}
           medicalStages={medicalStages}
-          clinicId={clinicId}
           onClose={() => setTransferDeal(null)}
           onTransferred={() => { load(); setTransferDeal(null) }}
         />

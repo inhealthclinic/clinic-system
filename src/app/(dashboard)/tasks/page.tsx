@@ -368,13 +368,20 @@ export default function TasksPage() {
   const supabase = createClient()
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id ?? ''
+  const userId = profile?.id ?? ''
 
   const [tasks, setTasks] = useState<Task[]>([])
   const [users, setUsers] = useState<UserRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'active' | 'done'>('active')
+  const [scope, setScope] = useState<'all' | 'mine' | 'unassigned'>('all')
+  const [search, setSearch] = useState('')
+  const [filterAssignee, setFilterAssignee] = useState('')
+  const [filterPriority, setFilterPriority] = useState('')
+  const [filterType, setFilterType]         = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [selected, setSelected] = useState<Task | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     supabase
@@ -390,7 +397,7 @@ export default function TasksPage() {
       .from('tasks')
       .select('*, patient:patients(id, full_name), assignee:user_profiles(id, first_name, last_name)')
       .order('due_at', { ascending: true, nullsFirst: false })
-      .limit(100)
+      .limit(200)
 
     const { data } = filter === 'active'
       ? await q.in('status', ['new', 'in_progress', 'overdue'])
@@ -398,26 +405,80 @@ export default function TasksPage() {
 
     setTasks(data ?? [])
     setLoading(false)
+    setSelectedIds(new Set())
   }, [filter])
 
   useEffect(() => { load() }, [load])
 
+  // Filtered tasks
+  const filteredTasks = tasks.filter(t => {
+    if (scope === 'mine' && t.assigned_to !== userId) return false
+    if (scope === 'unassigned' && t.assigned_to) return false
+    if (filterAssignee && t.assigned_to !== filterAssignee) return false
+    if (filterPriority && t.priority !== filterPriority) return false
+    if (filterType && t.type !== filterType) return false
+    if (search) {
+      const q = search.toLowerCase()
+      const title = t.title.toLowerCase()
+      const desc = (t.description ?? '').toLowerCase()
+      const pat = (t.patient?.full_name ?? '').toLowerCase()
+      if (!title.includes(q) && !desc.includes(q) && !pat.includes(q)) return false
+    }
+    return true
+  })
+
   const toggleDone = async (task: Task, e: React.MouseEvent) => {
     e.stopPropagation()
     const newStatus = task.status === 'done' ? 'new' : 'done'
-    await supabase.from('tasks').update({ status: newStatus }).eq('id', task.id)
+    await supabase.from('tasks').update({
+      status: newStatus,
+      done_at: newStatus === 'done' ? new Date().toISOString() : null,
+    }).eq('id', task.id)
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t))
   }
 
-  const urgentCount = tasks.filter(t => t.priority === 'urgent').length
-  const overdueCount = tasks.filter(t => t.status === 'overdue' ||
+  const toggleSelect = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSelectedIds(prev => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id); else n.add(id)
+      return n
+    })
+  }
+
+  const bulkMarkDone = async () => {
+    const ids = Array.from(selectedIds)
+    await supabase.from('tasks').update({
+      status: 'done',
+      done_at: new Date().toISOString(),
+    }).in('id', ids)
+    setSelectedIds(new Set())
+    load()
+  }
+
+  const bulkAssign = async (assignee: string) => {
+    const ids = Array.from(selectedIds)
+    await supabase.from('tasks').update({ assigned_to: assignee || null }).in('id', ids)
+    setSelectedIds(new Set())
+    load()
+  }
+
+  const myCount = tasks.filter(t => t.assigned_to === userId).length
+  const unassignedCount = tasks.filter(t => !t.assigned_to).length
+  const urgentCount = filteredTasks.filter(t => t.priority === 'urgent').length
+  const overdueCount = filteredTasks.filter(t => t.status === 'overdue' ||
     (t.due_at && new Date(t.due_at) < new Date() && t.status !== 'done')).length
 
+  const clearFilters = () => {
+    setSearch(''); setFilterAssignee(''); setFilterPriority(''); setFilterType('')
+  }
+  const hasFilters = search || filterAssignee || filterPriority || filterType
+
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-4xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="flex bg-gray-100 rounded-lg p-0.5">
             {(['active', 'done'] as const).map(f => (
               <button key={f} onClick={() => setFilter(f)}
@@ -429,7 +490,25 @@ export default function TasksPage() {
               </button>
             ))}
           </div>
-          <span className="text-sm text-gray-400">{tasks.length}</span>
+          {/* Scope toggle */}
+          <div className="flex bg-gray-100 rounded-lg p-0.5">
+            <button onClick={() => setScope('all')}
+              className={['px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                scope === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'].join(' ')}>
+              Все
+            </button>
+            <button onClick={() => setScope('mine')}
+              className={['px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1',
+                scope === 'mine' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'].join(' ')}>
+              Мои {myCount > 0 && <span className="text-[10px] bg-blue-100 text-blue-700 rounded-full px-1.5">{myCount}</span>}
+            </button>
+            <button onClick={() => setScope('unassigned')}
+              className={['px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1',
+                scope === 'unassigned' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'].join(' ')}>
+              Без отв. {unassignedCount > 0 && <span className="text-[10px] bg-orange-100 text-orange-700 rounded-full px-1.5">{unassignedCount}</span>}
+            </button>
+          </div>
+          <span className="text-sm text-gray-400">{filteredTasks.length}</span>
           {filter === 'active' && overdueCount > 0 && (
             <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">
               {overdueCount} просрочено
@@ -452,14 +531,52 @@ export default function TasksPage() {
         </button>
       </div>
 
+      {/* Filter row */}
+      <div className="flex items-center gap-2 mb-5 flex-wrap">
+        <div className="relative">
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Поиск..."
+            className="border border-gray-200 rounded-lg pl-8 pr-3 py-1.5 text-sm w-48 outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+          <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" width="14" height="14" fill="none" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)}
+          className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
+          <option value="">Ответственный: все</option>
+          {users.map(u => <option key={u.id} value={u.id}>{u.last_name} {u.first_name}</option>)}
+        </select>
+        <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)}
+          className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
+          <option value="">Приоритет: все</option>
+          <option value="urgent">🔴 Срочный</option>
+          <option value="high">Высокий</option>
+          <option value="normal">Обычный</option>
+          <option value="low">Низкий</option>
+        </select>
+        <select value={filterType} onChange={e => setFilterType(e.target.value)}
+          className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white">
+          <option value="">Тип: все</option>
+          {TASK_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+        {hasFilters && (
+          <button onClick={clearFilters} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+            Сбросить
+          </button>
+        )}
+      </div>
+
       {loading ? (
         <div className="text-center py-12 text-sm text-gray-400">Загрузка...</div>
-      ) : tasks.length === 0 ? (
+      ) : filteredTasks.length === 0 ? (
         <div className="text-center py-16">
           <p className="text-sm text-gray-400 mb-3">
-            {filter === 'active' ? 'Активных задач нет 🎉' : 'Выполненных задач нет'}
+            {filter === 'active'
+              ? (hasFilters || scope !== 'all' ? 'По заданным фильтрам ничего не найдено' : 'Активных задач нет 🎉')
+              : 'Выполненных задач нет'}
           </p>
-          {filter === 'active' && (
+          {filter === 'active' && !hasFilters && scope === 'all' && (
             <button onClick={() => setShowCreate(true)}
               className="text-sm text-blue-600 hover:text-blue-700 font-medium">
               + Создать задачу
@@ -468,17 +585,30 @@ export default function TasksPage() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-100 divide-y divide-gray-50 overflow-hidden">
-          {tasks.map(task => {
+          {filteredTasks.map(task => {
             const isOverdue = task.due_at && new Date(task.due_at) < new Date() && task.status !== 'done'
             const pStyle = PRIORITY_STYLE[task.priority] ?? PRIORITY_STYLE.normal
             const assignee = task.assignee as { first_name: string; last_name: string } | null | undefined
+            const isSelected = selectedIds.has(task.id)
             return (
               <div
                 key={task.id}
                 onClick={() => setSelected(task)}
-                className="flex items-start gap-4 px-5 py-4 hover:bg-gray-50 transition-colors cursor-pointer"
+                className={[
+                  'flex items-start gap-4 px-5 py-4 transition-colors cursor-pointer',
+                  isSelected ? 'bg-blue-50' : 'hover:bg-gray-50',
+                ].join(' ')}
               >
-                {/* Checkbox */}
+                {/* Multi-select checkbox */}
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => {}}
+                  onClick={(e) => toggleSelect(task.id, e)}
+                  className="mt-1 w-4 h-4 accent-blue-600 flex-shrink-0"
+                />
+
+                {/* Done checkbox */}
                 <button
                   onClick={(e) => toggleDone(task, e)}
                   className={[
@@ -543,6 +673,28 @@ export default function TasksPage() {
           onClose={() => setSelected(null)}
           onUpdate={load}
         />
+      )}
+
+      {/* Bulk action bar */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white rounded-xl shadow-2xl px-5 py-3 z-50 flex items-center gap-4 min-w-max">
+          <span className="text-sm font-medium">Выбрано: {selectedIds.size}</span>
+          <div className="h-6 w-px bg-gray-700" />
+          <button onClick={bulkMarkDone}
+            className="bg-green-600 hover:bg-green-700 rounded-lg px-3 py-1.5 text-sm font-medium">
+            ✓ Выполнить
+          </button>
+          <select onChange={e => { if (e.target.value !== '__none__') { bulkAssign(e.target.value); e.target.value = '__none__' } }}
+            defaultValue="__none__"
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm cursor-pointer">
+            <option value="__none__">Назначить</option>
+            <option value="">— снять —</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.last_name} {u.first_name}</option>)}
+          </select>
+          <button onClick={() => setSelectedIds(new Set())} className="text-gray-400 hover:text-white text-sm">
+            Отмена
+          </button>
+        </div>
       )}
     </div>
   )
