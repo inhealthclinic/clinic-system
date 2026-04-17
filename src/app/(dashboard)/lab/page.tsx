@@ -5,18 +5,56 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
+interface LabItem {
+  id: string
+  name: string
+  price: number | null
+  service_id?: string | null
+  result_value?: number | string | null
+  result_text?: string | null
+  unit_snapshot?: string | null
+  reference_min?: number | null
+  reference_max?: number | null
+  reference_text?: string | null
+  flag?: 'normal' | 'low' | 'high' | 'critical' | null
+}
 interface LabOrder {
   id: string
   order_number: string | null
   patient_id: string
+  visit_id: string | null
   doctor_id: string | null
   status: string
   urgent: boolean
   notes: string | null
   ordered_at: string
+  sample_taken_at: string | null
   patient?: { id: string; full_name: string } | null
   doctor?: { id: string; first_name: string; last_name: string } | null
-  items?: Array<{ id: string; name: string; price: number | null; result_value?: string | null }>
+  items?: LabItem[]
+}
+
+const FLAG_CLR: Record<string, string> = {
+  normal:   'text-green-700 bg-green-50',
+  low:      'text-blue-700 bg-blue-50',
+  high:     'text-orange-700 bg-orange-50',
+  critical: 'text-red-700 bg-red-100 font-bold',
+}
+const FLAG_RU: Record<string, string> = {
+  normal:   'Норма',
+  low:      '↓ Низко',
+  high:     '↑ Высоко',
+  critical: '⚠ Критично',
+}
+
+function calcFlag(
+  value: number,
+  refMin: number | null | undefined,
+  refMax: number | null | undefined,
+): 'normal' | 'low' | 'high' {
+  if (refMin != null && value < refMin) return 'low'
+  if (refMax != null && value > refMax) return 'high'
+  return 'normal'
 }
 
 interface PatientHit { id: string; full_name: string; phones: string[] }
@@ -108,18 +146,47 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   onUpdated: () => void
 }) {
   const supabase = createClient()
+  const { profile } = useAuthStore()
   const [saving, setSaving]       = useState(false)
   const [saveRes, setSaveRes]     = useState(false)
+  const [takingSample, setTakingSample] = useState(false)
   const [results, setResults]     = useState<Record<string, string>>({})
+  // Service refs map: service_id -> { unit, ref_min, ref_max, ref_text }
+  const [svcRefs, setSvcRefs] = useState<Record<string, {
+    unit: string | null; ref_min: number | null; ref_max: number | null; ref_text: string | null
+  }>>({})
 
-  // Pre-fill existing results
+  // Pre-fill existing results; load service references
   useEffect(() => {
     const init: Record<string, string> = {}
     order.items?.forEach(item => {
-      if (item.result_value) init[item.id] = item.result_value
+      if (item.result_value != null) init[item.id] = String(item.result_value)
+      else if (item.result_text) init[item.id] = item.result_text
     })
     setResults(init)
-  }, [order])
+
+    const svcIds = (order.items ?? [])
+      .map(i => i.service_id).filter((x): x is string => !!x)
+    if (svcIds.length > 0) {
+      supabase.from('services')
+        .select('id, default_unit, reference_min, reference_max, reference_text')
+        .in('id', svcIds)
+        .then(({ data }) => {
+          const m: typeof svcRefs = {}
+          for (const r of (data ?? []) as Array<{
+            id: string; default_unit: string | null;
+            reference_min: number | null; reference_max: number | null;
+            reference_text: string | null;
+          }>) {
+            m[r.id] = {
+              unit: r.default_unit, ref_min: r.reference_min,
+              ref_max: r.reference_max, ref_text: r.reference_text,
+            }
+          }
+          setSvcRefs(m)
+        })
+    }
+  }, [order.id])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const advance = async () => {
     const next = NEXT_STATUS[order.status]
@@ -131,12 +198,58 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     onClose()
   }
 
+  const takeSample = async () => {
+    setTakingSample(true)
+    const now = new Date().toISOString()
+    // Create sample record
+    await supabase.from('lab_samples').insert({
+      lab_order_id: order.id,
+      sample_type: 'blood',
+      collected_at: now,
+      collected_by: profile?.id ?? null,
+      status: 'collected',
+    })
+    // Move status forward
+    await supabase.from('lab_orders')
+      .update({ status: 'sample_taken', sample_taken_at: now })
+      .eq('id', order.id)
+    setTakingSample(false)
+    onUpdated()
+    onClose()
+  }
+
   const saveResults = async () => {
     setSaveRes(true)
     await Promise.all(
-      Object.entries(results).map(([itemId, val]) =>
-        supabase.from('lab_order_items').update({ result_value: val.trim() || null }).eq('id', itemId)
-      )
+      (order.items ?? []).map(item => {
+        const raw = (results[item.id] ?? '').trim()
+        if (!raw) {
+          return supabase.from('lab_order_items').update({
+            result_value: null, result_text: null, flag: null,
+            unit_snapshot: null, reference_min: null, reference_max: null,
+          }).eq('id', item.id)
+        }
+        const num = Number(raw.replace(',', '.'))
+        const isNum = !isNaN(num) && raw !== ''
+        const refs = item.service_id ? svcRefs[item.service_id] : null
+        const refMin = refs?.ref_min ?? null
+        const refMax = refs?.ref_max ?? null
+        const refText = refs?.ref_text ?? null
+        const unit = refs?.unit ?? null
+        const flag = isNum ? calcFlag(num, refMin, refMax) : null
+
+        return supabase.from('lab_order_items').update({
+          result_value:   isNum ? num : null,
+          result_text:    isNum ? null : raw,
+          unit_snapshot:  unit,
+          reference_min:  refMin,
+          reference_max:  refMax,
+          reference_text: refText,
+          flag,
+          completed_at:   new Date().toISOString(),
+          status:         'done',
+        }).eq('id', item.id)
+      })
     )
     setSaveRes(false)
     onUpdated()
@@ -223,37 +336,73 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                 </button>
               </div>
               <div className="space-y-2">
-                {order.items!.map(item => (
-                  <div key={item.id} className="bg-gray-50 rounded-lg px-3 py-2.5">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-sm text-gray-800 font-medium">{item.name}</span>
-                      {item.price != null && (
-                        <span className="text-xs text-gray-400">{item.price.toLocaleString('ru-RU')} ₸</span>
-                      )}
+                {order.items!.map(item => {
+                  const refs = item.service_id ? svcRefs[item.service_id] : null
+                  const raw = results[item.id] ?? ''
+                  const num = Number(raw.replace(',', '.'))
+                  const isNum = !isNaN(num) && raw.trim() !== ''
+                  const liveFlag = isNum
+                    ? calcFlag(num, refs?.ref_min, refs?.ref_max)
+                    : null
+                  const refRange =
+                    refs?.ref_min != null || refs?.ref_max != null
+                      ? `${refs.ref_min ?? '—'} – ${refs.ref_max ?? '—'}`
+                      : refs?.ref_text ?? '—'
+                  return (
+                    <div key={item.id} className="bg-gray-50 rounded-lg px-3 py-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm text-gray-800 font-medium">{item.name}</span>
+                        {item.price != null && (
+                          <span className="text-xs text-gray-400">{item.price.toLocaleString('ru-RU')} ₸</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={raw}
+                          onChange={e => setResults(prev => ({ ...prev, [item.id]: e.target.value }))}
+                          placeholder="Результат"
+                          className="flex-1 border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
+                        />
+                        {refs?.unit && (
+                          <span className="text-xs text-gray-500 whitespace-nowrap">{refs.unit}</span>
+                        )}
+                        {liveFlag && (
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full ${FLAG_CLR[liveFlag]}`}>
+                            {FLAG_RU[liveFlag]}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-1">Норма: {refRange}</p>
                     </div>
-                    <input
-                      type="text"
-                      value={results[item.id] ?? ''}
-                      onChange={e => setResults(prev => ({ ...prev, [item.id]: e.target.value }))}
-                      placeholder="Введите результат…"
-                      className="w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
-                    />
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        {next && (
-          <div className="p-5 border-t border-gray-100">
+        <div className="p-5 border-t border-gray-100 space-y-2">
+          {/* Material taken — доступно пока не взят */}
+          {!['sample_taken','in_progress','ready','verified','delivered'].includes(order.status) && (
+            <button onClick={takeSample} disabled={takingSample}
+              className="w-full py-2.5 rounded-lg text-sm font-medium bg-teal-600 hover:bg-teal-700 text-white disabled:opacity-60 transition-colors">
+              {takingSample ? 'Сохранение...' : '🩸 Материал взят'}
+            </button>
+          )}
+          {next && (
             <button onClick={advance} disabled={saving}
               className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-60 ${next.cls}`}>
               {saving ? 'Сохранение...' : next.label}
             </button>
-          </div>
-        )}
+          )}
+          {order.status === 'verified' && (
+            <p className="text-[11px] text-center text-gray-400">
+              ✓ Результаты сохранены в историю пациента
+            </p>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -450,7 +599,7 @@ export default function LabPage() {
     setLoading(true)
     let q = supabase
       .from('lab_orders')
-      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,result_value)')
+      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
       .order('ordered_at', { ascending: false })
       .limit(100)
     if (filter === 'active') q = q.in('status', ['ordered','agreed','paid','sample_taken','in_progress'])
