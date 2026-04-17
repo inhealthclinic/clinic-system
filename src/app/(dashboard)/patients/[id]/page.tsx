@@ -54,6 +54,35 @@ const LAB_STATUS_CLR: Record<string, string> = {
   sample_taken: 'bg-yellow-100 text-yellow-700',
 }
 
+// ─── patient lab results (flat history) ──────────────────────────────────────
+
+interface PatientLabResult {
+  id: string
+  service_id: string | null
+  service_name_snapshot: string
+  result_value: number | null
+  result_text: string | null
+  unit_snapshot: string | null
+  reference_min: number | null
+  reference_max: number | null
+  reference_text: string | null
+  flag: 'normal' | 'low' | 'high' | 'critical' | null
+  result_date: string
+  lab_order_id: string | null
+}
+
+const FLAG_CLR: Record<string, string> = {
+  normal:   'bg-green-100 text-green-700',
+  low:      'bg-blue-100 text-blue-700',
+  high:     'bg-orange-100 text-orange-700',
+  critical: 'bg-red-100 text-red-700',
+}
+const FLAG_RU: Record<string, string> = {
+  normal: 'норма', low: '↓ низкий', high: '↑ высокий', critical: '‼ критический',
+}
+
+type LabSubTab = 'results' | 'orders'
+
 // ─── payment types ────────────────────────────────────────────────────────────
 
 interface Payment {
@@ -215,6 +244,16 @@ export default function PatientCardPage() {
   const [labLoading, setLabLoading] = useState(false)
   const [labLoaded, setLabLoaded] = useState(false)
 
+  // ── lab subtab + flat results (patient_lab_results)
+  const [labSubTab, setLabSubTab] = useState<LabSubTab>('results')
+  const [labResults, setLabResults] = useState<PatientLabResult[]>([])
+  const [labResultsLoaded, setLabResultsLoaded] = useState(false)
+  const [labResultsLoading, setLabResultsLoading] = useState(false)
+  const [resFilterService, setResFilterService] = useState<string>('')   // service_id
+  const [resFilterFrom, setResFilterFrom] = useState<string>('')         // YYYY-MM-DD
+  const [resFilterTo, setResFilterTo] = useState<string>('')             // YYYY-MM-DD
+  const [resFilterAbnormalOnly, setResFilterAbnormalOnly] = useState(false)
+
   // ── finances
   const [payments, setPayments] = useState<Payment[]>([])
   const [finLoading, setFinLoading] = useState(false)
@@ -281,6 +320,25 @@ export default function PatientCardPage() {
   useEffect(() => {
     if (activeTab === 'lab') loadLab()
   }, [activeTab, loadLab])
+
+  // ── load flat patient_lab_results (lazy)
+  const loadLabResults = useCallback(async () => {
+    if (labResultsLoaded) return
+    setLabResultsLoading(true)
+    const { data } = await supabase
+      .from('patient_lab_results')
+      .select('id, service_id, service_name_snapshot, result_value, result_text, unit_snapshot, reference_min, reference_max, reference_text, flag, result_date, lab_order_id')
+      .eq('patient_id', id)
+      .order('result_date', { ascending: false })
+      .limit(500)
+    setLabResults((data ?? []) as PatientLabResult[])
+    setLabResultsLoaded(true)
+    setLabResultsLoading(false)
+  }, [id, labResultsLoaded])
+
+  useEffect(() => {
+    if (activeTab === 'lab' && labSubTab === 'results') loadLabResults()
+  }, [activeTab, labSubTab, loadLabResults])
 
   // ── load payments (lazy)
   const loadFinance = useCallback(async () => {
@@ -989,43 +1047,220 @@ export default function PatientCardPage() {
       {/* ── Tab: Анализы ────────────────────────────────────────────────────── */}
       {activeTab === 'lab' && (
         <div className="space-y-3">
-          {labLoading ? (
-            <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
-              Загрузка анализов...
-            </div>
-          ) : labOrders.length === 0 ? (
-            <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
-              Анализов нет
-            </div>
-          ) : (
-            labOrders.map(order => (
-              <Link key={order.id} href="/lab" className="block bg-white rounded-xl border border-gray-100 p-4 hover:border-gray-200 transition-colors">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className="font-mono text-xs text-gray-400">{order.order_number}</span>
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${LAB_STATUS_CLR[order.status] ?? 'bg-gray-100 text-gray-600'}`}>
-                        {order.status}
-                      </span>
-                      {order.urgent && (
-                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-600">Срочно</span>
-                      )}
-                    </div>
-                    {order.items.length > 0 && (
-                      <p className="text-sm text-gray-800 truncate">{order.items.map(i => i.name).join(', ')}</p>
+          {/* subtabs */}
+          <div className="bg-white border border-gray-100 rounded-xl px-4 flex gap-0">
+            {([
+              { key: 'results' as LabSubTab, label: 'Результаты' },
+              { key: 'orders' as LabSubTab,  label: 'Заказы' },
+            ]).map(t => (
+              <button
+                key={t.key}
+                onClick={() => setLabSubTab(t.key)}
+                className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${
+                  labSubTab === t.key
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* ── subtab: РЕЗУЛЬТАТЫ (patient_lab_results) ──────────────────── */}
+          {labSubTab === 'results' && (() => {
+            // Unique services for filter dropdown
+            const serviceOptions = Array.from(
+              labResults.reduce((m, r) => {
+                const key = r.service_id ?? `name:${r.service_name_snapshot}`
+                if (!m.has(key)) m.set(key, { key, label: r.service_name_snapshot })
+                return m
+              }, new Map<string, { key: string; label: string }>()).values()
+            ).sort((a, b) => a.label.localeCompare(b.label, 'ru'))
+
+            const filtered = labResults.filter(r => {
+              if (resFilterService) {
+                const k = r.service_id ?? `name:${r.service_name_snapshot}`
+                if (k !== resFilterService) return false
+              }
+              if (resFilterFrom && r.result_date < resFilterFrom) return false
+              if (resFilterTo) {
+                // include whole day
+                const cutoff = resFilterTo + 'T23:59:59'
+                if (r.result_date > cutoff) return false
+              }
+              if (resFilterAbnormalOnly && (!r.flag || r.flag === 'normal')) return false
+              return true
+            })
+
+            return (
+              <>
+                {/* Filters */}
+                <div className="bg-white rounded-xl border border-gray-100 p-4 grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Анализ</label>
+                    <select
+                      className={inputCls}
+                      value={resFilterService}
+                      onChange={e => setResFilterService(e.target.value)}
+                    >
+                      <option value="">Все анализы</option>
+                      {serviceOptions.map(o => (
+                        <option key={o.key} value={o.key}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">С</label>
+                    <input
+                      type="date"
+                      className={inputCls}
+                      value={resFilterFrom}
+                      onChange={e => setResFilterFrom(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">По</label>
+                    <input
+                      type="date"
+                      className={inputCls}
+                      value={resFilterTo}
+                      onChange={e => setResFilterTo(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-span-2 flex items-center justify-between">
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={resFilterAbnormalOnly}
+                        onChange={e => setResFilterAbnormalOnly(e.target.checked)}
+                        className="rounded border-gray-300"
+                      />
+                      Только отклонения
+                    </label>
+                    {(resFilterService || resFilterFrom || resFilterTo || resFilterAbnormalOnly) && (
+                      <button
+                        onClick={() => {
+                          setResFilterService('')
+                          setResFilterFrom('')
+                          setResFilterTo('')
+                          setResFilterAbnormalOnly(false)
+                        }}
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                      >
+                        Сбросить
+                      </button>
                     )}
-                    <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
-                      {order.doctor && (
-                        <span>{order.doctor.last_name} {order.doctor.first_name}</span>
-                      )}
-                      {order.ordered_at && (
-                        <span>{new Date(order.ordered_at).toLocaleDateString('ru-RU')}</span>
-                      )}
-                    </div>
                   </div>
                 </div>
-              </Link>
-            ))
+
+                {/* List */}
+                {labResultsLoading ? (
+                  <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+                    Загрузка результатов...
+                  </div>
+                ) : filtered.length === 0 ? (
+                  <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+                    {labResults.length === 0 ? 'Результатов нет' : 'По фильтрам ничего не найдено'}
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+                    <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-gray-900">
+                        Результаты ({filtered.length})
+                      </h3>
+                    </div>
+                    <div className="divide-y divide-gray-50">
+                      {filtered.map(r => {
+                        const dateStr = new Date(r.result_date).toLocaleDateString('ru-RU', {
+                          day: '2-digit', month: '2-digit', year: 'numeric',
+                        })
+                        const value = r.result_value !== null
+                          ? `${r.result_value}${r.unit_snapshot ? ` ${r.unit_snapshot}` : ''}`
+                          : (r.result_text ?? '—')
+                        const refRange =
+                          r.reference_min !== null && r.reference_max !== null
+                            ? `${r.reference_min}–${r.reference_max}${r.unit_snapshot ? ` ${r.unit_snapshot}` : ''}`
+                            : (r.reference_text ?? null)
+                        return (
+                          <div key={r.id} className="px-5 py-3 flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-sm font-medium text-gray-900 truncate">
+                                  {r.service_name_snapshot}
+                                </p>
+                                {r.flag && (
+                                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${FLAG_CLR[r.flag] ?? 'bg-gray-100 text-gray-500'}`}>
+                                    {FLAG_RU[r.flag] ?? r.flag}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                {dateStr}
+                                {refRange && <span className="ml-2">норма: {refRange}</span>}
+                              </p>
+                            </div>
+                            <div className="flex-shrink-0 text-right">
+                              <p className={`text-sm font-semibold ${
+                                r.flag === 'high' || r.flag === 'critical' ? 'text-orange-600' :
+                                r.flag === 'low' ? 'text-blue-600' :
+                                'text-gray-900'
+                              }`}>
+                                {value}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
+            )
+          })()}
+
+          {/* ── subtab: ЗАКАЗЫ (lab_orders) ───────────────────────────────── */}
+          {labSubTab === 'orders' && (
+            labLoading ? (
+              <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+                Загрузка анализов...
+              </div>
+            ) : labOrders.length === 0 ? (
+              <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">
+                Заказов нет
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {labOrders.map(order => (
+                  <Link key={order.id} href="/lab" className="block bg-white rounded-xl border border-gray-100 p-4 hover:border-gray-200 transition-colors">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="font-mono text-xs text-gray-400">{order.order_number}</span>
+                          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${LAB_STATUS_CLR[order.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                            {order.status}
+                          </span>
+                          {order.urgent && (
+                            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-600">Срочно</span>
+                          )}
+                        </div>
+                        {order.items.length > 0 && (
+                          <p className="text-sm text-gray-800 truncate">{order.items.map(i => i.name).join(', ')}</p>
+                        )}
+                        <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
+                          {order.doctor && (
+                            <span>{order.doctor.last_name} {order.doctor.first_name}</span>
+                          )}
+                          {order.ordered_at && (
+                            <span>{new Date(order.ordered_at).toLocaleDateString('ru-RU')}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )
           )}
         </div>
       )}
