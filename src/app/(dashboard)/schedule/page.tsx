@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -19,6 +19,40 @@ const STATUS_STYLE: Record<string, { cls: string; label: string }> = {
 }
 
 type DoctorRow = Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color' | 'consultation_duration'>
+
+// ─── Finance types (drawer) ───────────────────────────────────────────────────
+
+interface VisitServiceRow {
+  id: string
+  service_id: string | null
+  name: string
+  quantity: number
+  price_at_booking: number
+  duration_at_booking: number
+  created_at: string
+}
+
+interface VisitPaymentRow {
+  id: string
+  amount: number
+  method: string
+  type: string
+  paid_at: string
+  received_by: string | null
+}
+
+interface ServiceCatalogRow {
+  id: string
+  name: string
+  price: number
+  duration_min: number
+}
+
+interface PayMethodRow {
+  id: string
+  name: string
+  method_code: string
+}
 
 // ─── Appointment type presets ─────────────────────────────────────────────────
 
@@ -1575,22 +1609,208 @@ function EditAppointmentModal({ appt, clinicId, onClose, onSaved }: {
 
 // ─── AppointmentDetailDrawer ──────────────────────────────────────────────────
 
+const PAY_STATUS_STYLE: Record<string, { cls: string; label: string }> = {
+  unpaid:  { cls: 'bg-red-100 text-red-600 border-red-200',         label: 'Не оплачено' },
+  partial: { cls: 'bg-yellow-100 text-yellow-700 border-yellow-200', label: 'Частично' },
+  paid:    { cls: 'bg-green-100 text-green-700 border-green-200',    label: 'Оплачено' },
+}
+
+const METHOD_LABELS: Record<string, string> = {
+  cash: 'Наличные', kaspi: 'Kaspi', halyk: 'Карта', credit: 'Рассрочка', balance: 'Баланс',
+}
+
 function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   appt: Appointment; clinicId: string; onClose: () => void; onUpdate: () => void
 }) {
   const supabase = createClient()
   const router = useRouter()
+  const { profile } = useAuthStore()
+
+  // ── Existing state ────────────────────────────────────────────
   const [saving, setSaving] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [rescheduleMode, setRescheduleMode] = useState<'move' | 'copy' | null>(null)
   const [visitId, setVisitId] = useState<string | null | 'loading'>('loading')
   const [openingVisit, setOpeningVisit] = useState(false)
 
-  useEffect(() => {
-    supabase.from('visits').select('id').eq('appointment_id', appt.id).maybeSingle()
-      .then(({ data }) => setVisitId(data?.id ?? null))
+  // ── Finance state ─────────────────────────────────────────────
+  const [visitTotals, setVisitTotals] = useState({ total_price: 0, total_paid: 0, payment_status: 'unpaid' })
+  const [visitServices, setVisitServices] = useState<VisitServiceRow[]>([])
+  const [visitPayments, setVisitPayments] = useState<VisitPaymentRow[]>([])
+  const [allServices, setAllServices] = useState<ServiceCatalogRow[]>([])
+  const [payMethods, setPayMethods] = useState<PayMethodRow[]>([])
+  const [finLoading, setFinLoading] = useState(true)
+
+  // Service dropdown
+  const [svcSearch, setSvcSearch] = useState('')
+  const [showSvcDrop, setShowSvcDrop] = useState(false)
+  const [addingSvc, setAddingSvc] = useState(false)
+  const svcRef = useRef<HTMLDivElement>(null)
+
+  // Payment form
+  const [payAmount, setPayAmount] = useState('')
+  const [payMethodCode, setPayMethodCode] = useState('cash')
+  const [payType, setPayType] = useState<'payment' | 'prepayment'>('payment')
+  const [savingPay, setSavingPay] = useState(false)
+
+  // ── Load finance data ─────────────────────────────────────────
+  const loadFinance = useCallback(async () => {
+    setFinLoading(true)
+    const { data: v } = await supabase
+      .from('visits')
+      .select('id, total_price, total_paid, payment_status')
+      .eq('appointment_id', appt.id)
+      .maybeSingle()
+    if (v) {
+      setVisitId(v.id)
+      setVisitTotals({
+        total_price:    Number(v.total_price)    ?? 0,
+        total_paid:     Number(v.total_paid)     ?? 0,
+        payment_status: v.payment_status ?? 'unpaid',
+      })
+      const [{ data: svcs }, { data: pmts }] = await Promise.all([
+        supabase.from('visit_services').select('*').eq('visit_id', v.id).order('created_at'),
+        supabase.from('payments').select('*').eq('visit_id', v.id).order('paid_at'),
+      ])
+      setVisitServices((svcs ?? []) as VisitServiceRow[])
+      setVisitPayments((pmts ?? []) as VisitPaymentRow[])
+    } else {
+      setVisitId(null)
+      setVisitTotals({ total_price: 0, total_paid: 0, payment_status: 'unpaid' })
+      setVisitServices([])
+      setVisitPayments([])
+    }
+    setFinLoading(false)
   }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    loadFinance()
+    supabase.from('services')
+      .select('id, name, price, duration_min')
+      .eq('is_active', true).is('deleted_at', null).order('name')
+      .then(({ data }) => setAllServices((data ?? []) as ServiceCatalogRow[]))
+    supabase.from('payment_methods')
+      .select('id, name, method_code')
+      .eq('clinic_id', clinicId).eq('is_active', true).order('sort_order')
+      .then(({ data }) => setPayMethods((data ?? []) as PayMethodRow[]))
+  }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close service dropdown on outside click
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (svcRef.current && !svcRef.current.contains(e.target as Node)) setShowSvcDrop(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  // ── Helpers ───────────────────────────────────────────────────
+  const fmtMoney = (n: number) => Math.round(n).toLocaleString('ru-RU') + ' ₸'
+
+  const filteredServices = useMemo(() => {
+    const q = svcSearch.trim().toLowerCase()
+    if (!q) return allServices.slice(0, 8)
+    return allServices.filter(s => s.name.toLowerCase().includes(q)).slice(0, 8)
+  }, [allServices, svcSearch])
+
+  const PAY_METHOD_OPTIONS = payMethods.length > 0
+    ? payMethods.map(m => ({ code: m.method_code, label: m.name }))
+    : [
+        { code: 'cash',   label: 'Наличные' },
+        { code: 'kaspi',  label: 'Kaspi' },
+        { code: 'halyk',  label: 'Карта' },
+        { code: 'credit', label: 'Рассрочка' },
+      ]
+
+  // ── Ensure visit exists ───────────────────────────────────────
+  const ensureVisit = async (): Promise<string | null> => {
+    if (visitId && visitId !== 'loading') return visitId
+    const { data } = await supabase.from('visits').insert({
+      clinic_id: appt.clinic_id, patient_id: appt.patient_id,
+      doctor_id: appt.doctor_id, appointment_id: appt.id, status: 'open',
+    }).select('id').single()
+    if (data?.id) { setVisitId(data.id); return data.id }
+    return null
+  }
+
+  // ── Recalculate totals ────────────────────────────────────────
+  const recalc = async (vid: string) => {
+    const [{ data: svcs }, { data: pmts }] = await Promise.all([
+      supabase.from('visit_services').select('quantity, price_at_booking').eq('visit_id', vid),
+      supabase.from('payments').select('amount').eq('visit_id', vid),
+    ])
+    const tp   = (svcs ?? []).reduce((s, x) => s + x.quantity * Number(x.price_at_booking), 0)
+    const paid = (pmts ?? []).reduce((s, x) => s + Number(x.amount), 0)
+    const ps   = paid === 0 ? 'unpaid' : paid >= tp ? 'paid' : 'partial'
+    await supabase.from('visits').update({ total_price: tp, total_paid: paid, payment_status: ps }).eq('id', vid)
+    setVisitTotals({ total_price: tp, total_paid: paid, payment_status: ps })
+  }
+
+  // ── Add service ───────────────────────────────────────────────
+  const addService = async (svc: ServiceCatalogRow) => {
+    setAddingSvc(true)
+    setSvcSearch('')
+    setShowSvcDrop(false)
+    const vid = await ensureVisit()
+    if (!vid) { setAddingSvc(false); return }
+    const existing = visitServices.find(s => s.service_id === svc.id)
+    if (existing) {
+      const newQty = existing.quantity + 1
+      await supabase.from('visit_services').update({ quantity: newQty }).eq('id', existing.id)
+      setVisitServices(prev => prev.map(s => s.id === existing.id ? { ...s, quantity: newQty } : s))
+    } else {
+      const { data } = await supabase.from('visit_services').insert({
+        visit_id: vid, service_id: svc.id, name: svc.name,
+        quantity: 1, price_at_booking: svc.price, duration_at_booking: svc.duration_min,
+      }).select('*').single()
+      if (data) setVisitServices(prev => [...prev, data as VisitServiceRow])
+    }
+    await recalc(vid)
+    setAddingSvc(false)
+  }
+
+  // ── Remove service ────────────────────────────────────────────
+  const removeService = async (row: VisitServiceRow) => {
+    await supabase.from('visit_services').delete().eq('id', row.id)
+    setVisitServices(prev => prev.filter(s => s.id !== row.id))
+    if (visitId && visitId !== 'loading') await recalc(visitId)
+  }
+
+  // ── Update quantity ───────────────────────────────────────────
+  const updateQty = async (row: VisitServiceRow, delta: number) => {
+    const newQty = Math.max(1, row.quantity + delta)
+    await supabase.from('visit_services').update({ quantity: newQty }).eq('id', row.id)
+    setVisitServices(prev => prev.map(s => s.id === row.id ? { ...s, quantity: newQty } : s))
+    if (visitId && visitId !== 'loading') await recalc(visitId)
+  }
+
+  // ── Add payment ───────────────────────────────────────────────
+  const addPayment = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const amount = parseFloat(payAmount)
+    if (!amount || amount <= 0) return
+    setSavingPay(true)
+    const vid = await ensureVisit()
+    if (!vid) { setSavingPay(false); return }
+    const { data } = await supabase.from('payments').insert({
+      clinic_id:   clinicId,
+      patient_id:  appt.patient_id,
+      visit_id:    vid,
+      amount,
+      method:      payMethodCode,
+      type:        payType,
+      status:      'completed',
+      received_by: profile?.id ?? null,
+    }).select('*').single()
+    if (data) {
+      setVisitPayments(prev => [...prev, data as VisitPaymentRow])
+      setPayAmount('')
+    }
+    await recalc(vid)
+    setSavingPay(false)
+  }
+
+  // ── Existing handlers ─────────────────────────────────────────
   const handleOpenVisit = async () => {
     setOpeningVisit(true)
     if (visitId && visitId !== 'loading') { router.push(`/visits/${visitId}`); return }
@@ -1609,9 +1829,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       await supabase.from('tasks').insert({
         clinic_id: appt.clinic_id,
         title: `Выяснить причину неявки: ${appt.patient?.full_name}`,
-        type: 'call',
-        priority: 'high',
-        status: 'new',
+        type: 'call', priority: 'high', status: 'new',
         patient_id: appt.patient_id,
         due_at: new Date(Date.now() + 2*60*60*1000).toISOString(),
       })
@@ -1640,10 +1858,16 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   }
   const nextActions = NEXT[appt.status] ?? []
 
+  const debt = Math.max(0, visitTotals.total_price - visitTotals.total_paid)
+  const psStyle = PAY_STATUS_STYLE[visitTotals.payment_status] ?? PAY_STATUS_STYLE.unpaid
+  const hasUnpaid = visitTotals.total_price > 0 && visitTotals.payment_status !== 'paid'
+
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
       <div className="fixed right-0 top-0 h-full w-80 bg-white shadow-2xl z-50 flex flex-col">
+
+        {/* ── Header ─────────────────────────────────────────── */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
           <div>
             <p className="text-base font-semibold text-gray-900">{patient?.full_name ?? 'Walk-in'}</p>
@@ -1662,7 +1886,10 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           </div>
         </div>
 
+        {/* ── Scrollable body ─────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+
+          {/* Appointment info */}
           {doctor && (
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ background: doctor.color ?? '#6B7280' }} />
@@ -1701,18 +1928,222 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
               <p className="text-sm text-gray-600">{apptDisplayNotes(appt)}</p>
             </div>
           )}
+
+          {/* ── Services section ──────────────────────────────── */}
+          <div className="border-t border-gray-100 pt-3">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Услуги</p>
+
+            {/* Service search dropdown */}
+            <div ref={svcRef} className="relative mb-2">
+              <div className="flex items-center gap-1.5 border border-gray-200 rounded-lg px-2.5 py-1.5 focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition">
+                <svg width="12" height="12" fill="none" viewBox="0 0 24 24" className="text-gray-400 flex-shrink-0">
+                  <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5"/>
+                  <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                <input
+                  type="text"
+                  placeholder="Добавить услугу..."
+                  value={svcSearch}
+                  onChange={e => { setSvcSearch(e.target.value); setShowSvcDrop(true) }}
+                  onFocus={() => setShowSvcDrop(true)}
+                  className="flex-1 text-sm outline-none bg-transparent"
+                />
+                {addingSvc && (
+                  <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                )}
+              </div>
+              {showSvcDrop && filteredServices.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-48 overflow-y-auto">
+                  {filteredServices.map(svc => (
+                    <button
+                      key={svc.id}
+                      onMouseDown={() => addService(svc)}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-blue-50 transition-colors"
+                    >
+                      <span className="text-sm text-gray-800 truncate mr-2">{svc.name}</span>
+                      <span className="text-xs text-gray-500 flex-shrink-0">{fmtMoney(svc.price)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Selected services list */}
+            {visitServices.length > 0 ? (
+              <div className="space-y-1.5">
+                {visitServices.map(row => (
+                  <div key={row.id} className="flex items-center gap-1.5 bg-gray-50 rounded-lg px-2.5 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-gray-800 truncate">{row.name}</p>
+                      <p className="text-xs text-gray-400">{fmtMoney(row.price_at_booking)} × {row.quantity}</p>
+                    </div>
+                    <span className="text-xs font-semibold text-gray-700 flex-shrink-0">
+                      {fmtMoney(row.quantity * row.price_at_booking)}
+                    </span>
+                    <div className="flex items-center gap-0.5 flex-shrink-0">
+                      <button
+                        onClick={() => updateQty(row, -1)}
+                        className="w-5 h-5 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
+                      >
+                        <svg width="10" height="2" fill="none" viewBox="0 0 10 2"><path d="M1 1h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                      </button>
+                      <span className="text-xs text-gray-700 w-4 text-center font-medium">{row.quantity}</span>
+                      <button
+                        onClick={() => updateQty(row, 1)}
+                        className="w-5 h-5 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
+                      >
+                        <svg width="10" height="10" fill="none" viewBox="0 0 10 10"><path d="M5 1v8M1 5h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                      </button>
+                      <button
+                        onClick={() => removeService(row)}
+                        className="w-5 h-5 flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 rounded ml-0.5 transition-colors"
+                      >
+                        <svg width="10" height="10" fill="none" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <div className="flex justify-between items-center px-2.5 py-1 text-sm font-semibold text-gray-800 border-t border-gray-200 mt-1">
+                  <span>Итого</span>
+                  <span>{fmtMoney(visitTotals.total_price)}</span>
+                </div>
+              </div>
+            ) : (
+              !finLoading && (
+                <p className="text-xs text-gray-400 text-center py-1">Услуги не добавлены</p>
+              )
+            )}
+          </div>
+
+          {/* ── Payment section (shown when services added) ────── */}
+          {visitServices.length > 0 && (
+            <div className="border-t border-gray-100 pt-3 space-y-2.5">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Оплата</p>
+
+              {/* Summary */}
+              <div className="bg-gray-50 rounded-lg px-3 py-2.5 space-y-1.5">
+                <div className="flex justify-between text-xs text-gray-600">
+                  <span>К оплате</span>
+                  <span className="font-medium">{fmtMoney(visitTotals.total_price)}</span>
+                </div>
+                {visitTotals.total_paid > 0 && (
+                  <div className="flex justify-between text-xs text-gray-600">
+                    <span>Оплачено</span>
+                    <span className="font-medium text-green-600">{fmtMoney(visitTotals.total_paid)}</span>
+                  </div>
+                )}
+                {debt > 0 && (
+                  <div className="flex justify-between text-xs border-t border-gray-200 pt-1">
+                    <span className="text-gray-500">Остаток</span>
+                    <span className="font-semibold text-red-500">{fmtMoney(debt)}</span>
+                  </div>
+                )}
+                <div className="flex justify-end">
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${psStyle.cls}`}>
+                    {psStyle.label}
+                  </span>
+                </div>
+              </div>
+
+              {/* Payment form */}
+              <form onSubmit={addPayment} className="space-y-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="100"
+                  placeholder={debt > 0 ? `Сумма (долг ${fmtMoney(debt)})` : 'Сумма оплаты'}
+                  value={payAmount}
+                  onChange={e => setPayAmount(e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+                <div className="flex flex-wrap gap-1">
+                  {PAY_METHOD_OPTIONS.map(m => (
+                    <button
+                      key={m.code}
+                      type="button"
+                      onClick={() => setPayMethodCode(m.code)}
+                      className={[
+                        'text-xs px-2.5 py-1 rounded-lg border transition-colors',
+                        payMethodCode === m.code
+                          ? 'bg-blue-600 border-blue-600 text-white'
+                          : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:text-blue-600',
+                      ].join(' ')}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-1.5">
+                  {([
+                    { value: 'payment',    label: 'Оплата' },
+                    { value: 'prepayment', label: 'Предоплата' },
+                  ] as const).map(t => (
+                    <button
+                      key={t.value}
+                      type="button"
+                      onClick={() => setPayType(t.value)}
+                      className={[
+                        'flex-1 text-xs px-2 py-1.5 rounded-lg border transition-colors',
+                        payType === t.value
+                          ? 'bg-gray-800 border-gray-800 text-white'
+                          : 'border-gray-200 text-gray-600 hover:bg-gray-50',
+                      ].join(' ')}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="submit"
+                  disabled={savingPay || !payAmount}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg py-2 transition-colors"
+                >
+                  {savingPay ? 'Сохранение...' : 'Принять оплату'}
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* ── Payment history ───────────────────────────────── */}
+          {visitPayments.length > 0 && (
+            <div className="border-t border-gray-100 pt-3">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">История оплат</p>
+              <div className="space-y-1.5">
+                {visitPayments.map(p => (
+                  <div key={p.id} className="flex items-center justify-between">
+                    <div className="text-xs text-gray-500">
+                      {new Date(p.paid_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                      {' '}
+                      {new Date(p.paid_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                      <span className="mx-1 text-gray-300">·</span>
+                      {METHOD_LABELS[p.method] ?? p.method}
+                    </div>
+                    <span className="text-xs font-semibold text-gray-800">{fmtMoney(Number(p.amount))}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Open visit */}
+        {/* ── Open visit ──────────────────────────────────────── */}
         <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0">
-          <button onClick={handleOpenVisit} disabled={openingVisit||visitId==='loading'}
-            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+          <button
+            onClick={handleOpenVisit}
+            disabled={openingVisit || visitId === 'loading'}
+            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+          >
             <svg width="15" height="15" fill="none" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
             {openingVisit ? 'Открытие...' : 'Открыть приём'}
           </button>
+          {hasUnpaid && (
+            <p className="text-xs text-amber-600 text-center mt-1.5">
+              ⚠ Есть неоплаченные услуги
+            </p>
+          )}
         </div>
 
-        {/* Reschedule / Duplicate actions */}
+        {/* ── Reschedule / Duplicate ───────────────────────────── */}
         <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 flex gap-2">
           <button onClick={() => setRescheduleMode('move')}
             className="flex-1 border border-gray-200 text-gray-600 hover:bg-orange-50 hover:border-orange-300 hover:text-orange-600 rounded-lg py-2 text-xs font-medium transition-colors flex items-center justify-center gap-1.5">
@@ -1731,6 +2162,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           </button>
         </div>
 
+        {/* ── Status transitions ───────────────────────────────── */}
         {nextActions.length > 0 && (
           <div className="px-5 py-4 border-t border-gray-100 flex-shrink-0 space-y-2">
             {nextActions.map(a => (
