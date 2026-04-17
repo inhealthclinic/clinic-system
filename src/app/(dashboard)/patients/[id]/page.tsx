@@ -691,6 +691,68 @@ export default function PatientCardPage() {
         )}
       </div>
 
+      {/* ── Safety alerts banner ─── */}
+      {(() => {
+        const severe = allergies.filter(a => a.severity === 'severe' || a.severity === 'life-threatening')
+        const otherAllergies = allergies.filter(a => a.severity !== 'severe' && a.severity !== 'life-threatening')
+        const active = conditions.filter(c => c.status === 'active')
+        if (severe.length === 0 && otherAllergies.length === 0 && active.length === 0) return null
+        const hasCritical = severe.length > 0
+        return (
+          <div
+            className={`mb-4 rounded-xl border p-3 flex flex-wrap items-start gap-x-4 gap-y-2 ${
+              hasCritical
+                ? 'bg-red-50 border-red-200'
+                : 'bg-amber-50 border-amber-200'
+            }`}
+          >
+            {severe.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-semibold text-red-700">⚠️ Опасные аллергии:</span>
+                {severe.map(a => (
+                  <span
+                    key={a.id}
+                    title={`${ALLERGY_TYPE_LABEL[a.type]} · ${SEVERITY_LABEL[a.severity]}${a.reaction ? ` · ${a.reaction}` : ''}`}
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-600 text-white"
+                  >
+                    {a.allergen}
+                  </span>
+                ))}
+              </div>
+            )}
+            {otherAllergies.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium text-amber-800">Аллергии:</span>
+                {otherAllergies.map(a => (
+                  <span
+                    key={a.id}
+                    title={`${ALLERGY_TYPE_LABEL[a.type]} · ${SEVERITY_LABEL[a.severity]}${a.reaction ? ` · ${a.reaction}` : ''}`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-800 border border-amber-200"
+                  >
+                    {a.allergen}
+                  </span>
+                ))}
+              </div>
+            )}
+            {active.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium text-gray-700">Хронические:</span>
+                {active.map(c => (
+                  <span
+                    key={c.id}
+                    title={c.icd10_code ?? ''}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-white text-gray-700 border border-gray-200"
+                  >
+                    {c.icd10_code ? <span className="font-mono text-[10px] text-gray-500">{c.icd10_code}</span> : null}
+                    {c.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
       {/* ── Tab bar ─────────────────────────────────────────────────────────── */}
       <div className="bg-white border border-gray-100 rounded-xl mb-4 px-4 flex gap-0">
         {TABS.map(tab => (
