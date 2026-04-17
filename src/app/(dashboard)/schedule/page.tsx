@@ -51,6 +51,13 @@ interface ServiceCatalogRow {
   category: string
 }
 
+interface ServicePackageRow {
+  id: string
+  name: string
+  sort_order: number
+  service_ids: string[]  // collected from service_package_items
+}
+
 interface PayMethodRow {
   id: string
   name: string
@@ -1660,6 +1667,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const [labOrderId, setLabOrderId] = useState<string | null>(null)
   const [transferringLab, setTransferringLab] = useState(false)
   const [labPickerOpen, setLabPickerOpen] = useState(false)
+  const [packages, setPackages] = useState<ServicePackageRow[]>([])
 
   // ── Load finance data ─────────────────────────────────────────
   const loadFinance = useCallback(async () => {
@@ -1704,6 +1712,26 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       .select('id, name, method_code')
       .eq('clinic_id', clinicId).eq('is_active', true).order('sort_order')
       .then(({ data }) => setPayMethods((data ?? []) as PayMethodRow[]))
+    // Packages with their service_ids (for the lab picker modal)
+    supabase.from('service_packages')
+      .select('id, name, sort_order, service_package_items(service_id)')
+      .eq('clinic_id', clinicId).eq('is_active', true).order('sort_order')
+      .then(({ data }) => {
+        const rows = (data ?? []) as Array<{
+          id: string
+          name: string
+          sort_order: number
+          service_package_items: Array<{ service_id: string }>
+        }>
+        setPackages(
+          rows.map(p => ({
+            id: p.id,
+            name: p.name,
+            sort_order: p.sort_order,
+            service_ids: (p.service_package_items ?? []).map(i => i.service_id),
+          }))
+        )
+      })
   }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close service dropdown on outside click
@@ -2394,6 +2422,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
         <LabServicesPicker
           allServices={allServices}
           visitServices={visitServices}
+          packages={packages}
           onClose={() => setLabPickerOpen(false)}
           onAccept={async selections => {
             await bulkAddServices(selections)
@@ -2409,10 +2438,11 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
 // Modal for bulk-picking lab services (grouped by category, searchable,
 // multi-select with qty editor). Returns { svc, qty }[] via onAccept.
 function LabServicesPicker({
-  allServices, visitServices, onClose, onAccept,
+  allServices, visitServices, packages, onClose, onAccept,
 }: {
   allServices: ServiceCatalogRow[]
   visitServices: VisitServiceRow[]
+  packages: ServicePackageRow[]
   onClose: () => void
   onAccept: (selections: Array<{ svc: ServiceCatalogRow; qty: number }>) => void | Promise<void>
 }) {
@@ -2484,6 +2514,50 @@ function LabServicesPicker({
     setOne(s.id, qty[s.id] ? 0 : 1)
   }
 
+  // Packages: map of service ids that exist in catalog (by package)
+  const labServiceIds = useMemo(() => new Set(labServices.map(s => s.id)), [labServices])
+  const packagesWithItems = useMemo(
+    () => packages
+      .map(p => ({
+        ...p,
+        // keep only service_ids that exist among our lab services
+        service_ids: p.service_ids.filter(id => labServiceIds.has(id)),
+      }))
+      .filter(p => p.service_ids.length > 0),
+    [packages, labServiceIds],
+  )
+
+  // Is a package fully selected (all its items have qty>=1)
+  const isPackageSelected = (pkg: ServicePackageRow) =>
+    pkg.service_ids.length > 0 && pkg.service_ids.every(id => (qty[id] ?? 0) > 0)
+
+  // Package price = sum of its items (at catalog price)
+  const packagePrice = (pkg: ServicePackageRow) => {
+    let sum = 0
+    for (const id of pkg.service_ids) {
+      const s = labServices.find(x => x.id === id)
+      if (s) sum += s.price
+    }
+    return sum
+  }
+
+  // Click package: if fully selected — unselect all its items;
+  // otherwise — set qty=1 on all missing items (don't touch others already picked).
+  const togglePackage = (pkg: ServicePackageRow) => {
+    setQty(prev => {
+      const next = { ...prev }
+      const allOn = pkg.service_ids.every(id => (next[id] ?? 0) > 0)
+      if (allOn) {
+        for (const id of pkg.service_ids) delete next[id]
+      } else {
+        for (const id of pkg.service_ids) {
+          if (!next[id] || next[id] <= 0) next[id] = 1
+        }
+      }
+      return next
+    })
+  }
+
   const selections = useMemo(() => {
     const out: Array<{ svc: ServiceCatalogRow; qty: number }> = []
     for (const s of labServices) {
@@ -2553,7 +2627,56 @@ function LabServicesPicker({
         {/* Body: sidebar + list */}
         <div className="flex-1 flex min-h-0">
           {/* Category sidebar */}
-          <aside className="w-48 flex-shrink-0 border-r border-gray-100 overflow-y-auto py-2 bg-gray-50/50">
+          <aside className="w-56 flex-shrink-0 border-r border-gray-100 overflow-y-auto py-2 bg-gray-50/50">
+            {/* Packages section */}
+            {packagesWithItems.length > 0 && (
+              <>
+                <div className="px-4 pt-1 pb-1.5">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                    Пакеты
+                  </p>
+                </div>
+                {packagesWithItems.map(pkg => {
+                  const sel = isPackageSelected(pkg)
+                  return (
+                    <button
+                      key={pkg.id}
+                      onClick={() => togglePackage(pkg)}
+                      title={`${pkg.service_ids.length} анализов · ${fmtMoney(packagePrice(pkg))}`}
+                      className={[
+                        'w-full text-left px-4 py-1.5 text-sm flex items-center justify-between transition-colors group',
+                        sel
+                          ? 'bg-purple-100 text-purple-800'
+                          : 'text-gray-700 hover:bg-gray-100',
+                      ].join(' ')}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={[
+                          'w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0',
+                          sel ? 'bg-purple-600 border-purple-600' : 'border-gray-300 bg-white',
+                        ].join(' ')}>
+                          {sel && (
+                            <svg width="8" height="8" fill="none" viewBox="0 0 10 10">
+                              <path d="M1.5 5l2 2 5-5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </span>
+                        <span className="truncate">{pkg.name}</span>
+                      </div>
+                      <span className="text-[10px] text-gray-400 flex-shrink-0 ml-1">
+                        {pkg.service_ids.length}
+                      </span>
+                    </button>
+                  )
+                })}
+                <div className="my-2 border-t border-gray-200 mx-4" />
+                <div className="px-4 pb-1.5">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                    Категории
+                  </p>
+                </div>
+              </>
+            )}
             <button
               onClick={() => setActiveCat('__all__')}
               className={[
