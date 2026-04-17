@@ -2448,7 +2448,7 @@ function LabServicesPicker({
 }) {
   const fmtMoney = (n: number) => Math.round(n).toLocaleString('ru-RU') + ' ₸'
   const labServices = useMemo(
-    () => allServices.filter(s => s.is_lab),
+    () => allServices,
     [allServices],
   )
 
@@ -2456,7 +2456,7 @@ function LabServicesPicker({
   const initialQty: Record<string, number> = useMemo(() => {
     const m: Record<string, number> = {}
     for (const row of visitServices) {
-      if (row.is_lab && row.service_id) m[row.service_id] = row.quantity
+      if (row.service_id) m[row.service_id] = row.quantity
     }
     return m
   }, [visitServices])
