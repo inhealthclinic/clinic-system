@@ -323,22 +323,49 @@ export default function PackagesPage() {
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-300"
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">
-                  Цена пакета (₸)
-                  {computedTotal > 0 && (
-                    <span className="ml-2 text-gray-400 font-normal">
-                      сумма услуг: {computedTotal.toLocaleString('ru')} ₸
-                    </span>
-                  )}
-                </label>
-                <input
-                  type="number"
-                  value={form.price}
-                  onChange={e => setForm(p => ({ ...p, price: e.target.value }))}
-                  placeholder={computedTotal > 0 ? String(computedTotal) : 'авто'}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-300"
-                />
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-gray-500 mb-2">Цена пакета</label>
+                <div className="flex gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setForm(p => ({ ...p, price: '' }))}
+                    className={[
+                      'flex-1 py-2 rounded-lg text-sm font-medium border transition-colors',
+                      !form.price
+                        ? 'bg-purple-600 text-white border-purple-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300',
+                    ].join(' ')}
+                  >
+                    Авто{computedTotal > 0 ? ` = ${computedTotal.toLocaleString('ru')} ₸` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!form.price) setForm(p => ({ ...p, price: String(computedTotal || '') }))
+                    }}
+                    className={[
+                      'flex-1 py-2 rounded-lg text-sm font-medium border transition-colors',
+                      form.price
+                        ? 'bg-purple-600 text-white border-purple-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300',
+                    ].join(' ')}
+                  >
+                    Фиксированная
+                  </button>
+                </div>
+                {form.price !== '' && (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={form.price}
+                      onChange={e => setForm(p => ({ ...p, price: e.target.value }))}
+                      placeholder="0"
+                      className="flex-1 border border-purple-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-300 font-medium"
+                      autoFocus
+                    />
+                    <span className="text-sm text-gray-500">₸</span>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Порядок сортировки</label>
