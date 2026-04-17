@@ -654,6 +654,20 @@ export default function PatientCardPage() {
             <div className="flex flex-col items-end gap-2 flex-shrink-0">
               {/* Quick action: open visit */}
               <OpenVisitButton patientId={patient.id} />
+              <div className="flex gap-1.5">
+                <Link
+                  href={`/patients/${patient.id}/prescriptions`}
+                  className="text-xs bg-purple-100 hover:bg-purple-200 text-purple-700 font-medium px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  💊 Рецепты
+                </Link>
+                <Link
+                  href={`/patients/${patient.id}/certificates`}
+                  className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  📄 Справки
+                </Link>
+              </div>
               <button
                 onClick={() => setEditing(true)}
                 className="text-xs text-gray-400 hover:text-blue-600 border border-gray-200 hover:border-blue-300 px-3 py-1.5 rounded-lg transition-colors"

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
+import { CommandPalette } from '@/components/CommandPalette'
 import { useCurrentUser } from '@/lib/hooks/useCurrentUser'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -34,6 +35,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
+      {/* Global Cmd+K search */}
+      <CommandPalette />
       {/* Desktop sidebar */}
       <div className="hidden lg:flex flex-shrink-0">
         <Sidebar />
