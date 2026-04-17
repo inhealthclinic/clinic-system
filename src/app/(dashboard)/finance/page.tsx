@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { syncDealOnPayment } from '@/lib/crm/sync'
 
 interface Payment {
   id: string
@@ -71,15 +72,29 @@ function PaymentModal({ clinicId, onClose, onSaved }: {
     if (!patient) { setError('Выберите пациента'); return }
     if (!amount || Number(amount) <= 0) { setError('Укажите сумму'); return }
     setSaving(true); setError('')
-    const { error: err } = await supabase.from('payments').insert({
+    const { data: created, error: err } = await supabase.from('payments').insert({
       clinic_id:  clinicId,
       patient_id: patient.id,
       amount:     Number(amount),
       method, type,
       status:     'completed',
       notes:      notes.trim() || null,
-    })
+    }).select('id').single()
     if (err) { setError(err.message); setSaving(false); return }
+
+    // CRM glue — log payment on the open medical deal and auto-close
+    // it as won when cumulative payments cover deal_value. Best-effort.
+    if (created?.id) {
+      await syncDealOnPayment(supabase, {
+        clinicId,
+        patientId: patient.id,
+        paymentId: created.id as string,
+        amount:    Number(amount),
+        type,
+        method,
+      })
+    }
+
     onSaved(); onClose()
   }
 

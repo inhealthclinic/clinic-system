@@ -121,6 +121,90 @@ export async function ensureMedicalDealForPatient(
   }
 }
 
+interface SyncPaymentArgs {
+  clinicId:  string
+  patientId: string
+  paymentId: string
+  amount:    number
+  type:      string   // 'payment' | 'prepayment' | 'refund' | 'writeoff'
+  method?:   string
+}
+
+/**
+ * After a payment row is inserted, drop a note into the patient's open
+ * medical-funnel deal and — if the cumulative payments now cover
+ * deal_value — auto-mark the deal as won (status='won', stage='success').
+ *
+ * Refunds are recorded but never auto-close the deal.
+ */
+export async function syncDealOnPayment(
+  supabase: SupabaseClient,
+  { clinicId, patientId, paymentId, amount, type, method }: SyncPaymentArgs,
+): Promise<void> {
+  try {
+    const { data: deal } = await supabase
+      .from('deals')
+      .select('id, deal_value, stage, status')
+      .eq('patient_id', patientId)
+      .eq('funnel', 'medical')
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (!deal?.id) return  // no open deal — nothing to sync
+
+    // Audit trail entry — `outcome` carries the structured ref.
+    const verb = type === 'refund' ? 'Возврат' : type === 'prepayment' ? 'Предоплата' : 'Оплата'
+    const summary = `${verb} ${Math.abs(amount).toLocaleString('ru-RU')} ₸${method ? ` · ${method}` : ''}`
+    await supabase.from('crm_interactions').insert({
+      clinic_id:  clinicId,
+      deal_id:    deal.id,
+      patient_id: patientId,
+      type:       'note',
+      direction:  null,
+      summary,
+      outcome:    `payment:${paymentId}`,
+    })
+
+    // Auto-close on full payment.  Skip for refunds, writeoffs, and
+    // deals where deal_value is not set yet (manager hasn't priced it).
+    if (type === 'refund' || type === 'writeoff') return
+    const dealValue = Number(deal.deal_value ?? 0)
+    if (dealValue <= 0) return
+    if (deal.stage === 'success' || deal.status === 'won') return
+
+    // Sum every completed non-refund payment for this patient.
+    const { data: prior } = await supabase
+      .from('payments')
+      .select('amount, type')
+      .eq('patient_id', patientId)
+      .eq('status', 'completed')
+      .neq('type', 'refund')
+      .neq('type', 'writeoff')
+
+    const totalPaid = (prior ?? []).reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
+    if (totalPaid + 0.01 < dealValue) return  // not yet covered
+
+    await supabase
+      .from('deals')
+      .update({ status: 'won', stage: 'success' })
+      .eq('id', deal.id)
+
+    await supabase.from('crm_interactions').insert({
+      clinic_id:  clinicId,
+      deal_id:    deal.id,
+      patient_id: patientId,
+      type:       'note',
+      direction:  null,
+      summary:    `Сделка автоматически закрыта как «успешная»: оплачено ${totalPaid.toLocaleString('ru-RU')} ₸ из ${dealValue.toLocaleString('ru-RU')} ₸`,
+      outcome:    `payment:${paymentId}:auto_won`,
+    })
+  } catch (err) {
+    console.warn('[crm/sync] syncDealOnPayment threw', err)
+  }
+}
+
 interface SyncStatusArgs {
   clinicId:    string
   patientId:   string
