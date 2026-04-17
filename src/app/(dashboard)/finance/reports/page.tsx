@@ -24,6 +24,19 @@ interface Charge {
   total: number
 }
 
+interface LabOrderRow {
+  id: string
+  status: string
+  created_at: string
+}
+
+interface LabResultRow {
+  service_name: string | null
+  flag: string | null
+  collected_at: string | null
+  created_at: string
+}
+
 type Period = 'today' | 'week' | 'month' | 'quarter' | 'custom'
 
 /* ─── Constants ──────────────────────────────────────────────────────────── */
@@ -141,6 +154,8 @@ export default function FinanceReportsPage() {
   const [payments, setPayments]   = useState<Payment[]>([])
   const [debtors, setDebtors]     = useState<Patient[]>([])
   const [charges, setCharges]     = useState<Charge[]>([])
+  const [labOrders, setLabOrders] = useState<LabOrderRow[]>([])
+  const [labResults, setLabResults] = useState<LabResultRow[]>([])
   const [loading, setLoading]     = useState(true)
 
   const load = useCallback(async () => {
@@ -149,7 +164,7 @@ export default function FinanceReportsPage() {
 
     const { start, end } = getRange(period, customStart, customEnd)
 
-    const [pmtRes, debtRes, chgRes] = await Promise.all([
+    const [pmtRes, debtRes, chgRes, labOrdRes, labResRes] = await Promise.all([
       supabase
         .from('payments')
         .select('amount, method, type, status, paid_at')
@@ -172,11 +187,27 @@ export default function FinanceReportsPage() {
         .gte('created_at', start)
         .lte('created_at', end)
         .eq('status', 'paid'),
+
+      supabase
+        .from('lab_orders')
+        .select('id, status, created_at')
+        .eq('clinic_id', clinicId)
+        .gte('created_at', start)
+        .lte('created_at', end),
+
+      supabase
+        .from('patient_lab_results')
+        .select('service_name, flag, collected_at, created_at')
+        .eq('clinic_id', clinicId)
+        .gte('created_at', start)
+        .lte('created_at', end),
     ])
 
     setPayments(pmtRes.data ?? [])
     setDebtors(debtRes.data ?? [])
     setCharges(chgRes.data ?? [])
+    setLabOrders(labOrdRes.data ?? [])
+    setLabResults(labResRes.data ?? [])
     setLoading(false)
   }, [clinicId, period, customStart, customEnd])
 
@@ -216,6 +247,24 @@ export default function FinanceReportsPage() {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
   const serviceMax = topServices.length > 0 ? topServices[0][1] : 1
+
+  /* ─── Lab metrics ─── */
+  const labTotal      = labOrders.length
+  const labVerified   = labOrders.filter(o => o.status === 'verified' || o.status === 'delivered').length
+  const labInProgress = labOrders.filter(o => o.status === 'in_progress' || o.status === 'received').length
+  const labCancelled  = labOrders.filter(o => o.status === 'cancelled').length
+  const labAbnormal   = labResults.filter(r => r.flag === 'low' || r.flag === 'high' || r.flag === 'critical_low' || r.flag === 'critical_high').length
+  const labResultsTotal = labResults.length
+
+  const labServiceMap: Record<string, number> = {}
+  labResults.forEach(r => {
+    const k = r.service_name ?? '—'
+    labServiceMap[k] = (labServiceMap[k] ?? 0) + 1
+  })
+  const topLabServices = Object.entries(labServiceMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+  const labServiceMax = topLabServices.length > 0 ? topLabServices[0][1] : 1
 
   const { start: rangeStart, end: rangeEnd } = getRange(period, customStart, customEnd)
 
@@ -406,6 +455,83 @@ export default function FinanceReportsPage() {
                     <div className="ml-8 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-blue-400 rounded-full"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Lab section ── */}
+      <div className="space-y-4">
+        <h2 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+          🧪 Лаборатория
+        </h2>
+
+        {/* Lab KPI cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <KpiCard
+            label="Заказов всего"
+            value={String(labTotal)}
+            sub={period === 'today' ? 'сегодня' : period === 'week' ? 'за неделю' : period === 'month' ? 'за месяц' : period === 'quarter' ? 'за квартал' : 'за период'}
+          />
+          <KpiCard
+            label="Завершено"
+            value={String(labVerified)}
+            accent={labVerified > 0 ? 'text-green-600' : 'text-gray-900'}
+          />
+          <KpiCard
+            label="В работе"
+            value={String(labInProgress)}
+            accent={labInProgress > 0 ? 'text-blue-600' : 'text-gray-900'}
+          />
+          <KpiCard
+            label="Отменено"
+            value={String(labCancelled)}
+            accent={labCancelled > 0 ? 'text-gray-500' : 'text-gray-900'}
+          />
+          <KpiCard
+            label="Результатов"
+            value={String(labResultsTotal)}
+          />
+          <KpiCard
+            label="Отклонений"
+            value={String(labAbnormal)}
+            accent={labAbnormal > 0 ? 'text-red-600' : 'text-gray-900'}
+            sub={labResultsTotal > 0 ? `${Math.round((labAbnormal / labResultsTotal) * 100)}%` : undefined}
+          />
+        </div>
+
+        {/* Top lab services */}
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-100">
+            <h3 className="text-sm font-semibold text-gray-900">Топ анализы</h3>
+            <p className="text-xs text-gray-400 mt-0.5">По количеству выполненных результатов, топ 10</p>
+          </div>
+          {loading ? (
+            <div className="p-6 text-center text-sm text-gray-400">Загрузка...</div>
+          ) : topLabServices.length === 0 ? (
+            <div className="p-8 text-center text-sm text-gray-400">Нет данных</div>
+          ) : (
+            <div className="divide-y divide-gray-50">
+              {topLabServices.map(([name, count], i) => {
+                const pct = Math.round((count / labServiceMax) * 100)
+                return (
+                  <div key={name} className="px-5 py-3">
+                    <div className="flex items-center gap-3 mb-1.5">
+                      <span className="text-xs font-medium text-gray-400 w-5 text-right flex-shrink-0">
+                        {i + 1}
+                      </span>
+                      <p className="flex-1 text-sm text-gray-900 truncate">{name}</p>
+                      <p className="text-sm font-semibold text-gray-900 flex-shrink-0">{count}</p>
+                    </div>
+                    <div className="ml-8 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-purple-400 rounded-full"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
