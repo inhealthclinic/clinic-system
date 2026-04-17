@@ -95,30 +95,66 @@ const NEXT_STATUS: Record<string, { status: string; label: string; cls: string }
 }
 
 /* ─── Print lab report ────────────────────────────────────── */
-function printLabReport(order: LabOrder, results: Record<string, string>) {
-  const w = window.open('', '_blank', 'width=620,height=700')
+function printLabReport(
+  order: LabOrder,
+  results: Record<string, string>,
+  svcRefs: Record<string, {
+    unit: string | null; ref_min: number | null; ref_max: number | null; ref_text: string | null
+  }>,
+) {
+  const w = window.open('', '_blank', 'width=720,height=900')
   if (!w) return
   const dt = new Date(order.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-  const itemRows = (order.items ?? []).map(item => `
-    <tr>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee">${item.name}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:600;color:#111">
-        ${results[item.id] ?? '—'}
-      </td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#888;font-size:11px">
-        ${item.price != null ? item.price.toLocaleString('ru-RU') + ' ₸' : ''}
-      </td>
-    </tr>`).join('')
+  const flagColor: Record<string, string> = {
+    normal:   '#047857',
+    low:      '#1d4ed8',
+    high:     '#c2410c',
+    critical: '#b91c1c',
+  }
+  const flagLbl: Record<string, string> = {
+    normal: 'норма', low: '↓ низко', high: '↑ высоко', critical: '⚠ критично',
+  }
+  const itemRows = (order.items ?? []).map(item => {
+    const refs = item.service_id ? svcRefs[item.service_id] : null
+    const raw = results[item.id] ?? ''
+    const num = Number(raw.replace(',', '.'))
+    const isNum = !isNaN(num) && raw.trim() !== ''
+    const flag = isNum ? calcFlag(num, refs?.ref_min, refs?.ref_max) : null
+    const unit = item.unit_snapshot ?? refs?.unit ?? ''
+    const refRange =
+      refs?.ref_min != null || refs?.ref_max != null
+        ? `${refs?.ref_min ?? '—'}–${refs?.ref_max ?? '—'}`
+        : (refs?.ref_text ?? item.reference_text ?? '—')
+    const color = flag ? flagColor[flag] : '#111'
+    return `
+      <tr>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee">${item.name}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;font-weight:700;color:${color};white-space:nowrap">
+          ${raw || '—'}${unit ? ' <span style="font-weight:400;color:#666">' + unit + '</span>' : ''}
+        </td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;color:#666;font-size:11px;white-space:nowrap">
+          ${refRange}${unit && refRange !== '—' ? ' ' + unit : ''}
+        </td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;font-size:11px;color:${color};font-weight:${flag && flag !== 'normal' ? '700' : '400'}">
+          ${flag ? flagLbl[flag] : ''}
+        </td>
+      </tr>`
+  }).join('')
   w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Результаты анализов</title>
   <style>
-    body{font-family:Arial,sans-serif;max-width:560px;margin:24px auto;font-size:13px;color:#111}
+    @page { size: A4; margin: 18mm 14mm }
+    body{font-family:Arial,sans-serif;max-width:640px;margin:24px auto;font-size:13px;color:#111}
     h2{margin:0 0 2px;font-size:18px}
     .sub{color:#777;font-size:12px;margin-bottom:16px;border-bottom:2px solid #111;padding-bottom:10px}
-    .info{display:flex;gap:24px;margin-bottom:16px;font-size:12px;color:#555}
+    .info{display:flex;flex-wrap:wrap;gap:18px;margin-bottom:18px;font-size:12px;color:#444}
+    .info b{color:#111}
     table{width:100%;border-collapse:collapse}
-    th{text-align:left;padding:6px 8px;background:#f5f5f5;font-size:11px;color:#666;border-bottom:2px solid #ddd;text-transform:uppercase;letter-spacing:.5px}
+    th{text-align:left;padding:8px 10px;background:#f5f5f5;font-size:11px;color:#666;border-bottom:2px solid #ddd;text-transform:uppercase;letter-spacing:.5px}
     .badge{display:inline-block;padding:2px 10px;border-radius:12px;background:#fef3c7;color:#b45309;font-size:11px;font-weight:600}
-    .foot{margin-top:20px;font-size:10px;color:#ccc;border-top:1px dashed #ddd;padding-top:8px;text-align:center}
+    .sig{margin-top:36px;display:flex;justify-content:space-between;font-size:12px;color:#555}
+    .sig-line{border-top:1px solid #999;padding-top:4px;min-width:200px;text-align:center}
+    .foot{margin-top:20px;font-size:10px;color:#aaa;border-top:1px dashed #ddd;padding-top:8px;text-align:center}
+    @media print { .no-print { display:none } }
   </style></head><body>
   <h2>IN HEALTH — Результаты анализов</h2>
   <div class="sub">Лаборатория медицинского центра</div>
@@ -126,13 +162,25 @@ function printLabReport(order: LabOrder, results: Record<string, string>) {
     <div><b>Пациент:</b> ${order.patient?.full_name ?? '—'}</div>
     <div><b>Дата:</b> ${dt}</div>
     ${order.doctor ? `<div><b>Врач:</b> ${order.doctor.last_name} ${order.doctor.first_name}</div>` : ''}
+    ${order.order_number ? `<div><b>№:</b> ${order.order_number}</div>` : ''}
     ${order.urgent ? '<div class="badge">🔴 СРОЧНЫЙ</div>' : ''}
   </div>
   <table>
-    <thead><tr><th>Анализ</th><th>Результат</th><th>Стоимость</th></tr></thead>
+    <thead>
+      <tr>
+        <th style="width:44%">Анализ</th>
+        <th style="width:22%">Результат</th>
+        <th style="width:22%">Норма</th>
+        <th style="width:12%">Флаг</th>
+      </tr>
+    </thead>
     <tbody>${itemRows}</tbody>
   </table>
-  ${order.notes ? `<p style="margin-top:12px;color:#555;font-size:12px"><b>Примечание:</b> ${order.notes}</p>` : ''}
+  ${order.notes ? `<p style="margin-top:14px;color:#555;font-size:12px"><b>Примечание:</b> ${order.notes}</p>` : ''}
+  <div class="sig">
+    <div class="sig-line">Лаборант (подпись)</div>
+    <div class="sig-line">Врач лаборатории (подпись)</div>
+  </div>
   <div class="foot">Сформировано: ${new Date().toLocaleString('ru-RU')} &nbsp;·&nbsp; IN HEALTH Медицинский центр</div>
   <script>window.onload=()=>{window.print()}</script>
   </body></html>`)
@@ -191,6 +239,23 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const advance = async () => {
     const next = NEXT_STATUS[order.status]
     if (!next) return
+    // Safety: verifying an order copies items to patient_lab_results. Warn if
+    // some items still have no result entered.
+    if (next.status === 'verified') {
+      const items = order.items ?? []
+      const empty = items.filter(i => {
+        const raw = (results[i.id] ?? '').trim()
+        const hasDb = i.result_value != null || (i.result_text && i.result_text.length > 0)
+        return !raw && !hasDb
+      })
+      if (empty.length > 0) {
+        const names = empty.map(i => i.name).join(', ')
+        const ok = window.confirm(
+          `У ${empty.length} из ${items.length} анализов нет результата:\n${names}\n\nВсё равно верифицировать? В историю пациента попадут только заполненные.`
+        )
+        if (!ok) return
+      }
+    }
     setSaving(true)
     await supabase.from('lab_orders').update({ status: next.status }).eq('id', order.id)
     setSaving(false)
@@ -279,7 +344,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => printLabReport(order, results)}
+              onClick={() => printLabReport(order, results, svcRefs)}
               title="Печать результатов"
               className="text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-colors">
               🖨 Отчёт
@@ -595,17 +660,31 @@ export default function LabPage() {
   const [selected, setSelected] = useState<LabOrder | null>(null)
   const [showCreate, setCreate] = useState(false)
 
+  // Filters
+  const [search, setSearch]     = useState('')      // patient name substring
+  const [dateFrom, setDateFrom] = useState('')      // YYYY-MM-DD
+  const [dateTo, setDateTo]     = useState('')      // YYYY-MM-DD
+  const [urgentOnly, setUrgentOnly] = useState(false)
+
   const load = useCallback(() => {
     setLoading(true)
     let q = supabase
       .from('lab_orders')
       .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
       .order('ordered_at', { ascending: false })
-      .limit(100)
+      .limit(200)
     if (filter === 'active') q = q.in('status', ['ordered','agreed','paid','sample_taken','in_progress'])
     else if (filter === 'ready') q = q.in('status', ['ready','verified'])
+    if (dateFrom) q = q.gte('ordered_at', dateFrom)
+    if (dateTo)   q = q.lte('ordered_at', dateTo + 'T23:59:59')
+    if (urgentOnly) q = q.eq('urgent', true)
     q.then(({ data }) => { setOrders((data ?? []) as LabOrder[]); setLoading(false) })
-  }, [filter])
+  }, [filter, dateFrom, dateTo, urgentOnly])
+
+  // Client-side patient-name filter (avoids a second query)
+  const visibleOrders = search.trim()
+    ? orders.filter(o => (o.patient?.full_name ?? '').toLowerCase().includes(search.trim().toLowerCase()))
+    : orders
 
   useEffect(() => { load() }, [load])
 
@@ -618,7 +697,7 @@ export default function LabPage() {
         <OrderDrawer order={selected} onClose={() => setSelected(null)} onUpdated={load} />
       )}
 
-      <div className="flex items-center gap-2 mb-6 flex-wrap">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
         <div className="flex gap-2">
           {[
             { key: 'active', label: 'Активные' },
@@ -633,7 +712,9 @@ export default function LabPage() {
             </button>
           ))}
         </div>
-        <span className="text-sm text-gray-400">{orders.length} направлений</span>
+        <span className="text-sm text-gray-400">
+          {visibleOrders.length}{visibleOrders.length !== orders.length ? ` / ${orders.length}` : ''} направлений
+        </span>
         <div className="flex-1" />
         <button onClick={() => setCreate(true)} disabled={!clinicId}
           className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors">
@@ -641,11 +722,57 @@ export default function LabPage() {
         </button>
       </div>
 
+      {/* Filters row */}
+      <div className="bg-white border border-gray-100 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="🔍 Поиск по ФИО пациента"
+          className="flex-1 min-w-[200px] border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+        />
+        <div className="flex items-center gap-1.5 text-xs text-gray-500">
+          <span>с</span>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={e => setDateFrom(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+          />
+          <span>по</span>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={e => setDateTo(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+          />
+        </div>
+        <label className="inline-flex items-center gap-2 text-sm text-gray-600 cursor-pointer px-2">
+          <input
+            type="checkbox"
+            checked={urgentOnly}
+            onChange={e => setUrgentOnly(e.target.checked)}
+            className="rounded text-red-500 focus:ring-red-400"
+          />
+          🔴 срочные
+        </label>
+        {(search || dateFrom || dateTo || urgentOnly) && (
+          <button
+            onClick={() => { setSearch(''); setDateFrom(''); setDateTo(''); setUrgentOnly(false) }}
+            className="text-xs text-gray-400 hover:text-gray-600 px-2"
+          >
+            сбросить
+          </button>
+        )}
+      </div>
+
       <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
-        ) : orders.length === 0 ? (
-          <div className="p-8 text-center text-sm text-gray-400">Направлений нет</div>
+        ) : visibleOrders.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-400">
+            {orders.length === 0 ? 'Направлений нет' : 'По фильтрам ничего не найдено'}
+          </div>
         ) : (
           <table className="w-full">
             <thead>
@@ -658,7 +785,7 @@ export default function LabPage() {
               </tr>
             </thead>
             <tbody>
-              {orders.map(o => (
+              {visibleOrders.map(o => (
                 <tr key={o.id} onClick={() => setSelected(o)}
                   className="border-b border-gray-50 hover:bg-blue-50/40 cursor-pointer transition-colors">
                   <td className="px-5 py-4" onClick={e => e.stopPropagation()}>
