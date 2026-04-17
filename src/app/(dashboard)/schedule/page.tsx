@@ -48,6 +48,7 @@ interface ServiceCatalogRow {
   price: number
   duration_min: number
   is_lab: boolean
+  category: string
 }
 
 interface PayMethodRow {
@@ -1658,6 +1659,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   // Lab integration
   const [labOrderId, setLabOrderId] = useState<string | null>(null)
   const [transferringLab, setTransferringLab] = useState(false)
+  const [labPickerOpen, setLabPickerOpen] = useState(false)
 
   // ── Load finance data ─────────────────────────────────────────
   const loadFinance = useCallback(async () => {
@@ -1695,7 +1697,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   useEffect(() => {
     loadFinance()
     supabase.from('services')
-      .select('id, name, price, duration_min, is_lab')
+      .select('id, name, price, duration_min, is_lab, category')
       .eq('is_active', true).is('deleted_at', null).order('name')
       .then(({ data }) => setAllServices((data ?? []) as ServiceCatalogRow[]))
     supabase.from('payment_methods')
@@ -1777,6 +1779,73 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     }
     await recalc(vid)
     setAddingSvc(false)
+  }
+
+  // ── Bulk add services (used by lab picker) ───────────────────
+  // Receives an array of { svc, qty }. For each row, if it's
+  // already in visit_services — updates quantity; otherwise inserts.
+  const bulkAddServices = async (selections: Array<{ svc: ServiceCatalogRow; qty: number }>) => {
+    if (selections.length === 0) return
+    const vid = await ensureVisit()
+    if (!vid) return
+
+    const existingByServiceId = new Map(
+      visitServices.filter(s => s.service_id).map(s => [s.service_id!, s])
+    )
+
+    const toUpdate: Array<{ id: string; quantity: number }> = []
+    const toInsert: Array<{
+      visit_id: string
+      service_id: string
+      name: string
+      quantity: number
+      price_at_booking: number
+      duration_at_booking: number
+      is_lab: boolean
+    }> = []
+
+    for (const { svc, qty } of selections) {
+      if (qty <= 0) continue
+      const existing = existingByServiceId.get(svc.id)
+      if (existing) {
+        toUpdate.push({ id: existing.id, quantity: qty })
+      } else {
+        toInsert.push({
+          visit_id:            vid,
+          service_id:          svc.id,
+          name:                svc.name,
+          quantity:            qty,
+          price_at_booking:    svc.price,
+          duration_at_booking: svc.duration_min,
+          is_lab:              svc.is_lab ?? false,
+        })
+      }
+    }
+
+    // Fire updates in parallel
+    await Promise.all(
+      toUpdate.map(u =>
+        supabase.from('visit_services').update({ quantity: u.quantity }).eq('id', u.id)
+      )
+    )
+
+    // Bulk insert new ones
+    let inserted: VisitServiceRow[] = []
+    if (toInsert.length > 0) {
+      const { data } = await supabase.from('visit_services').insert(toInsert).select('*')
+      inserted = (data ?? []) as VisitServiceRow[]
+    }
+
+    // Update local state
+    setVisitServices(prev => {
+      const updatedMap = new Map(toUpdate.map(u => [u.id, u.quantity]))
+      const next = prev.map(r =>
+        updatedMap.has(r.id) ? { ...r, quantity: updatedMap.get(r.id)! } : r
+      )
+      return [...next, ...inserted]
+    })
+
+    await recalc(vid)
   }
 
   // ── Remove service ────────────────────────────────────────────
@@ -2033,8 +2102,9 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           <div className="border-t border-gray-100 pt-3">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Услуги</p>
 
-            {/* Service search dropdown */}
-            <div ref={svcRef} className="relative mb-2">
+            {/* Service search dropdown + lab picker trigger */}
+            <div className="flex gap-1.5 mb-2">
+            <div ref={svcRef} className="relative flex-1 min-w-0">
               <div className="flex items-center gap-1.5 border border-gray-200 rounded-lg px-2.5 py-1.5 focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition">
                 <svg width="12" height="12" fill="none" viewBox="0 0 24 24" className="text-gray-400 flex-shrink-0">
                   <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5"/>
@@ -2046,7 +2116,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
                   value={svcSearch}
                   onChange={e => { setSvcSearch(e.target.value); setShowSvcDrop(true) }}
                   onFocus={() => setShowSvcDrop(true)}
-                  className="flex-1 text-sm outline-none bg-transparent"
+                  className="flex-1 text-sm outline-none bg-transparent min-w-0"
                 />
                 {addingSvc && (
                   <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
@@ -2066,6 +2136,16 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
                   ))}
                 </div>
               )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setLabPickerOpen(true)}
+              title="Выбрать из списка анализов"
+              className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-purple-200 bg-purple-50 text-purple-700 text-xs font-medium hover:bg-purple-100 hover:border-purple-300 transition-colors"
+            >
+              <span className="text-sm leading-none">🧪</span>
+              Анализы
+            </button>
             </div>
 
             {/* Selected services list */}
@@ -2310,7 +2390,323 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
         />
       )}
       {editOpen && <EditAppointmentModal appt={appt} clinicId={clinicId} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); onUpdate(); onClose() }}/>}
+      {labPickerOpen && (
+        <LabServicesPicker
+          allServices={allServices}
+          visitServices={visitServices}
+          onClose={() => setLabPickerOpen(false)}
+          onAccept={async selections => {
+            await bulkAddServices(selections)
+            setLabPickerOpen(false)
+          }}
+        />
+      )}
     </>
+  )
+}
+
+// ─── LabServicesPicker ────────────────────────────────────────────────────────
+// Modal for bulk-picking lab services (grouped by category, searchable,
+// multi-select with qty editor). Returns { svc, qty }[] via onAccept.
+function LabServicesPicker({
+  allServices, visitServices, onClose, onAccept,
+}: {
+  allServices: ServiceCatalogRow[]
+  visitServices: VisitServiceRow[]
+  onClose: () => void
+  onAccept: (selections: Array<{ svc: ServiceCatalogRow; qty: number }>) => void | Promise<void>
+}) {
+  const fmtMoney = (n: number) => Math.round(n).toLocaleString('ru-RU') + ' ₸'
+  const labServices = useMemo(
+    () => allServices.filter(s => s.is_lab),
+    [allServices],
+  )
+
+  // Initial qty map from already-in-visit rows
+  const initialQty: Record<string, number> = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const row of visitServices) {
+      if (row.is_lab && row.service_id) m[row.service_id] = row.quantity
+    }
+    return m
+  }, [visitServices])
+
+  const [qty, setQty] = useState<Record<string, number>>(initialQty)
+  const [search, setSearch] = useState('')
+  const [activeCat, setActiveCat] = useState<string>('__all__')
+  const [saving, setSaving] = useState(false)
+
+  // Group by category
+  const { categories, byCategory } = useMemo(() => {
+    const map = new Map<string, ServiceCatalogRow[]>()
+    for (const s of labServices) {
+      const cat = (s.category || '').trim() || 'Без категории'
+      if (!map.has(cat)) map.set(cat, [])
+      map.get(cat)!.push(s)
+    }
+    const cats = Array.from(map.keys()).sort((a, b) => a.localeCompare(b, 'ru'))
+    return { categories: cats, byCategory: map }
+  }, [labServices])
+
+  // Visible rows after search + category filter
+  const visibleRows = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    let rows: ServiceCatalogRow[] = []
+    if (activeCat === '__all__' || q) {
+      rows = labServices
+    } else {
+      rows = byCategory.get(activeCat) ?? []
+    }
+    if (q) rows = rows.filter(s => s.name.toLowerCase().includes(q))
+    return rows
+  }, [labServices, byCategory, activeCat, search])
+
+  // When searching globally, group visible rows by category for readability
+  const visibleGrouped = useMemo(() => {
+    const map = new Map<string, ServiceCatalogRow[]>()
+    for (const s of visibleRows) {
+      const cat = (s.category || '').trim() || 'Без категории'
+      if (!map.has(cat)) map.set(cat, [])
+      map.get(cat)!.push(s)
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b, 'ru'))
+  }, [visibleRows])
+
+  const setOne = (id: string, value: number) => {
+    setQty(prev => {
+      const next = { ...prev }
+      if (value <= 0) delete next[id]
+      else next[id] = value
+      return next
+    })
+  }
+  const toggle = (s: ServiceCatalogRow) => {
+    setOne(s.id, qty[s.id] ? 0 : 1)
+  }
+
+  const selections = useMemo(() => {
+    const out: Array<{ svc: ServiceCatalogRow; qty: number }> = []
+    for (const s of labServices) {
+      const q = qty[s.id]
+      if (q && q > 0) out.push({ svc: s, qty: q })
+    }
+    return out
+  }, [labServices, qty])
+
+  const total = selections.reduce((a, x) => a + x.svc.price * x.qty, 0)
+  const hasChanges = (() => {
+    const initKeys = Object.keys(initialQty)
+    const curKeys = Object.keys(qty)
+    if (initKeys.length !== curKeys.length) return true
+    for (const k of curKeys) if (initialQty[k] !== qty[k]) return true
+    return false
+  })()
+
+  const handleAccept = async () => {
+    if (saving) return
+    setSaving(true)
+    try {
+      // Send ALL selections (including unchanged) so backend merges correctly;
+      // bulkAddServices de-dups by service_id.
+      await onAccept(selections)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl h-[85vh] flex flex-col z-10 overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">🧪</span>
+            <h3 className="text-base font-semibold text-gray-900">Добавить анализы</h3>
+            <span className="text-xs text-gray-400">· {labServices.length} в каталоге</span>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="px-5 py-3 border-b border-gray-100 flex-shrink-0">
+          <div className="relative">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+              <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Поиск по названию анализа…"
+              className="w-full border border-gray-200 rounded-lg pl-9 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition"
+              autoFocus
+            />
+          </div>
+        </div>
+
+        {/* Body: sidebar + list */}
+        <div className="flex-1 flex min-h-0">
+          {/* Category sidebar */}
+          <aside className="w-48 flex-shrink-0 border-r border-gray-100 overflow-y-auto py-2 bg-gray-50/50">
+            <button
+              onClick={() => setActiveCat('__all__')}
+              className={[
+                'w-full text-left px-4 py-2 text-sm flex items-center justify-between transition-colors',
+                activeCat === '__all__' && !search
+                  ? 'bg-purple-100 text-purple-800 font-medium'
+                  : 'text-gray-600 hover:bg-gray-100',
+              ].join(' ')}
+            >
+              <span>Все</span>
+              <span className="text-xs text-gray-400">{labServices.length}</span>
+            </button>
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => { setActiveCat(cat); setSearch('') }}
+                className={[
+                  'w-full text-left px-4 py-2 text-sm flex items-center justify-between transition-colors',
+                  activeCat === cat && !search
+                    ? 'bg-purple-100 text-purple-800 font-medium'
+                    : 'text-gray-600 hover:bg-gray-100',
+                ].join(' ')}
+              >
+                <span className="truncate mr-2">{cat}</span>
+                <span className="text-xs text-gray-400 flex-shrink-0">
+                  {byCategory.get(cat)?.length ?? 0}
+                </span>
+              </button>
+            ))}
+          </aside>
+
+          {/* Results list */}
+          <div className="flex-1 overflow-y-auto">
+            {visibleRows.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-400">
+                {search ? 'Ничего не найдено' : 'В этой категории нет услуг'}
+              </div>
+            ) : (
+              visibleGrouped.map(([cat, rows]) => (
+                <div key={cat}>
+                  <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-100 sticky top-0 z-0">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                      {cat}
+                    </span>
+                  </div>
+                  {rows.map(s => {
+                    const selected = (qty[s.id] ?? 0) > 0
+                    const q = qty[s.id] ?? 0
+                    return (
+                      <div
+                        key={s.id}
+                        onClick={() => toggle(s)}
+                        className={[
+                          'flex items-center gap-3 px-4 py-2.5 border-b border-gray-50 cursor-pointer transition-colors',
+                          selected ? 'bg-purple-50/50' : 'hover:bg-gray-50',
+                        ].join(' ')}
+                      >
+                        {/* Checkbox */}
+                        <div
+                          className={[
+                            'w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors',
+                            selected ? 'bg-purple-600 border-purple-600' : 'border-gray-300 bg-white',
+                          ].join(' ')}
+                        >
+                          {selected && (
+                            <svg width="10" height="10" fill="none" viewBox="0 0 10 10">
+                              <path d="M1.5 5l2 2 5-5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </div>
+
+                        {/* Name */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-gray-800 truncate">{s.name}</p>
+                        </div>
+
+                        {/* Price */}
+                        <span className="text-sm font-medium text-gray-700 flex-shrink-0 tabular-nums">
+                          {fmtMoney(s.price)}
+                        </span>
+
+                        {/* Qty stepper (only when selected) */}
+                        {selected && (
+                          <div
+                            onClick={e => e.stopPropagation()}
+                            className="flex items-center gap-1 flex-shrink-0 bg-white border border-purple-200 rounded-md px-1"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setOne(s.id, Math.max(0, q - 1))}
+                              className="w-5 h-5 flex items-center justify-center text-gray-500 hover:text-gray-800"
+                            >
+                              <svg width="10" height="2" fill="none" viewBox="0 0 10 2">
+                                <path d="M1 1h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                            <span className="text-xs font-medium w-4 text-center tabular-nums">{q}</span>
+                            <button
+                              type="button"
+                              onClick={() => setOne(s.id, q + 1)}
+                              className="w-5 h-5 flex items-center justify-center text-gray-500 hover:text-gray-800"
+                            >
+                              <svg width="10" height="10" fill="none" viewBox="0 0 10 10">
+                                <path d="M5 1v8M1 5h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center gap-3 flex-shrink-0 bg-gray-50/50">
+          <div className="flex-1 flex items-baseline gap-2">
+            {selections.length > 0 ? (
+              <>
+                <span className="text-xs text-gray-500">Выбрано:</span>
+                <span className="text-sm font-semibold text-gray-900">
+                  {selections.length}
+                </span>
+                <span className="text-xs text-gray-400">·</span>
+                <span className="text-xs text-gray-500">Сумма:</span>
+                <span className="text-base font-semibold text-purple-700">
+                  {fmtMoney(total)}
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-gray-400">Отметьте нужные анализы</span>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            Отмена
+          </button>
+          <button
+            onClick={handleAccept}
+            disabled={saving || !hasChanges}
+            className="px-5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            {saving ? 'Сохранение…' : selections.length > 0 ? `Добавить (${selections.length})` : 'Готово'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
