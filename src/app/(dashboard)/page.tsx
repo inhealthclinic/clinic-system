@@ -16,6 +16,21 @@ interface DashStats {
   new_leads: number
   overdue_tasks: number
   unpaid_charges: number
+  // LIS widgets
+  lab_in_progress: number
+  lab_awaiting_sample: number
+  lab_critical_today: number
+}
+
+interface CriticalResult {
+  id: string
+  service_name_snapshot: string
+  result_value: number | null
+  unit_snapshot: string | null
+  flag: string | null
+  result_date: string
+  patient_id: string
+  patient_name: string
 }
 
 interface TodayAppt {
@@ -64,6 +79,7 @@ const INITIAL: DashStats = {
   appointments_total: 0, appointments_confirmed: 0, appointments_arrived: 0,
   appointments_completed: 0, visits_open: 0, revenue_today: 0,
   new_leads: 0, overdue_tasks: 0, unpaid_charges: 0,
+  lab_in_progress: 0, lab_awaiting_sample: 0, lab_critical_today: 0,
 }
 
 /* ─── Skeleton ────────────────────────────────────────────── */
@@ -101,6 +117,7 @@ export default function DashboardPage() {
   const [appts, setAppts]             = useState<TodayAppt[]>([])
   const [overdueT, setOverdueT]       = useState<OverdueTask[]>([])
   const [openVisits, setOpenVisits]   = useState<OpenVisit[]>([])
+  const [criticalRes, setCriticalRes] = useState<CriticalResult[]>([])
   const [today]                       = useState(() => new Date().toISOString().slice(0, 10))
   const now                           = new Date()
 
@@ -120,6 +137,7 @@ export default function DashboardPage() {
     const [
       apptRes, visitsRes, paymentsRes, leadsRes,
       tasksRes, chargesRes, apptFullRes, overdueRes, openVisitsRes,
+      labInProgRes, labNoSampleRes, labCritCountRes, labCritListRes,
     ] = await Promise.all([
       // Stats
       supabase.from('appointments').select('status', { count: 'exact' }).eq('date', today),
@@ -147,6 +165,21 @@ export default function DashboardPage() {
       supabase.from('visits')
         .select('id,started_at,created_at,patient:patients(full_name),doctor:doctors(first_name,last_name)')
         .eq('status', 'open').order('created_at', { ascending: false }).limit(5),
+      // LIS: orders in progress
+      supabase.from('lab_orders').select('id', { count: 'exact', head: true })
+        .in('status', ['in_progress', 'sample_taken', 'agreed', 'paid']),
+      // LIS: orders awaiting sample
+      supabase.from('lab_orders').select('id', { count: 'exact', head: true })
+        .in('status', ['ordered', 'agreed', 'paid']),
+      // LIS: critical results count today
+      supabase.from('patient_lab_results').select('id', { count: 'exact', head: true })
+        .in('flag', ['high', 'low', 'critical'])
+        .gte('result_date', `${today}T00:00:00`),
+      // LIS: critical results list (last 5 of any date)
+      supabase.from('patient_lab_results')
+        .select('id,service_name_snapshot,result_value,unit_snapshot,flag,result_date,patient_id,patient:patients(full_name)')
+        .in('flag', ['high', 'low', 'critical'])
+        .order('result_date', { ascending: false }).limit(5),
     ])
 
     const rows = apptRes.data ?? []
@@ -160,10 +193,16 @@ export default function DashboardPage() {
       new_leads:              leadsRes.count ?? 0,
       overdue_tasks:          tasksRes.count ?? 0,
       unpaid_charges:         chargesRes.count ?? 0,
+      lab_in_progress:        labInProgRes.count ?? 0,
+      lab_awaiting_sample:    labNoSampleRes.count ?? 0,
+      lab_critical_today:     labCritCountRes.count ?? 0,
     })
     setAppts((apptFullRes.data ?? []) as unknown as TodayAppt[])
     setOverdueT((overdueRes.data ?? []) as unknown as OverdueTask[])
     setOpenVisits((openVisitsRes.data ?? []) as unknown as OpenVisit[])
+    // flatten critical results (patient is a joined row)
+    setCriticalRes(((labCritListRes.data ?? []) as unknown as Array<CriticalResult & { patient: { full_name: string } | null }>)
+      .map(r => ({ ...r, patient_name: r.patient?.full_name ?? '—' })))
     setLoading(false)
   }, [today])
 
@@ -243,7 +282,67 @@ export default function DashboardPage() {
             <StatCard label="Выручка за день"  value={fmt(stats.revenue_today)} color="green" href="/finance" />
             <StatCard label="Новых лидов"      value={stats.new_leads} color="blue" href="/crm" />
           </div>
+
+          {/* ── LIS KPI row ───────────────────────────────── */}
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+            <StatCard label="🧪 Лаба: материал не взят" value={stats.lab_awaiting_sample}
+              color={stats.lab_awaiting_sample > 0 ? 'orange' : 'gray'} href="/lab" />
+            <StatCard label="🧪 Лаба: в работе" value={stats.lab_in_progress}
+              color={stats.lab_in_progress > 0 ? 'blue' : 'gray'} href="/lab" />
+            <StatCard label="⚠ Отклонений сегодня" value={stats.lab_critical_today}
+              color={stats.lab_critical_today > 0 ? 'red' : 'gray'} />
+          </div>
         </>
+      )}
+
+      {/* ── Critical lab results (recent) ───────────────── */}
+      {!loading && criticalRes.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-gray-900">⚠ Отклонения в анализах</h3>
+              <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">
+                {criticalRes.length}
+              </span>
+            </div>
+          </div>
+          <div className="divide-y divide-gray-50">
+            {criticalRes.map(r => {
+              const flagClr =
+                r.flag === 'critical' ? 'text-red-700 bg-red-50' :
+                r.flag === 'high'     ? 'text-orange-700 bg-orange-50' :
+                'text-blue-700 bg-blue-50'
+              const flagLbl =
+                r.flag === 'critical' ? '⚠ критично' :
+                r.flag === 'high'     ? '↑ высоко' :
+                '↓ низко'
+              return (
+                <Link
+                  key={r.id}
+                  href={`/patients/${r.patient_id}`}
+                  className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {r.patient_name}
+                      </p>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full ${flagClr}`}>
+                        {flagLbl}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {r.service_name_snapshot}: <b>{r.result_value}{r.unit_snapshot ? ' ' + r.unit_snapshot : ''}</b>
+                      <span className="text-gray-400 ml-2">
+                        {new Date(r.result_date).toLocaleDateString('ru-RU')}
+                      </span>
+                    </p>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        </div>
       )}
 
       {/* Main content grid */}
