@@ -13,6 +13,7 @@ const SETTINGS_NAV = [
   { href: '/settings/crm',          label: 'CRM — воронки',   icon: '📊' },
   { href: '/settings/notifications', label: 'Уведомления',     icon: '🔔' },
   { href: '/settings/schedule',     label: 'Типы записей',    icon: '🎨' },
+  { href: '/settings/packages',    label: 'Пакеты анализов', icon: '📦' },
 ]
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
