@@ -29,6 +29,7 @@ interface VisitServiceRow {
   quantity: number
   price_at_booking: number
   duration_at_booking: number
+  is_lab: boolean
   created_at: string
 }
 
@@ -46,6 +47,7 @@ interface ServiceCatalogRow {
   name: string
   price: number
   duration_min: number
+  is_lab: boolean
 }
 
 interface PayMethodRow {
@@ -1653,6 +1655,10 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const [payType, setPayType] = useState<'payment' | 'prepayment'>('payment')
   const [savingPay, setSavingPay] = useState(false)
 
+  // Lab integration
+  const [labOrderId, setLabOrderId] = useState<string | null>(null)
+  const [transferringLab, setTransferringLab] = useState(false)
+
   // ── Load finance data ─────────────────────────────────────────
   const loadFinance = useCallback(async () => {
     setFinLoading(true)
@@ -1668,17 +1674,20 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
         total_paid:     Number(v.total_paid)     ?? 0,
         payment_status: v.payment_status ?? 'unpaid',
       })
-      const [{ data: svcs }, { data: pmts }] = await Promise.all([
+      const [{ data: svcs }, { data: pmts }, { data: lab }] = await Promise.all([
         supabase.from('visit_services').select('*').eq('visit_id', v.id).order('created_at'),
         supabase.from('payments').select('*').eq('visit_id', v.id).order('paid_at'),
+        supabase.from('lab_orders').select('id').eq('visit_id', v.id).maybeSingle(),
       ])
       setVisitServices((svcs ?? []) as VisitServiceRow[])
       setVisitPayments((pmts ?? []) as VisitPaymentRow[])
+      setLabOrderId(lab?.id ?? null)
     } else {
       setVisitId(null)
       setVisitTotals({ total_price: 0, total_paid: 0, payment_status: 'unpaid' })
       setVisitServices([])
       setVisitPayments([])
+      setLabOrderId(null)
     }
     setFinLoading(false)
   }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1686,7 +1695,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   useEffect(() => {
     loadFinance()
     supabase.from('services')
-      .select('id, name, price, duration_min')
+      .select('id, name, price, duration_min, is_lab')
       .eq('is_active', true).is('deleted_at', null).order('name')
       .then(({ data }) => setAllServices((data ?? []) as ServiceCatalogRow[]))
     supabase.from('payment_methods')
@@ -1762,6 +1771,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       const { data } = await supabase.from('visit_services').insert({
         visit_id: vid, service_id: svc.id, name: svc.name,
         quantity: 1, price_at_booking: svc.price, duration_at_booking: svc.duration_min,
+        is_lab: svc.is_lab ?? false,
       }).select('*').single()
       if (data) setVisitServices(prev => [...prev, data as VisitServiceRow])
     }
@@ -1824,7 +1834,9 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
 
   const updateStatus = async (status: string) => {
     setSaving(true)
-    await supabase.from('appointments').update({ status }).eq('id', appt.id)
+    const patch: Record<string, unknown> = { status }
+    if (status === 'arrived') patch.arrived_at = new Date().toISOString()
+    await supabase.from('appointments').update(patch).eq('id', appt.id)
     if (status === 'no_show') {
       await supabase.from('tasks').insert({
         clinic_id: appt.clinic_id,
@@ -1861,6 +1873,84 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const debt = Math.max(0, visitTotals.total_price - visitTotals.total_paid)
   const psStyle = PAY_STATUS_STYLE[visitTotals.payment_status] ?? PAY_STATUS_STYLE.unpaid
   const hasUnpaid = visitTotals.total_price > 0 && visitTotals.payment_status !== 'paid'
+
+  // ── Visit type ───────────────────────────────────────────────
+  const hasLab     = visitServices.some(s => s.is_lab)
+  const hasRegular = visitServices.some(s => !s.is_lab)
+  const visitType: 'consultation' | 'lab' | 'mixed' | null =
+    hasLab && hasRegular ? 'mixed'
+      : hasLab           ? 'lab'
+      : hasRegular       ? 'consultation'
+      : null
+  const vtStyle: Record<string, { cls: string; label: string }> = {
+    consultation: { cls: 'bg-indigo-50 text-indigo-700 border-indigo-200', label: 'Консультация' },
+    lab:          { cls: 'bg-purple-50 text-purple-700 border-purple-200', label: 'Анализы' },
+    mixed:        { cls: 'bg-teal-50 text-teal-700 border-teal-200',       label: 'Смешанный' },
+  }
+
+  // ── Transfer lab services to lab module ──────────────────────
+  const transferToLab = async () => {
+    if (!hasLab || labOrderId || transferringLab) return
+    setTransferringLab(true)
+    const vid = await ensureVisit()
+    if (!vid) { setTransferringLab(false); return }
+
+    const labRows = visitServices.filter(s => s.is_lab)
+
+    // Pre-match service names to lab templates (same clinic, active)
+    const names = Array.from(new Set(labRows.map(r => r.name.toLowerCase())))
+    const { data: tpl } = await supabase
+      .from('lab_test_templates')
+      .select('id, name')
+      .eq('clinic_id', clinicId)
+      .eq('is_active', true)
+    const tplByName = new Map<string, string>()
+    for (const t of (tpl ?? []) as { id: string; name: string }[]) {
+      if (names.includes(t.name.toLowerCase())) tplByName.set(t.name.toLowerCase(), t.id)
+    }
+
+    // Create lab_order
+    const { data: order, error: orderErr } = await supabase.from('lab_orders').insert({
+      clinic_id:  clinicId,
+      patient_id: appt.patient_id,
+      doctor_id:  appt.doctor_id,
+      visit_id:   vid,
+      status:     'ordered',
+      created_by: profile?.id ?? null,
+    }).select('id').single()
+    if (orderErr || !order) {
+      setTransferringLab(false)
+      alert('Не удалось создать заказ в лабораторию: ' + (orderErr?.message ?? 'unknown'))
+      return
+    }
+
+    // Expand each visit_service by quantity into items
+    const items: Array<{
+      order_id: string; template_id: string | null; name: string; price: number; status: string
+    }> = []
+    for (const r of labRows) {
+      const tid = tplByName.get(r.name.toLowerCase()) ?? null
+      const qty = Math.max(1, r.quantity)
+      for (let i = 0; i < qty; i++) {
+        items.push({
+          order_id:    order.id,
+          template_id: tid,
+          name:        r.name,
+          price:       Number(r.price_at_booking),
+          status:      'pending',
+        })
+      }
+    }
+    if (items.length > 0) {
+      const { error: itemsErr } = await supabase.from('lab_order_items').insert(items)
+      if (itemsErr) {
+        alert('Заказ создан, но позиции не добавились: ' + itemsErr.message)
+      }
+    }
+
+    setLabOrderId(order.id)
+    setTransferringLab(false)
+  }
 
   return (
     <>
@@ -1921,6 +2011,16 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full border ${st.cls}`}>
               {st.label}
             </span>
+            {visitType && (
+              <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full border ${vtStyle[visitType].cls}`}>
+                {vtStyle[visitType].label}
+              </span>
+            )}
+            {labOrderId && (
+              <span className="inline-block text-xs font-medium px-2.5 py-1 rounded-full border bg-purple-100 text-purple-700 border-purple-200">
+                🧪 В лаборатории
+              </span>
+            )}
           </div>
           {apptDisplayNotes(appt) && (
             <div className="pt-1">
@@ -2126,18 +2226,39 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           )}
         </div>
 
-        {/* ── Open visit ──────────────────────────────────────── */}
-        <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0">
-          <button
-            onClick={handleOpenVisit}
-            disabled={openingVisit || visitId === 'loading'}
-            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
-          >
-            <svg width="15" height="15" fill="none" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            {openingVisit ? 'Открытие...' : 'Открыть приём'}
-          </button>
+        {/* ── Open visit / Lab transfer ───────────────────────── */}
+        <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 space-y-2">
+          {hasLab && !labOrderId && (
+            <button
+              onClick={transferToLab}
+              disabled={transferringLab || visitId === 'loading'}
+              className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+            >
+              <span className="text-base leading-none">🧪</span>
+              {transferringLab ? 'Передача...' : 'Передать в лабораторию'}
+            </button>
+          )}
+          {hasLab && labOrderId && (
+            <button
+              onClick={() => router.push(`/lab/${labOrderId}`)}
+              className="w-full flex items-center justify-center gap-2 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg py-2 text-sm font-medium transition-colors"
+            >
+              <span className="text-base leading-none">🧪</span>
+              Открыть заказ в лаборатории
+            </button>
+          )}
+          {visitType !== 'lab' && (
+            <button
+              onClick={handleOpenVisit}
+              disabled={openingVisit || visitId === 'loading'}
+              className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+            >
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              {openingVisit ? 'Открытие...' : 'Открыть приём'}
+            </button>
+          )}
           {hasUnpaid && (
-            <p className="text-xs text-amber-600 text-center mt-1.5">
+            <p className="text-xs text-amber-600 text-center">
               ⚠ Есть неоплаченные услуги
             </p>
           )}
