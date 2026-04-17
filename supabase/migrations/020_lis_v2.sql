@@ -138,9 +138,8 @@ CREATE POLICY "Auth manage patient_lab_results"
 -- все items в плоскую историю пациента.
 
 CREATE OR REPLACE FUNCTION finalize_lab_order_to_history()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+RETURNS TRIGGER LANGUAGE plpgsql AS $func$
 BEGIN
-  -- Только при переходе в 'verified' (а не каждый апдейт)
   IF NEW.status = 'verified' AND (OLD.status IS DISTINCT FROM 'verified') THEN
     INSERT INTO patient_lab_results (
       clinic_id, patient_id, service_id, service_name_snapshot,
@@ -166,9 +165,7 @@ BEGIN
       COALESCE(i.completed_at, now())
     FROM lab_order_items i
     WHERE i.order_id = NEW.id
-      -- только позиции с хоть каким-то результатом
       AND (i.result_value IS NOT NULL OR i.result_text IS NOT NULL)
-      -- не дублируем, если уже есть
       AND NOT EXISTS (
         SELECT 1 FROM patient_lab_results p
         WHERE p.lab_order_item_id = i.id
@@ -176,7 +173,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$$;
+$func$;
 
 DROP TRIGGER IF EXISTS trg_finalize_lab_order ON lab_orders;
 CREATE TRIGGER trg_finalize_lab_order
@@ -186,7 +183,7 @@ CREATE TRIGGER trg_finalize_lab_order
 
 -- ── 8) Авто-флаг в lab_order_items при установке result_value ─
 CREATE OR REPLACE FUNCTION auto_flag_lab_item()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+RETURNS TRIGGER LANGUAGE plpgsql AS $func$
 BEGIN
   IF NEW.result_value IS NOT NULL THEN
     IF NEW.reference_min IS NOT NULL AND NEW.result_value < NEW.reference_min THEN
@@ -203,7 +200,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$$;
+$func$;
 
 DROP TRIGGER IF EXISTS trg_auto_flag_lab_item ON lab_order_items;
 CREATE TRIGGER trg_auto_flag_lab_item
