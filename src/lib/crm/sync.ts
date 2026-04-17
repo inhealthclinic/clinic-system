@@ -1,0 +1,182 @@
+// ============================================================
+// src/lib/crm/sync.ts
+// ────────────────────────────────────────────────────────────
+// Bidirectional glue between scheduling and CRM.
+//
+// Why:
+//   In amoCRM the deal moves through its funnel automatically as
+//   external events happen (call recorded, meeting booked,
+//   appointment marked "completed", payment received). Our
+//   clinic system has the same data — it just wasn't wired up.
+//   The schedule module created appointments and the CRM kanban
+//   stayed frozen until a manager dragged the card by hand.
+//
+// What this module does:
+//   1. ensureMedicalDealForPatient() — call after creating an
+//      appointment so there's always at least one open
+//      medical-funnel deal per active patient.
+//   2. syncDealStageOnAppointmentStatus() — call after the
+//      AppointmentDetailDrawer changes appointment.status.
+//      It moves the matching open deal to the corresponding
+//      stage and writes a small audit row to crm_interactions.
+//
+// All operations are best-effort: failures are logged but never
+// thrown so they cannot crash the calling UI.
+// ============================================================
+
+import type { SupabaseClient } from '@supabase/supabase-js'
+
+// ---- Stage mapping (kept in step with DEFAULT_MEDICAL_STAGES in /crm) ----
+
+/** Default medical-funnel stage assigned to a brand-new appointment. */
+export const NEW_APPT_DEFAULT_STAGE = 'primary_scheduled'
+
+/**
+ * Map an appointments.status value to the medical-funnel stage it
+ * implies. `null` means "no stage move — leave the deal alone".
+ *
+ * `currentStage` lets us treat secondary visits differently:
+ * if the deal was already past primary_done we move to
+ * secondary_done instead of overwriting it.
+ */
+export function appointmentStatusToStage(
+  status: string,
+  currentStage: string | null,
+): string | null {
+  switch (status) {
+    case 'no_show':
+      return 'no_show'
+    case 'completed':
+      // If the deal already passed the primary visit, the next
+      // appointment is treated as the secondary one.
+      if (currentStage && [
+        'primary_done', 'secondary_scheduled', 'deciding',
+        'treatment', 'tirzepatide_tx', 'control_tests',
+      ].includes(currentStage)) {
+        return 'secondary_done'
+      }
+      return 'primary_done'
+    case 'confirmed':
+      // Don't downgrade if the deal is already further along.
+      if (currentStage === 'no_show' || currentStage === 'pending' || !currentStage) {
+        return 'primary_scheduled'
+      }
+      return null
+    default:
+      return null
+  }
+}
+
+// ---- Public API ----------------------------------------------------------
+
+interface EnsureDealArgs {
+  clinicId:  string
+  patientId: string
+  /** Optional: fall back to this stage if no deal exists. */
+  defaultStage?: string
+  /** Optional: source to record on the auto-created deal. */
+  source?: string | null
+}
+
+/**
+ * Make sure the patient has at least one open deal in the medical
+ * funnel. If not, create one. Returns the deal id (existing or new),
+ * or null if the call failed.
+ */
+export async function ensureMedicalDealForPatient(
+  supabase: SupabaseClient,
+  { clinicId, patientId, defaultStage = NEW_APPT_DEFAULT_STAGE, source = null }: EnsureDealArgs,
+): Promise<string | null> {
+  try {
+    const { data: existing } = await supabase
+      .from('deals')
+      .select('id, stage')
+      .eq('patient_id', patientId)
+      .eq('funnel', 'medical')
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (existing?.id) return existing.id as string
+
+    const { data: created, error } = await supabase
+      .from('deals')
+      .insert({
+        clinic_id: clinicId,
+        patient_id: patientId,
+        funnel: 'medical',
+        stage: defaultStage,
+        priority: 'warm',
+        source,           // already-normalised by caller
+      })
+      .select('id')
+      .single()
+
+    if (error) { console.warn('[crm/sync] ensureMedicalDealForPatient insert failed', error); return null }
+    return (created?.id as string) ?? null
+  } catch (err) {
+    console.warn('[crm/sync] ensureMedicalDealForPatient threw', err)
+    return null
+  }
+}
+
+interface SyncStatusArgs {
+  clinicId:    string
+  patientId:   string
+  appointmentId: string
+  newStatus:   string
+}
+
+/**
+ * After an appointment status changes, mirror it onto the patient's
+ * open medical deal (creating one if needed). Best-effort.
+ */
+export async function syncDealStageOnAppointmentStatus(
+  supabase: SupabaseClient,
+  { clinicId, patientId, appointmentId, newStatus }: SyncStatusArgs,
+): Promise<void> {
+  try {
+    const { data: deal } = await supabase
+      .from('deals')
+      .select('id, stage')
+      .eq('patient_id', patientId)
+      .eq('funnel', 'medical')
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    const dealId       = deal?.id as string | undefined
+    const currentStage = (deal?.stage as string | null) ?? null
+    const targetStage  = appointmentStatusToStage(newStatus, currentStage)
+    if (!targetStage) return
+
+    // Create the deal first if the patient didn't have one open.
+    let id = dealId
+    if (!id) {
+      id = await ensureMedicalDealForPatient(supabase, {
+        clinicId, patientId, defaultStage: targetStage,
+      }) ?? undefined
+      if (!id) return
+    } else if (currentStage !== targetStage) {
+      const { error } = await supabase.from('deals').update({ stage: targetStage }).eq('id', id)
+      if (error) { console.warn('[crm/sync] update stage failed', error); return }
+    }
+
+    // Audit trail — a short note in crm_interactions so the manager
+    // can see why the card moved. (appointment_id is encoded in the
+    // outcome field since the table has no JSONB meta column.)
+    await supabase.from('crm_interactions').insert({
+      clinic_id:  clinicId,
+      deal_id:    id,
+      patient_id: patientId,
+      type:       'note',
+      direction:  null,
+      summary:    `Этап сделки обновлён автоматически: статус записи → ${newStatus} → этап ${targetStage}`,
+      outcome:    `appointment:${appointmentId}`,
+    })
+  } catch (err) {
+    console.warn('[crm/sync] syncDealStageOnAppointmentStatus threw', err)
+  }
+}

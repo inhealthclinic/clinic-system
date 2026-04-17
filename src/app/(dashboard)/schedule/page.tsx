@@ -11,6 +11,10 @@ import {
   normalizePhoneKZ,
   onPhoneKeyDown,
 } from '@/lib/utils/phone'
+import {
+  ensureMedicalDealForPatient,
+  syncDealStageOnAppointmentStatus,
+} from '@/lib/crm/sync'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -264,6 +268,13 @@ function CreateAppointmentModal({ clinicId, defaultDate, prefilledPatientId, onC
       doctor_id: form.doctor_id,
       appointment_id: appt.id,
       status: 'open',
+    })
+
+    // CRM glue — make sure this patient has an open medical-funnel deal,
+    // create one at stage=primary_scheduled if not. Best-effort, never throws.
+    await ensureMedicalDealForPatient(supabase, {
+      clinicId,
+      patientId: form.patient_id,
     })
 
     onCreated()
@@ -527,6 +538,7 @@ function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
   const updateStatus = async (status: string) => {
     setSaving(true)
     await supabase.from('appointments').update({ status }).eq('id', appt.id)
+
     if (status === 'no_show') {
       await supabase.from('tasks').insert({
         clinic_id: appt.clinic_id,
@@ -538,6 +550,18 @@ function AppointmentDetailDrawer({ appt, onClose, onUpdate }: {
         due_at: new Date(Date.now() + 2*60*60*1000).toISOString(),
       })
     }
+
+    // CRM glue — mirror the appointment status onto the patient's
+    // open medical deal (creating one if needed).  Best-effort.
+    if (appt.patient_id) {
+      await syncDealStageOnAppointmentStatus(supabase, {
+        clinicId: appt.clinic_id,
+        patientId: appt.patient_id,
+        appointmentId: appt.id,
+        newStatus: status,
+      })
+    }
+
     setSaving(false)
     onUpdate()
     onClose()
