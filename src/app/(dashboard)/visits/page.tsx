@@ -73,19 +73,42 @@ const TABS: { key: FilterTab; label: string }[] = [
 ]
 
 const EMPTY_STATE: Record<FilterTab, string> = {
-  all:         'Сегодня визитов пока нет',
+  all:         'Визитов за этот день нет',
   open:        'Нет открытых визитов',
   in_progress: 'Никто не на приёме',
   done:        'Завершённых визитов нет',
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function dateToISO(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+function addDays(d: Date, n: number): Date {
+  const copy = new Date(d)
+  copy.setDate(copy.getDate() + n)
+  return copy
+}
+
+function isToday(d: Date): boolean {
+  const today = new Date()
+  return dateToISO(d) === dateToISO(today)
+}
+
+function elapsedLabel(startedAt: string | null): { label: string; isLong: boolean } | null {
+  if (!startedAt) return null
+  const mins = Math.floor((Date.now() - new Date(startedAt).getTime()) / 60_000)
+  if (mins < 1) return { label: '< 1 мин', isLong: false }
+  if (mins < 60) return { label: `${mins} мин`, isLong: mins > 90 }
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return { label: `${h}ч ${m}м`, isLong: true }
+}
+
 // ─── WalkInModal ──────────────────────────────────────────────────────────────
 
-function WalkInModal({
-  clinicId,
-  onClose,
-  onCreated,
-}: {
+function WalkInModal({ clinicId, onClose, onCreated }: {
   clinicId: string
   onClose: () => void
   onCreated: () => void
@@ -99,13 +122,12 @@ function WalkInModal({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  // Load active doctors
   useEffect(() => {
     supabase
       .from('doctors')
       .select('id, first_name, last_name, color, consultation_duration')
       .eq('is_active', true)
-      .is('deleted_at', null)
+      .order('last_name')
       .then(({ data }) => {
         const list = (data ?? []) as DoctorOption[]
         setDoctors(list)
@@ -113,15 +135,19 @@ function WalkInModal({
       })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Patient typeahead
   useEffect(() => {
     if (patientSearch.length < 2) { setPatients([]); return }
     const t = setTimeout(async () => {
+      const cleaned = patientSearch.replace(/[\s\-()]/g, '')
+      const isPhone = /^[\d+]{4,}$/.test(cleaned)
+      const filter = isPhone
+        ? `full_name.ilike.%${patientSearch}%,phones.cs.{"${cleaned}"}`
+        : `full_name.ilike.%${patientSearch}%`
       const { data } = await supabase
         .from('patients')
         .select('id, full_name, phones')
         .is('deleted_at', null)
-        .ilike('full_name', `%${patientSearch}%`)
+        .or(filter)
         .limit(8)
       setPatients((data ?? []) as Patient[])
     }, 300)
@@ -137,14 +163,13 @@ function WalkInModal({
 
     const now = new Date()
     const todayStr = now.toISOString().slice(0, 10)
-    const timeStr = now.toTimeString().slice(0, 8) // HH:MM:SS
+    const timeStr  = now.toTimeString().slice(0, 8)
 
-    const doctor = doctors.find(d => d.id === doctorId)
+    const doctor   = doctors.find(d => d.id === doctorId)
     const duration = doctor?.consultation_duration ?? 30
-    const endMs = now.getTime() + duration * 60_000
-    const endTime = new Date(endMs).toTimeString().slice(0, 8)
+    const endMs    = now.getTime() + duration * 60_000
+    const endTime  = new Date(endMs).toTimeString().slice(0, 8)
 
-    // Insert appointment (walk-in)
     const { data: apptData, error: apptErr } = await supabase
       .from('appointments')
       .insert({
@@ -168,7 +193,6 @@ function WalkInModal({
       return
     }
 
-    // Insert visit
     const { error: visitErr } = await supabase
       .from('visits')
       .insert({
@@ -180,11 +204,7 @@ function WalkInModal({
         started_at:     now.toISOString(),
       })
 
-    if (visitErr) {
-      setError(visitErr.message)
-      setSaving(false)
-      return
-    }
+    if (visitErr) { setError(visitErr.message); setSaving(false); return }
 
     onCreated()
     onClose()
@@ -218,32 +238,20 @@ function WalkInModal({
                     <p className="text-xs text-gray-400">{selectedPatient.phones[0]}</p>
                   )}
                 </div>
-                <button
-                  type="button"
+                <button type="button"
                   onClick={() => { setSelectedPatient(null); setPatientSearch('') }}
-                  className="text-gray-400 hover:text-gray-600 text-xs ml-2"
-                >
-                  ✕
-                </button>
+                  className="text-gray-400 hover:text-gray-600 text-xs ml-2">✕</button>
               </div>
             ) : (
               <>
-                <input
-                  className={inputCls}
-                  placeholder="Поиск по имени..."
-                  value={patientSearch}
-                  onChange={e => setPatientSearch(e.target.value)}
-                  autoFocus
-                />
+                <input className={inputCls} placeholder="Поиск по имени или телефону..."
+                  value={patientSearch} onChange={e => setPatientSearch(e.target.value)} autoFocus />
                 {patients.length > 0 && (
                   <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 max-h-48 overflow-y-auto">
                     {patients.map(p => (
-                      <button
-                        key={p.id}
-                        type="button"
+                      <button key={p.id} type="button"
                         onClick={() => { setSelectedPatient(p); setPatientSearch(p.full_name); setPatients([]) }}
-                        className="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors"
-                      >
+                        className="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors">
                         <p className="text-sm font-medium text-gray-900">{p.full_name}</p>
                         {p.phones?.[0] && <p className="text-xs text-gray-400">{p.phones[0]}</p>}
                       </button>
@@ -262,41 +270,40 @@ function WalkInModal({
           {/* Doctor select */}
           <div>
             <label className={labelCls}>Врач <span className="text-red-400">*</span></label>
-            <select
-              className={inputCls}
-              value={doctorId}
-              onChange={e => setDoctorId(e.target.value)}
-              required
-            >
-              {doctors.length === 0 && <option value="">Загрузка...</option>}
-              {doctors.map(d => (
-                <option key={d.id} value={d.id}>
-                  {d.last_name} {d.first_name} ({d.consultation_duration} мин)
-                </option>
-              ))}
-            </select>
+            {doctors.length === 0 ? (
+              <p className="text-sm text-gray-400 py-2">Загрузка врачей...</p>
+            ) : (
+              <div className="grid grid-cols-1 gap-1.5 max-h-40 overflow-y-auto">
+                {doctors.map(d => (
+                  <button key={d.id} type="button"
+                    onClick={() => setDoctorId(d.id)}
+                    className={[
+                      'flex items-center gap-2.5 px-3 py-2 rounded-lg border text-sm text-left transition-colors',
+                      doctorId === d.id
+                        ? 'border-blue-500 bg-blue-50 text-blue-700'
+                        : 'border-gray-200 text-gray-700 hover:bg-gray-50',
+                    ].join(' ')}>
+                    <div className="w-3 h-3 rounded-full flex-shrink-0"
+                      style={{ background: d.color ?? '#94a3b8' }} />
+                    <span className="font-medium">{d.last_name} {d.first_name}</span>
+                    <span className="ml-auto text-xs text-gray-400">{d.consultation_duration} мин</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
-              {error}
-            </p>
+            <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">{error}</p>
           )}
 
           <div className="flex gap-3 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50 transition-colors"
-            >
+            <button type="button" onClick={onClose} disabled={saving}
+              className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium disabled:opacity-50 transition-colors">
               Отмена
             </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
-            >
+            <button type="submit" disabled={saving}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
               {saving ? 'Создание...' : 'Принять пациента'}
             </button>
           </div>
@@ -309,18 +316,26 @@ function WalkInModal({
 // ─── VisitCard ────────────────────────────────────────────────────────────────
 
 function VisitCard({ visit }: { visit: Visit }) {
-  const statusCls = STATUS_COLOR[visit.status] ?? 'bg-gray-100 text-gray-600'
+  const [, forceRender] = useState(0)
+
+  // Update elapsed time every minute for in_progress visits
+  useEffect(() => {
+    if (visit.status !== 'in_progress') return
+    const interval = setInterval(() => forceRender(n => n + 1), 60_000)
+    return () => clearInterval(interval)
+  }, [visit.status])
+
+  const statusCls   = STATUS_COLOR[visit.status] ?? 'bg-gray-100 text-gray-600'
   const statusLabel = STATUS_LABEL[visit.status] ?? visit.status
-  const timeStr = visit.started_at ?? visit.created_at
-  const time = new Date(timeStr).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const timeStr     = visit.started_at ?? visit.created_at
+  const time        = new Date(timeStr).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const elapsed     = visit.status === 'in_progress' ? elapsedLabel(visit.started_at) : null
 
   return (
-    <Link
-      href={`/visits/${visit.id}`}
-      className="block bg-white rounded-xl border border-gray-100 px-5 py-4 hover:border-blue-200 hover:shadow-sm transition-all"
-    >
+    <Link href={`/visits/${visit.id}`}
+      className="block bg-white rounded-xl border border-gray-100 px-5 py-4 hover:border-blue-200 hover:shadow-sm transition-all">
       <div className="flex items-start gap-4">
-        {/* Patient avatar */}
+        {/* Avatar */}
         <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-sm flex-shrink-0">
           {visit.patient?.full_name?.[0] ?? '?'}
         </div>
@@ -335,10 +350,8 @@ function VisitCard({ visit }: { visit: Visit }) {
           )}
           {visit.doctor && (
             <div className="flex items-center gap-1.5 mt-1.5">
-              <div
-                className="w-2 h-2 rounded-full flex-shrink-0"
-                style={{ background: visit.doctor.color ?? '#6B7280' }}
-              />
+              <div className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ background: visit.doctor.color ?? '#6B7280' }} />
               <p className="text-xs text-gray-500">
                 {visit.doctor.last_name} {visit.doctor.first_name}
               </p>
@@ -352,6 +365,13 @@ function VisitCard({ visit }: { visit: Visit }) {
             {statusLabel}
           </span>
           <p className="text-xs text-gray-400">{time}</p>
+          {elapsed && (
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+              elapsed.isLong ? 'bg-red-100 text-red-600' : 'bg-blue-50 text-blue-500'
+            }`}>
+              ⏱ {elapsed.label}
+            </span>
+          )}
         </div>
       </div>
     </Link>
@@ -364,32 +384,30 @@ export default function VisitsPage() {
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id ?? ''
 
-  const [visits, setVisits] = useState<Visit[]>([])
-  const [loading, setLoading] = useState(true)
+  const [visits, setVisits]       = useState<Visit[]>([])
+  const [loading, setLoading]     = useState(true)
   const [activeTab, setActiveTab] = useState<FilterTab>('all')
   const [showWalkIn, setShowWalkIn] = useState(false)
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date())
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (date: Date) => {
     setLoading(true)
     const supabase = createClient()
-    const today = new Date()
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString()
-    const todayEnd   = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999).toISOString()
+    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString()
+    const end   = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999).toISOString()
 
     const { data, error } = await supabase
       .from('visits')
       .select('*, patient:patients(id, full_name, phones), doctor:doctors(id, first_name, last_name, color)')
-      .gte('created_at', todayStart)
-      .lte('created_at', todayEnd)
+      .gte('created_at', start)
+      .lte('created_at', end)
       .order('created_at', { ascending: false })
 
-    if (!error) {
-      setVisits((data ?? []) as Visit[])
-    }
+    if (!error) setVisits((data ?? []) as Visit[])
     setLoading(false)
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(selectedDate) }, [load, selectedDate])
 
   const filtered = visits.filter(v => {
     if (activeTab === 'all')         return true
@@ -399,11 +417,6 @@ export default function VisitsPage() {
     return true
   })
 
-  const todayLabel = new Date().toLocaleDateString('ru-RU', {
-    weekday: 'long', day: 'numeric', month: 'long',
-  })
-
-  // Tab counts
   const counts: Record<FilterTab, number> = {
     all:         visits.length,
     open:        visits.filter(v => v.status === 'open').length,
@@ -411,20 +424,47 @@ export default function VisitsPage() {
     done:        visits.filter(v => v.status === 'completed' || v.status === 'partial').length,
   }
 
+  const todayLabel = selectedDate.toLocaleDateString('ru-RU', {
+    weekday: 'long', day: 'numeric', month: 'long',
+  })
+
+  const navigateDate = (delta: number) => setSelectedDate(d => addDays(d, delta))
+  const goToday      = () => setSelectedDate(new Date())
+
   return (
     <div className="max-w-3xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-5">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900 capitalize">
-            Сегодня, {todayLabel}
-          </h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-gray-900 capitalize">
+              {isToday(selectedDate) ? 'Сегодня' : todayLabel}
+            </h2>
+            {/* Date navigation */}
+            <div className="flex items-center gap-1">
+              <button onClick={() => navigateDate(-1)}
+                className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors text-sm">
+                ‹
+              </button>
+              {!isToday(selectedDate) && (
+                <button onClick={goToday}
+                  className="px-2 py-1 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                  Сегодня
+                </button>
+              )}
+              <button onClick={() => navigateDate(+1)}
+                className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors text-sm">
+                ›
+              </button>
+            </div>
+          </div>
+          {!isToday(selectedDate) && (
+            <p className="text-xs text-gray-400 mt-0.5">{todayLabel}</p>
+          )}
           <p className="text-sm text-gray-400">{visits.length} визитов</p>
         </div>
-        <button
-          onClick={() => setShowWalkIn(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors flex items-center gap-2"
-        >
+        <button onClick={() => setShowWalkIn(true)}
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors flex items-center gap-2">
           <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
           </svg>
@@ -435,16 +475,11 @@ export default function VisitsPage() {
       {/* Filter tabs */}
       <div className="flex gap-1 mb-5 bg-gray-100 rounded-xl p-1">
         {TABS.map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
+          <button key={tab.key} onClick={() => setActiveTab(tab.key)}
             className={[
               'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all',
-              activeTab === tab.key
-                ? 'bg-white text-gray-900 shadow-sm'
-                : 'text-gray-500 hover:text-gray-700',
-            ].join(' ')}
-          >
+              activeTab === tab.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+            ].join(' ')}>
             {tab.label}
             {counts[tab.key] > 0 && (
               <span className={[
@@ -466,29 +501,24 @@ export default function VisitsPage() {
       ) : filtered.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
           <p className="text-sm text-gray-400 mb-3">{EMPTY_STATE[activeTab]}</p>
-          {activeTab === 'all' && (
-            <button
-              onClick={() => setShowWalkIn(true)}
-              className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-            >
+          {activeTab === 'all' && isToday(selectedDate) && (
+            <button onClick={() => setShowWalkIn(true)}
+              className="text-sm text-blue-600 hover:text-blue-700 font-medium">
               + Принять первого пациента
             </button>
           )}
         </div>
       ) : (
         <div className="space-y-2.5">
-          {filtered.map(v => (
-            <VisitCard key={v.id} visit={v} />
-          ))}
+          {filtered.map(v => <VisitCard key={v.id} visit={v} />)}
         </div>
       )}
 
-      {/* Walk-in modal */}
       {showWalkIn && clinicId && (
         <WalkInModal
           clinicId={clinicId}
           onClose={() => setShowWalkIn(false)}
-          onCreated={() => { load(); setShowWalkIn(false) }}
+          onCreated={() => { load(selectedDate); setShowWalkIn(false) }}
         />
       )}
     </div>

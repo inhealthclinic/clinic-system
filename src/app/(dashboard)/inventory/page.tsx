@@ -82,6 +82,46 @@ const UNITS = ['мл', 'г', 'шт', 'уп']
 
 const INP = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
 
+/* ─── LIS: Print inventory report ───────────────────────── */
+function printInventoryReport(items: ItemType[], batches: Batch[], itemType: 'reagent' | 'consumable') {
+  const w = window.open('', '_blank', 'width=800,height=700')
+  if (!w) return
+  const title = itemType === 'reagent' ? 'Реагенты' : 'Расходники'
+  const now30 = new Date(); now30.setDate(now30.getDate() + 30)
+
+  const rows = items.map(item => {
+    const itemBatches = batches.filter(b => b.item_id === item.id)
+    const stock = itemBatches.reduce((s, b) => s + b.quantity_remaining, 0)
+    const expiring = itemBatches.find(b => b.expires_at && new Date(b.expires_at) <= now30)
+    const status = stock === 0 ? 'НЕТ' : stock < item.min_stock ? 'МАЛО' : 'В НАЛИЧИИ'
+    const statusColor = stock === 0 ? '#dc2626' : stock < item.min_stock ? '#ea580c' : '#16a34a'
+    return `<tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #f0f0f0">${item.name}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #f0f0f0;font-family:monospace">${item.code ?? '—'}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #f0f0f0;text-align:right">${item.min_stock.toLocaleString('ru-RU')} ${item.unit}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #f0f0f0;text-align:right;font-weight:600">${stock.toLocaleString('ru-RU')} ${item.unit}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #f0f0f0;color:${statusColor};font-weight:600">${status}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #f0f0f0;color:${expiring ? '#ea580c' : '#9ca3af'};font-size:11px">${expiring ? `⚠ до ${new Date(expiring.expires_at!).toLocaleDateString('ru-RU')}` : '—'}</td>
+    </tr>`
+  }).join('')
+
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Отчёт: ${title}</title>
+  <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;margin:24px}h2{margin:0 0 4px}
+  .sub{color:#777;font-size:12px;margin-bottom:16px}table{width:100%;border-collapse:collapse}
+  th{text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.4px}
+  .foot{margin-top:20px;font-size:10px;color:#ccc;border-top:1px dashed #ddd;padding-top:8px}</style></head><body>
+  <h2>IN HEALTH — ${title}</h2>
+  <div class="sub">Отчёт по остаткам · ${new Date().toLocaleString('ru-RU')}</div>
+  <table>
+    <thead><tr><th>Наименование</th><th>Код</th><th style="text-align:right">Мин. остаток</th><th style="text-align:right">Остаток</th><th>Статус</th><th>Срок годности</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="foot">Всего позиций: ${items.length} · Сформировано автоматически · IN HEALTH</div>
+  <script>window.onload=()=>{window.print()}</script>
+  </body></html>`)
+  w.document.close()
+}
+
 /* ─── Stock status helpers ───────────────────────────────── */
 function stockStatus(current: number, min: number): { label: string; cls: string } {
   if (current === 0)         return { label: 'Нет в наличии', cls: 'bg-red-100 text-red-600' }
@@ -388,16 +428,50 @@ function ItemsTab({ clinicId, itemType }: {
         />
       )}
 
+      {/* ── LIS: Expiry warning banner ────────────────────── */}
+      {!loading && (() => {
+        const now30 = new Date(); now30.setDate(now30.getDate() + 30)
+        const expiring = batches.filter(b => b.expires_at && new Date(b.expires_at) <= now30 && b.quantity_remaining > 0)
+        if (expiring.length === 0) return null
+        return (
+          <div className="mb-4 bg-orange-50 border border-orange-200 rounded-xl px-4 py-3 flex items-start gap-3">
+            <span className="text-orange-500 text-lg mt-0.5">⚠</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-orange-800 mb-1">
+                {expiring.length} {expiring.length === 1 ? 'партия истекает' : 'партии истекают'} в ближайшие 30 дней
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {expiring.slice(0, 5).map(b => (
+                  <span key={b.id} className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">
+                    {b.batch_number} · до {new Date(b.expires_at!).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+                  </span>
+                ))}
+                {expiring.length > 5 && <span className="text-xs text-orange-500">+{expiring.length - 5} ещё</span>}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       <div className="flex items-center justify-between mb-4">
         <p className="text-sm text-gray-400">
           {loading ? 'Загрузка...' : `${items.length} позиций`}
         </p>
-        <button
-          onClick={() => setShowAdd(true)}
-          disabled={!clinicId}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors">
-          + Добавить
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => printInventoryReport(items, batches, itemType)}
+            disabled={loading || items.length === 0}
+            title="Печать отчёта по остаткам"
+            className="px-3 py-2 border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 text-sm font-medium rounded-lg transition-colors">
+            🖨 Отчёт
+          </button>
+          <button
+            onClick={() => setShowAdd(true)}
+            disabled={!clinicId}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors">
+            + Добавить
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">

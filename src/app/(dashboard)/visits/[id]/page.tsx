@@ -155,6 +155,80 @@ function checkAllergy(drugName: string, allergies: { allergen: string; type: str
   return match ? match.allergen : null
 }
 
+/* ─── MedElement: нативные функции ──────────────────────── */
+
+function printPrescription(record: MedRecord, visit: VisitFull) {
+  const date = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  const rows = (record.prescriptions ?? []).map(p =>
+    `<tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${p.drug_name}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb">${p.dosage}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb">${p.frequency}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb">${p.duration}</td>
+    </tr>`
+  ).join('')
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Рецепт · ${record.prescription_number ?? ''}</title>
+    <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:32px} h2{margin:0 0 4px} table{width:100%;border-collapse:collapse;margin-top:12px} th{text-align:left;padding:6px 8px;background:#f9fafb;font-size:12px;color:#6b7280} .footer{margin-top:32px;border-top:1px solid #e5e7eb;padding-top:16px;display:flex;justify-content:space-between}</style>
+  </head><body>
+    <h2>РЕЦЕПТ</h2>
+    <p style="color:#6b7280;font-size:12px;margin:0 0 16px">№ ${record.prescription_number ?? '—'} · ${date}</p>
+    <div style="margin-bottom:12px">
+      <strong>Пациент:</strong> ${visit.patient.full_name}<br>
+      <strong>Диагноз:</strong> ${record.icd10_code ? `[${record.icd10_code}] ` : ''}${record.diagnosis_text ?? '—'}
+    </div>
+    <table>
+      <thead><tr>
+        <th>Препарат</th><th>Дозировка</th><th>Кратность</th><th>Длительность</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${record.recommendations ? `<p style="margin-top:16px"><strong>Рекомендации:</strong> ${record.recommendations}</p>` : ''}
+    ${record.control_date ? `<p><strong>Контроль:</strong> ${new Date(record.control_date + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</p>` : ''}
+    <div class="footer">
+      <span>Врач: ${visit.doctor.last_name} ${visit.doctor.first_name}</span>
+      <span style="border-bottom:1px solid #111;width:160px;display:inline-block;text-align:center">Подпись / печать</span>
+    </div>
+  </body></html>`
+
+  const w = window.open('', '_blank', 'width=700,height=600')
+  if (!w) return
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+  w.print()
+}
+
+function printMedCertificate(record: MedRecord, visit: VisitFull) {
+  const date = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Справка</title>
+    <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:40px;max-width:680px;margin:auto} h2{text-align:center;margin-bottom:4px} .subtitle{text-align:center;color:#6b7280;font-size:12px;margin-bottom:24px} .field{margin-bottom:10px} .field label{color:#6b7280;font-size:11px;display:block;margin-bottom:2px} .footer{margin-top:48px;display:flex;justify-content:space-between}</style>
+  </head><body>
+    <h2>МЕДИЦИНСКАЯ СПРАВКА</h2>
+    <p class="subtitle">Дата выдачи: ${date}</p>
+    <div class="field"><label>Пациент</label><strong>${visit.patient.full_name}</strong></div>
+    <div class="field"><label>Диагноз</label>${record.icd10_code ? `<span style="font-family:monospace;font-size:11px;background:#eff6ff;color:#1d4ed8;padding:1px 6px;border-radius:4px;margin-right:8px">${record.icd10_code}</span>` : ''}${record.diagnosis_text ?? '—'}
+      <span style="font-size:11px;color:#6b7280;margin-left:8px">(${record.diagnosis_type === 'final' ? 'Окончательный' : 'Предварительный'})</span>
+    </div>
+    ${record.complaints ? `<div class="field"><label>Жалобы</label>${record.complaints}</div>` : ''}
+    ${record.recommendations ? `<div class="field"><label>Рекомендации</label>${record.recommendations}</div>` : ''}
+    ${record.control_date ? `<div class="field"><label>Контрольный осмотр</label>${new Date(record.control_date + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</div>` : ''}
+    <div class="footer">
+      <div>Врач: <strong>${visit.doctor.last_name} ${visit.doctor.first_name}</strong></div>
+      <div style="border-bottom:1px solid #111;width:180px;text-align:center;padding-top:24px;font-size:11px;color:#6b7280">Подпись / печать</div>
+    </div>
+  </body></html>`
+
+  const w = window.open('', '_blank', 'width=720,height=620')
+  if (!w) return
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+  w.print()
+}
+
 /* ─── MedRecordSection ───────────────────────────────────── */
 function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: Allergy[] }) {
   const supabase = createClient()
@@ -286,7 +360,66 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
     return vitals
   }
 
+  const validateVitals = (): string | null => {
+    if (form.bp) {
+      const parts = form.bp.split('/')
+      const sys = parseInt(parts[0] ?? '')
+      const dia = parseInt(parts[1] ?? '')
+      if (isNaN(sys) || isNaN(dia) || sys < 60 || sys > 260 || dia < 30 || dia > 160) {
+        return 'АД указано некорректно. Формат: 120/80, диапазон: 60–260 / 30–160 мм рт.ст.'
+      }
+    }
+    if (form.pulse) {
+      const p = parseInt(form.pulse)
+      if (isNaN(p) || p < 30 || p > 220) {
+        return 'Пульс вне нормы: укажите значение 30–220 уд/мин.'
+      }
+    }
+    if (form.temperature) {
+      const t = parseFloat(form.temperature.replace(',', '.'))
+      if (isNaN(t) || t < 34.0 || t > 43.0) {
+        return 'Температура вне диапазона: 34–43°C.'
+      }
+    }
+    if (form.spo2) {
+      const s = parseInt(form.spo2)
+      if (isNaN(s) || s < 70 || s > 100) {
+        return 'SpO₂ вне диапазона: 70–100%.'
+      }
+    }
+    if (form.weight) {
+      const w = parseFloat(form.weight)
+      if (isNaN(w) || w < 1 || w > 500) {
+        return 'Вес вне диапазона: 1–500 кг.'
+      }
+    }
+    if (form.height) {
+      const h = parseFloat(form.height)
+      if (isNaN(h) || h < 30 || h > 250) {
+        return 'Рост вне диапазона: 30–250 см.'
+      }
+    }
+    return null
+  }
+
   const handleSave = async (sign = false) => {
+    // Vitals validation
+    const vitalsError = validateVitals()
+    if (vitalsError) {
+      alert(`⚠️ ${vitalsError}`)
+      return
+    }
+    // Pre-sign checks
+    if (sign) {
+      if (!form.icd10_code && !form.diagnosis_text.trim()) {
+        alert('⛔ Для подписания медзаписи необходимо указать диагноз (МКБ-10 или формулировку).')
+        return
+      }
+      if (!form.complaints.trim() && !form.objective.trim()) {
+        alert('⚠️ Рекомендуется заполнить жалобы или объективный статус перед подписанием.')
+        // Not blocking — just warn
+      }
+    }
     setSaving(true)
     const payload = {
       clinic_id: visit.clinic_id, visit_id: visit.id,
@@ -381,11 +514,33 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
               </span>
             )}
           </div>
-          {!record.is_signed && (
-            <button onClick={() => setEditing(true)} className="text-xs text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-400 px-3 py-1.5 rounded-lg transition-colors">
-              ✏️ Редактировать
-            </button>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* MedElement: печать рецепта */}
+            {record.prescriptions?.length > 0 && (
+              <button
+                onClick={() => printPrescription(record, visit)}
+                className="text-xs text-purple-600 hover:text-purple-700 border border-purple-200 hover:border-purple-400 px-3 py-1.5 rounded-lg transition-colors"
+                title="Распечатать рецепт"
+              >
+                🖨 Рецепт
+              </button>
+            )}
+            {/* MedElement: печать направления/справки */}
+            {record.is_signed && (
+              <button
+                onClick={() => printMedCertificate(record, visit)}
+                className="text-xs text-teal-600 hover:text-teal-700 border border-teal-200 hover:border-teal-400 px-3 py-1.5 rounded-lg transition-colors"
+                title="Справка / направление"
+              >
+                📄 Справка
+              </button>
+            )}
+            {!record.is_signed && (
+              <button onClick={() => setEditing(true)} className="text-xs text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-400 px-3 py-1.5 rounded-lg transition-colors">
+                ✏️ Редактировать
+              </button>
+            )}
+          </div>
         </div>
         <div className="p-5 space-y-4 text-sm">
           <LastVisitPanel />
@@ -754,13 +909,18 @@ export default function VisitPage() {
               </button>
             </>)}
             {visit.status === 'in_progress' && (
-              <div className="mt-3 space-y-1">
-                <p className={`text-xs flex items-center gap-1.5 ${visit.has_charges ? 'text-green-600' : 'text-red-400'}`}>
-                  {visit.has_charges ? '✓' : '○'} Начисления
-                </p>
-                <p className={`text-xs flex items-center gap-1.5 ${visit.finance_settled ? 'text-green-600' : 'text-gray-400'}`}>
-                  {visit.finance_settled ? '✓' : '○'} Оплачено
-                </p>
+              <div className="mt-3 bg-gray-50 rounded-lg p-3 space-y-1.5 text-xs">
+                <p className="font-semibold text-gray-500 uppercase tracking-wide mb-2 text-[10px]">Чеклист</p>
+                {[
+                  { ok: visit.has_charges,      label: 'Начисления добавлены',   req: true },
+                  { ok: visit.finance_settled,  label: 'Оплата зафиксирована',   req: false },
+                ].map((item, i) => (
+                  <p key={i} className={`flex items-center gap-1.5 ${item.ok ? 'text-green-600' : item.req ? 'text-red-500' : 'text-gray-400'}`}>
+                    <span className="flex-shrink-0">{item.ok ? '✓' : item.req ? '✕' : '○'}</span>
+                    {item.label}
+                    {!item.ok && item.req && <span className="text-red-400 font-medium ml-auto">обязательно</span>}
+                  </p>
+                ))}
               </div>
             )}
           </div>

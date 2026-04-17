@@ -519,6 +519,92 @@ function StatusBar({ current }: { current: string }) {
   )
 }
 
+/* ─── ЛИС: нативные функции ─────────────────────────────────── */
+
+// Печать бланка результатов (ЛИС-функция)
+function printLabReport(order: LabOrder) {
+  const date = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  const items = order.items ?? []
+  const rows = items.map(item => {
+    const result = item.result?.[0]
+    if (!result) {
+      return `<tr><td colspan="5" style="padding:8px;color:#9ca3af;font-style:italic">${item.name} — результат не введён</td></tr>`
+    }
+    const entries: ResultEntry[] = Array.isArray(result.results) ? result.results as ResultEntry[] : []
+    return entries.map(e => {
+      const flagColor: Record<string, string> = {
+        normal: '#16a34a', low: '#2563eb', high: '#ea580c', critical: '#dc2626'
+      }
+      const flagLabel: Record<string, string> = { normal: 'N', low: '↓', high: '↑', critical: '!!!' }
+      const color = e.flag ? flagColor[e.flag] : '#111'
+      const flag  = e.flag ? flagLabel[e.flag] : ''
+      const ref   = e.ref_min != null && e.ref_max != null ? `${e.ref_min} – ${e.ref_max}` : '—'
+      return `<tr>
+        <td style="padding:7px 8px;border-bottom:1px solid #f3f4f6">${e.parameter || item.name}</td>
+        <td style="padding:7px 8px;border-bottom:1px solid #f3f4f6;font-weight:600;color:${color}">${e.value}</td>
+        <td style="padding:7px 8px;border-bottom:1px solid #f3f4f6;color:#6b7280">${e.unit ?? '—'}</td>
+        <td style="padding:7px 8px;border-bottom:1px solid #f3f4f6;color:#6b7280">${ref}</td>
+        <td style="padding:7px 8px;border-bottom:1px solid #f3f4f6;font-weight:700;color:${color}">${flag}</td>
+      </tr>`
+    }).join('')
+  }).join('')
+
+  const doctor = order.doctor ? `${order.doctor.last_name} ${order.doctor.first_name}` : '—'
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Результаты анализов · ${order.order_number ?? ''}</title>
+    <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:32px;max-width:720px;margin:auto} h2{margin:0 0 4px} table{width:100%;border-collapse:collapse;margin-top:12px} th{text-align:left;padding:8px;background:#f9fafb;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb} .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px} .footer{margin-top:32px;display:flex;justify-content:space-between;border-top:1px solid #e5e7eb;padding-top:16px}</style>
+  </head><body>
+    <h2>РЕЗУЛЬТАТЫ ЛАБОРАТОРНЫХ ИССЛЕДОВАНИЙ</h2>
+    <p style="color:#6b7280;font-size:12px;margin:0 0 16px">№ ${order.order_number ?? '—'} · ${date}${order.urgent ? ' · <span style="color:#dc2626;font-weight:700">СРОЧНЫЙ</span>' : ''}</p>
+    <div style="margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+      <div><span style="color:#6b7280">Пациент:</span> <strong>${order.patient?.full_name ?? '—'}</strong></div>
+      <div><span style="color:#6b7280">Врач:</span> ${doctor}</div>
+      ${order.patient?.birth_date ? `<div><span style="color:#6b7280">Дата рожд.:</span> ${new Date(order.patient.birth_date).toLocaleDateString('ru-RU')}</div>` : ''}
+      ${order.patient?.gender ? `<div><span style="color:#6b7280">Пол:</span> ${order.patient.gender === 'male' ? 'М' : 'Ж'}</div>` : ''}
+    </div>
+    <table>
+      <thead><tr>
+        <th>Показатель</th><th>Результат</th><th>Ед. изм.</th><th>Референс</th><th>Флаг</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="footer">
+      <div style="font-size:12px;color:#6b7280">Верифицировал: _________________</div>
+      <div style="font-size:12px;color:#6b7280">Дата выдачи: ${date}</div>
+    </div>
+  </body></html>`
+
+  const w = window.open('', '_blank', 'width=760,height=700')
+  if (!w) return
+  w.document.write(html)
+  w.document.close()
+  w.focus()
+  w.print()
+}
+
+// Печать этикетки пробирки (ЛИС-функция)
+function printSampleLabel(order: LabOrder) {
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Этикетка</title>
+    <style>body{font-family:Arial,sans-serif;margin:0;padding:12px} .label{border:2px solid #111;border-radius:6px;padding:10px;width:260px;font-size:11px} .num{font-size:16px;font-weight:700;letter-spacing:2px;font-family:monospace} .barcode{font-family:'Libre Barcode 39',monospace;font-size:32px;letter-spacing:4px;margin:6px 0}</style>
+  </head><body>
+    <div class="label">
+      <div class="num">${order.order_number ?? order.id.slice(0, 8).toUpperCase()}</div>
+      <div class="barcode">*${(order.order_number ?? order.id.slice(0, 8)).replace(/[^A-Z0-9]/gi, '')}*</div>
+      <div><strong>${order.patient?.full_name ?? '—'}</strong></div>
+      <div style="color:#6b7280">${order.patient?.birth_date ? new Date(order.patient.birth_date).toLocaleDateString('ru-RU') : ''}</div>
+      <div style="margin-top:6px;font-size:10px">${new Date().toLocaleDateString('ru-RU')} ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</div>
+      ${order.urgent ? '<div style="color:#dc2626;font-weight:700;margin-top:4px">⚡ СРОЧНО</div>' : ''}
+    </div>
+    <script>window.onload=()=>{window.print()}</script>
+  </body></html>`
+
+  const w = window.open('', '_blank', 'width=340,height=260')
+  if (!w) return
+  w.document.write(html)
+  w.document.close()
+}
+
 /* ─── Page ───────────────────────────────────────────────────── */
 export default function LabOrderPage() {
   const supabase = createClient()
@@ -690,7 +776,44 @@ export default function LabOrderPage() {
             <p className="text-sm text-gray-500 mt-0.5">{order.patient.full_name}</p>
           )}
         </div>
+        {/* ЛИС: кнопки печати */}
+        <div className="flex flex-col gap-2 flex-shrink-0">
+          <button
+            onClick={() => printLabReport(order)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 transition-colors"
+            title="Распечатать бланк результатов"
+          >
+            🖨 Результаты
+          </button>
+          <button
+            onClick={() => printSampleLabel(order)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 transition-colors"
+            title="Распечатать этикетку пробирки"
+          >
+            🏷 Этикетка
+          </button>
+        </div>
       </div>
+
+      {/* ЛИС: баннер критических значений */}
+      {(() => {
+        const criticals = (order.items ?? []).filter(item => {
+          const results: ResultEntry[] = (item.result?.[0]?.results ?? []) as ResultEntry[]
+          return results.some(r => r.flag === 'critical')
+        })
+        if (!criticals.length) return null
+        return (
+          <div className="bg-red-50 border border-red-300 rounded-xl p-4 flex items-start gap-3">
+            <span className="text-xl flex-shrink-0">⚠️</span>
+            <div>
+              <p className="text-sm font-semibold text-red-800">Критические значения!</p>
+              <p className="text-xs text-red-600 mt-0.5">
+                {criticals.map(i => i.name).join(', ')} — требуют немедленного внимания врача
+              </p>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ─── Status progression ─────────────────── */}
       <div className="bg-white rounded-xl border border-gray-100 p-4 space-y-4">

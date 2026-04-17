@@ -70,6 +70,8 @@ export type Appointment = {
   is_walkin: boolean
   source: 'admin' | 'online' | 'whatsapp' | 'phone'
   notes: string | null
+  color: string | null
+  appt_type: string | null
   patient?: Pick<Patient, 'id' | 'full_name' | 'phones'>
   doctor?: Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color'>
 }

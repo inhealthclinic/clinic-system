@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
@@ -16,6 +17,42 @@ interface Payment {
 }
 
 interface PatientHit { id: string; full_name: string; phones: string[] }
+
+/* ─── AMO CRM: Print receipt (квитанция) ────────────────── */
+function printReceipt(payment: Payment) {
+  const w = window.open('', '_blank', 'width=420,height=520')
+  if (!w) return
+  const dt = new Date(payment.paid_at).toLocaleString('ru-RU', {
+    day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+  const method = METHOD_RU[payment.method] ?? payment.method
+  const type   = TYPE_RU[payment.type]   ?? payment.type
+  const status = ({ completed: 'ОПЛАЧЕНО ✓', pending_confirmation: 'ОЖИДАЕТ', failed: 'ОШИБКА ✕' } as Record<string, string>)[payment.status] ?? payment.status
+  const amount = payment.amount.toLocaleString('ru-RU', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 })
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Квитанция</title>
+  <style>
+    body{font-family:'Courier New',monospace;max-width:320px;margin:20px auto;font-size:13px;color:#111}
+    h2{text-align:center;font-size:17px;margin:0 0 4px}
+    .sub{text-align:center;font-size:11px;color:#666;border-bottom:1px dashed #ccc;padding-bottom:10px;margin-bottom:12px}
+    .row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dotted #eee}
+    .lbl{color:#666}
+    .total{display:flex;justify-content:space-between;padding:8px 0 4px;font-weight:bold;font-size:15px;border-top:2px solid #111;margin-top:6px}
+    .st{text-align:center;margin:12px 0;font-size:14px;font-weight:bold;letter-spacing:1px;padding:6px;border:2px solid #111}
+    .foot{text-align:center;font-size:10px;color:#bbb;margin-top:16px;border-top:1px dashed #ccc;padding-top:8px}
+  </style></head><body>
+  <h2>IN HEALTH</h2>
+  <div class="sub">Медицинский центр — Квитанция</div>
+  <div class="row"><span class="lbl">Пациент</span><span>${payment.patient?.full_name ?? '—'}</span></div>
+  <div class="row"><span class="lbl">Тип</span><span>${type}</span></div>
+  <div class="row"><span class="lbl">Метод</span><span>${method}</span></div>
+  <div class="row"><span class="lbl">Дата</span><span>${dt}</span></div>
+  <div class="total"><span>ИТОГО</span><span>${amount}</span></div>
+  <div class="st">${status}</div>
+  <div class="foot">IN HEALTH · Документ сформирован автоматически</div>
+  <script>window.onload=()=>{window.print()}</script>
+  </body></html>`)
+  w.document.close()
+}
 
 const METHOD_RU: Record<string, string> = {
   cash:    'Наличные',
@@ -59,9 +96,13 @@ function PaymentModal({ clinicId, onClose, onSaved }: {
     if (debRef.current) clearTimeout(debRef.current)
     if (q.length < 2) { setHits([]); return }
     debRef.current = setTimeout(async () => {
+      const isPhone = /^[\d\s+\-()]{3,}$/.test(q.trim())
+      const filter = isPhone
+        ? `full_name.ilike.%${q}%,phones.cs.{"${q.trim()}"}`
+        : `full_name.ilike.%${q}%`
       const { data } = await supabase
         .from('patients').select('id,full_name,phones')
-        .ilike('full_name', `%${q}%`).limit(6)
+        .or(filter).limit(6)
       setHits(data ?? [])
     }, 300)
   }
@@ -281,14 +322,26 @@ export default function FinancePage() {
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Метод</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Статус</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Дата</th>
+                <th className="px-5 py-3" />
               </tr>
             </thead>
             <tbody>
               {payments.map(p => (
                 <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                  <td className="px-5 py-3 text-sm text-gray-900">{p.patient?.full_name ?? '—'}</td>
+                  <td className="px-5 py-3">
+                    {p.patient_id ? (
+                      <Link href={`/patients/${p.patient_id}`}
+                        className="text-sm text-gray-900 hover:text-blue-600 hover:underline font-medium">
+                        {p.patient?.full_name ?? '—'}
+                      </Link>
+                    ) : (
+                      <span className="text-sm text-gray-900">{p.patient?.full_name ?? '—'}</span>
+                    )}
+                  </td>
                   <td className="px-5 py-3 text-xs text-gray-500">{TYPE_RU[p.type] ?? p.type}</td>
-                  <td className="px-5 py-3 text-sm font-semibold text-gray-900">{fmt(p.amount)}</td>
+                  <td className={`px-5 py-3 text-sm font-semibold ${p.type === 'refund' ? 'text-red-500' : 'text-gray-900'}`}>
+                    {p.type === 'refund' ? '−' : ''}{fmt(p.amount)}
+                  </td>
                   <td className="px-5 py-3 text-sm text-gray-500">{METHOD_RU[p.method] ?? p.method}</td>
                   <td className="px-5 py-3">
                     <span className={`text-xs font-medium px-2 py-1 rounded-full ${STATUS_CLR[p.status] ?? 'bg-gray-100 text-gray-600'}`}>
@@ -297,6 +350,14 @@ export default function FinancePage() {
                   </td>
                   <td className="px-5 py-3 text-xs text-gray-400">
                     {new Date(p.paid_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </td>
+                  <td className="px-5 py-3">
+                    <button
+                      onClick={() => printReceipt(p)}
+                      title="Печать квитанции"
+                      className="text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-colors">
+                      🖨 Чек
+                    </button>
                   </td>
                 </tr>
               ))}

@@ -184,6 +184,25 @@ function TransferModal({ deal, medicalStages, clinicId, onClose, onTransferred }
 
 // ─── QuickAddForm ─────────────────────────────────────────────────────────────
 
+// ── AMO CRM: lead score (нативная функция) ──────────────────
+function calcLeadScore(deal: DealRow): { score: number; label: string; cls: string } {
+  let score = 0
+  // Приоритет
+  if (deal.priority === 'hot')  score += 3
+  if (deal.priority === 'warm') score += 2
+  if (deal.priority === 'cold') score += 1
+  // Свежесть
+  const days = Math.floor((Date.now() - new Date(deal.created_at).getTime()) / 86_400_000)
+  if (days <= 1)  score += 3
+  else if (days <= 3)  score += 2
+  else if (days <= 7)  score += 1
+  else if (days > 14) score -= 1
+  // Итог
+  if (score >= 5) return { score, label: 'A', cls: 'bg-green-100 text-green-700' }
+  if (score >= 3) return { score, label: 'B', cls: 'bg-yellow-100 text-yellow-700' }
+  return { score, label: 'C', cls: 'bg-gray-100 text-gray-500' }
+}
+
 function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
   stageKey: string
   clinicId: string
@@ -196,6 +215,24 @@ function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
   const [phone, setPhone] = useState('')
   const [source, setSource] = useState('')
   const [saving, setSaving] = useState(false)
+  // AMO CRM: дублирование лидов
+  const [dupWarning, setDupWarning] = useState<string | null>(null)
+
+  const checkDuplicate = async (ph: string) => {
+    if (!ph.trim()) { setDupWarning(null); return }
+    const { data } = await supabase
+      .from('patients')
+      .select('id, full_name, deals!inner(id, status, funnel)')
+      .contains('phones', [ph.trim()])
+      .eq('deals.status', 'open')
+      .limit(1)
+    if (data?.length) {
+      const p = data[0] as { full_name: string }
+      setDupWarning(`Лид с этим телефоном уже существует: ${p.full_name}`)
+    } else {
+      setDupWarning(null)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -263,10 +300,15 @@ function QuickAddForm({ stageKey, clinicId, sources, onCreated, onCancel }: {
       />
       <input
         value={phone}
-        onChange={e => setPhone(e.target.value)}
+        onChange={e => { setPhone(e.target.value); checkDuplicate(e.target.value) }}
         placeholder="Телефон"
         className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
+      {dupWarning && (
+        <p className="text-xs text-orange-600 bg-orange-50 border border-orange-200 rounded-lg px-2.5 py-1.5">
+          ⚠ {dupWarning}
+        </p>
+      )}
       <select
         value={source}
         onChange={e => setSource(e.target.value)}
@@ -306,6 +348,7 @@ function DealCard({ deal, sources, onDragStart, onClick, onTransfer }: {
 }) {
   const p = PRIORITY_STYLE[deal.priority] ?? PRIORITY_STYLE.warm
   const daysInStage = Math.floor((Date.now() - new Date(deal.created_at).getTime()) / (1000 * 60 * 60 * 24))
+  const score = calcLeadScore(deal)
   return (
     <div
       draggable
@@ -317,9 +360,15 @@ function DealCard({ deal, sources, onDragStart, onClick, onTransfer }: {
         <p className="text-sm font-medium text-gray-900 leading-tight">
           {deal.patient?.full_name ?? '—'}
         </p>
-        <span className={`text-xs font-medium px-1.5 py-0.5 rounded flex-shrink-0 ${p.bg} ${p.text}`}>
-          {p.label}
-        </span>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {/* AMO CRM: lead score */}
+          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${score.cls}`} title={`Скор: ${score.score}`}>
+            {score.label}
+          </span>
+          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${p.bg} ${p.text}`}>
+            {p.label}
+          </span>
+        </div>
       </div>
       {deal.patient?.phones?.[0] && (
         <p className="text-xs text-gray-400 mb-1">{deal.patient.phones[0]}</p>
@@ -469,6 +518,27 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
 
   const stageIdx = stages.findIndex(s => s.key === deal.stage)
 
+  // AMO CRM: время в текущем этапе (из deal_stage_history)
+  const [stageEnteredAt, setStageEnteredAt] = useState<string | null>(null)
+  useEffect(() => {
+    supabase
+      .from('deal_stage_history')
+      .select('created_at')
+      .eq('deal_id', deal.id)
+      .eq('to_stage', deal.stage)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => setStageEnteredAt(data?.created_at ?? deal.created_at))
+  }, [deal.id, deal.stage])
+
+  const daysInStage = stageEnteredAt
+    ? Math.floor((Date.now() - new Date(stageEnteredAt).getTime()) / 86_400_000)
+    : null
+
+  // AMO CRM: скор лида
+  const score = calcLeadScore(deal)
+
   const loadInteractions = useCallback(async () => {
     setLoadingInt(true)
     const { data } = await supabase
@@ -547,9 +617,19 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
           <div className="min-w-0 pr-3">
-            <h3 className="text-base font-semibold text-gray-900 leading-tight">
-              {deal.patient?.full_name ?? '—'}
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-gray-900 leading-tight">
+                {deal.patient?.full_name ?? '—'}
+              </h3>
+              {deal.patient_id && (
+                <Link href={`/patients/${deal.patient_id}`}
+                  onClick={onClose}
+                  className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap"
+                  title="Открыть карточку пациента">
+                  → Карточка
+                </Link>
+              )}
+            </div>
             <div className="flex items-center gap-2 mt-1">
               {currentStage && (
                 <span className="flex items-center gap-1 text-xs text-gray-500">
@@ -558,7 +638,10 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
                 </span>
               )}
               {deal.patient?.phones?.[0] && (
-                <span className="text-xs text-gray-400">{deal.patient.phones[0]}</span>
+                <a href={`tel:${deal.patient.phones[0]}`}
+                  className="text-xs text-blue-400 hover:text-blue-600 transition-colors">
+                  📞 {deal.patient.phones[0]}
+                </a>
               )}
             </div>
           </div>
@@ -613,12 +696,26 @@ function DealDrawer({ deal, stages, sources, clinicId, onClose, onUpdate, onTran
                   </span>
                 )
               })()}
+              {/* AMO CRM: скор лида */}
+              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${score.cls}`} title={`Скор лида: ${score.score} баллов`}>
+                Скор {score.label}
+              </span>
               {deal.source && (
                 <span className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{deal.source}</span>
               )}
               <span className="text-xs text-gray-400">
                 {new Date(deal.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
               </span>
+              {/* AMO CRM: время в этапе */}
+              {daysInStage !== null && (
+                <span className={`text-xs px-2 py-0.5 rounded-full ${
+                  daysInStage > 7 ? 'bg-red-50 text-red-500' :
+                  daysInStage > 3 ? 'bg-orange-50 text-orange-500' :
+                  'bg-gray-50 text-gray-400'
+                }`}>
+                  ⏱ {daysInStage === 0 ? 'сегодня' : `${daysInStage} дн. в этапе`}
+                </span>
+              )}
             </div>
             {deal.notes && (
               <p className="text-sm text-gray-600 mt-2 leading-relaxed">{deal.notes}</p>
