@@ -14,6 +14,7 @@ interface Service {
   price: number
   duration_minutes: number
   is_active: boolean
+  is_lab: boolean
   created_at: string
 }
 
@@ -23,6 +24,7 @@ interface ServiceForm {
   price: string
   duration_minutes: string
   is_active: boolean
+  is_lab: boolean
 }
 
 const EMPTY_FORM: ServiceForm = {
@@ -31,6 +33,7 @@ const EMPTY_FORM: ServiceForm = {
   price:            '',
   duration_minutes: '30',
   is_active:        true,
+  is_lab:           false,
 }
 
 // ─── ServiceModal ─────────────────────────────────────────────────────────────
@@ -59,6 +62,7 @@ function ServiceModal({
           price:            String(service!.price),
           duration_minutes: String(service!.duration_minutes),
           is_active:        service!.is_active,
+          is_lab:           service!.is_lab ?? false,
         }
       : EMPTY_FORM
   )
@@ -86,6 +90,7 @@ function ServiceModal({
       price:            parseFloat(form.price) || 0,
       duration_minutes: parseInt(form.duration_minutes, 10) || 30,
       is_active:        form.is_active,
+      is_lab:           form.is_lab,
     }
 
     if (isEdit) {
@@ -220,6 +225,28 @@ function ServiceModal({
               ].join(' ')} />
             </div>
             <span className="text-sm text-gray-700">Активна</span>
+          </label>
+
+          {/* Is lab toggle */}
+          <label className="flex items-center gap-3 cursor-pointer py-1">
+            <div
+              onClick={() => setField('is_lab', !form.is_lab)}
+              className={[
+                'w-10 h-5 rounded-full transition-colors relative flex-shrink-0',
+                form.is_lab ? 'bg-purple-600' : 'bg-gray-200',
+              ].join(' ')}
+            >
+              <span className={[
+                'absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform',
+                form.is_lab ? 'translate-x-5' : 'translate-x-0.5',
+              ].join(' ')} />
+            </div>
+            <span className="text-sm text-gray-700">
+              🧪 Лабораторная услуга
+              <span className="block text-xs text-gray-400 font-normal mt-0.5">
+                Можно передать в лабораторию из записи
+              </span>
+            </span>
           </label>
 
           {error && (
@@ -414,10 +441,13 @@ export default function ServicesPage() {
                   {/* Name */}
                   <div className="flex-1 min-w-0">
                     <p className={[
-                      'text-sm font-medium truncate',
+                      'text-sm font-medium truncate flex items-center gap-1.5',
                       s.is_active ? 'text-gray-900' : 'text-gray-400',
                     ].join(' ')}>
-                      {s.name}
+                      <span className="truncate">{s.name}</span>
+                      {s.is_lab && (
+                        <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded flex-shrink-0">🧪</span>
+                      )}
                     </p>
                     <p className="text-xs text-gray-400 mt-0.5">{s.duration_minutes} мин</p>
                   </div>
