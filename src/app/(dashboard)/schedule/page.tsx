@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Appointment, Doctor } from '@/types'
@@ -108,9 +109,10 @@ function TimeGrid({ appointments, onCardClick }: {
 
 // ─── CreateAppointmentModal ───────────────────────────────────────────────────
 
-function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
+function CreateAppointmentModal({ clinicId, defaultDate, prefilledPatientId, onClose, onCreated }: {
   clinicId: string
   defaultDate: string
+  prefilledPatientId?: string | null
   onClose: () => void
   onCreated: () => void
 }) {
@@ -128,7 +130,7 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
 
   const [form, setForm] = useState({
     doctor_id: '',
-    patient_id: '',
+    patient_id: prefilledPatientId ?? '',
     date: defaultDate,
     time_start: '09:00',
     notes: '',
@@ -148,6 +150,23 @@ function CreateAppointmentModal({ clinicId, defaultDate, onClose, onCreated }: {
         if (data?.[0]) setForm(f => ({ ...f, doctor_id: data[0].id }))
       })
   }, [])
+
+  // When opened from a deep link (?patient=…), preload that patient's
+  // name + phone so the search field shows the selected pill straight away.
+  useEffect(() => {
+    if (!prefilledPatientId) return
+    supabase
+      .from('patients')
+      .select('id, full_name, phones')
+      .eq('id', prefilledPatientId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setSelectedPatientName(data.full_name)
+          setSelectedPatientPhone((data.phones?.[0] as string) ?? '')
+        }
+      })
+  }, [prefilledPatientId])
 
   useEffect(() => {
     if (patientSearch.length < 2) { setPatients([]); return }
@@ -615,13 +634,26 @@ export default function SchedulePage() {
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id ?? ''
 
+  const router       = useRouter()
+  const pathname     = usePathname()
+  const searchParams = useSearchParams()
+  // Deep link from CRM deal drawer: /schedule?patient=<uuid>
+  const prefilledPatientId = searchParams.get('patient')
+
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [loading, setLoading] = useState(true)
-  const [showCreate, setShowCreate] = useState(false)
+  const [showCreate, setShowCreate] = useState<boolean>(Boolean(prefilledPatientId))
   const [selected, setSelected] = useState<Appointment | null>(null)
   const [search, setSearch] = useState('')
   const [view, setView] = useState<'list' | 'grid'>('list')
+
+  // When the modal closes after a deep link, scrub `patient` from the URL
+  // so a subsequent manual close+open doesn't auto-reopen with stale id.
+  const closeCreate = useCallback(() => {
+    setShowCreate(false)
+    if (prefilledPatientId) router.replace(pathname)
+  }, [prefilledPatientId, pathname, router])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -805,8 +837,9 @@ export default function SchedulePage() {
         <CreateAppointmentModal
           clinicId={clinicId}
           defaultDate={date}
-          onClose={() => setShowCreate(false)}
-          onCreated={() => { load(); setShowCreate(false) }}
+          prefilledPatientId={prefilledPatientId}
+          onClose={closeCreate}
+          onCreated={() => { load(); closeCreate() }}
         />
       )}
 

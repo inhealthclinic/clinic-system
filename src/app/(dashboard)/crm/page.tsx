@@ -97,6 +97,22 @@ const INT_ICON: Record<string, string> = Object.fromEntries(
   INTERACTION_TYPE_OPTIONS.map(o => [o.value, o.icon]),
 )
 
+// Appointment status — kept in sync with /schedule's STATUS_STYLE.
+const STATUS_BADGE: Record<string, string> = {
+  pending:    'bg-gray-100 text-gray-600',
+  confirmed:  'bg-green-100 text-green-700',
+  arrived:    'bg-yellow-100 text-yellow-700',
+  completed:  'bg-blue-100 text-blue-700',
+  no_show:    'bg-red-100 text-red-600',
+  cancelled:  'bg-gray-50 text-gray-400',
+  rescheduled:'bg-purple-100 text-purple-600',
+}
+const STATUS_LBL: Record<string, string> = {
+  pending: 'Ожидает', confirmed: 'Подтв.', arrived: 'Пришёл',
+  completed: 'Завершено', no_show: 'Не явился',
+  cancelled: 'Отменено', rescheduled: 'Перенос',
+}
+
 const PERIOD_OPTS = [
   { key: 'all',   label: 'Все' },
   { key: 'today', label: 'Сегодня' },
@@ -150,6 +166,15 @@ interface UserOption {
   id: string
   name: string
   avatar_url: string | null
+}
+
+interface DealAppointment {
+  id: string
+  date: string
+  time_start: string
+  status: string
+  doctor_id: string | null
+  doctor: { first_name: string; last_name: string } | null
 }
 
 interface Stage { key: string; label: string; color: string }
@@ -607,6 +632,8 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
   const supabase = createClient()
   const [interactions, setInteractions] = useState<Interaction[]>([])
   const [tasks, setTasks] = useState<TaskRow[]>([])
+  const [appointments, setAppointments] = useState<DealAppointment[]>([])
+  const [patientFin, setPatientFin] = useState<{ balance: number; debt: number } | null>(null)
   const [loadingInt, setLoadingInt] = useState(true)
   const [showLost, setShowLost] = useState(false)
   const [lostReason, setLostReason] = useState('no_answer')
@@ -634,7 +661,7 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
 
   const loadInteractions = useCallback(async () => {
     setLoadingInt(true)
-    const [intRes, taskRes] = await Promise.all([
+    const [intRes, taskRes, apptRes, finRes] = await Promise.all([
       supabase.from('crm_interactions')
         .select('id, type, direction, summary, outcome, created_at')
         .eq('deal_id', deal.id)
@@ -643,11 +670,32 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
         .select('id, title, type, priority, status, due_at, assigned_to, created_at')
         .eq('deal_id', deal.id)
         .order('due_at', { ascending: true, nullsFirst: false }),
+      // Patient appointments — last 5 by date, most recent first.
+      supabase.from('appointments')
+        .select('id, date, time_start, status, doctor_id, doctor:doctors(first_name, last_name)')
+        .eq('patient_id', deal.patient_id)
+        .order('date', { ascending: false })
+        .order('time_start', { ascending: false })
+        .limit(5),
+      // Patient balance / debt snapshot.
+      supabase.from('patients')
+        .select('balance_amount, debt_amount')
+        .eq('id', deal.patient_id)
+        .maybeSingle(),
     ])
     setInteractions((intRes.data ?? []) as Interaction[])
     setTasks((taskRes.data ?? []) as TaskRow[])
+    setAppointments(((apptRes.data ?? []) as unknown as DealAppointment[]))
+    if (finRes.data) {
+      setPatientFin({
+        balance: Number(finRes.data.balance_amount ?? 0),
+        debt:    Number(finRes.data.debt_amount    ?? 0),
+      })
+    } else {
+      setPatientFin(null)
+    }
     setLoadingInt(false)
-  }, [deal.id])
+  }, [deal.id, deal.patient_id])
 
   useEffect(() => { loadInteractions() }, [loadInteractions])
 
@@ -939,6 +987,74 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
                 <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-lg px-3 py-2">{deal.notes}</p>
               </div>
             )}
+          </div>
+
+          {/* Patient context — finance + linked entities (amoCRM "обвес") */}
+          {patientFin && (patientFin.balance > 0 || patientFin.debt > 0) && (
+            <div className="px-5 py-3 border-b border-gray-50 flex gap-3">
+              {patientFin.balance > 0 && (
+                <div className="flex-1 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+                  <p className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wider">Баланс</p>
+                  <p className="text-sm font-semibold text-emerald-700">{fmtTenge(patientFin.balance)}</p>
+                </div>
+              )}
+              {patientFin.debt > 0 && (
+                <div className="flex-1 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                  <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wider">Долг</p>
+                  <p className="text-sm font-semibold text-red-700">{fmtTenge(patientFin.debt)}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Appointments */}
+          <div className="px-5 py-4 border-b border-gray-50">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                Записи {appointments.length > 0 && <span className="text-gray-300 ml-1">{appointments.length}</span>}
+              </p>
+              <Link
+                href={`/schedule?patient=${deal.patient_id}`}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                + Создать запись
+              </Link>
+            </div>
+            {appointments.length === 0 ? (
+              <p className="text-sm text-gray-300 italic">Нет записей у пациента</p>
+            ) : (
+              <div className="space-y-1.5">
+                {appointments.map(a => {
+                  const cls = STATUS_BADGE[a.status] ?? 'bg-gray-100 text-gray-500'
+                  const lbl = STATUS_LBL[a.status] ?? a.status
+                  const dr  = a.doctor ? `${a.doctor.last_name} ${a.doctor.first_name[0]}.` : '—'
+                  const dt  = new Date(a.date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
+                  return (
+                    <div key={a.id} className="flex items-center justify-between gap-2 text-sm bg-gray-50 rounded-lg px-3 py-1.5">
+                      <span className="text-gray-700 flex-shrink-0">{dt} · {a.time_start.slice(0, 5)}</span>
+                      <span className="text-gray-500 truncate flex-1">{dr}</span>
+                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${cls} flex-shrink-0`}>{lbl}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Quick links to other patient modules */}
+          <div className="px-5 py-3 border-b border-gray-50 flex gap-2 flex-wrap">
+            <Link href={`/patients/${deal.patient_id}`} className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors">
+              👤 Карта пациента
+            </Link>
+            <Link href={`/patients/${deal.patient_id}/medical-card`} className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors">
+              📋 Медкарта
+            </Link>
+            <Link href={`/patients/${deal.patient_id}/lab`} className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors">
+              🧪 Анализы
+            </Link>
+            <Link href={`/patients/${deal.patient_id}/finance`} className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors">
+              💳 Финансы
+            </Link>
           </div>
 
           {/* Tasks */}
