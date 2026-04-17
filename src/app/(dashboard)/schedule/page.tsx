@@ -15,6 +15,7 @@ import {
   ensureMedicalDealForPatient,
   syncDealStageOnAppointmentStatus,
 } from '@/lib/crm/sync'
+import { notify } from '@/lib/notifications/create'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -272,10 +273,33 @@ function CreateAppointmentModal({ clinicId, defaultDate, prefilledPatientId, onC
 
     // CRM glue — make sure this patient has an open medical-funnel deal,
     // create one at stage=primary_scheduled if not. Best-effort, never throws.
-    await ensureMedicalDealForPatient(supabase, {
+    const dealId = await ensureMedicalDealForPatient(supabase, {
       clinicId,
       patientId: form.patient_id,
     })
+
+    // Notify the deal's responsible (or owner/admin fallback) about the
+    // new appointment.
+    if (dealId) {
+      const { data: dealMeta } = await supabase
+        .from('deals')
+        .select('assigned_to, first_owner_id')
+        .eq('id', dealId)
+        .maybeSingle()
+      const responsible = (dealMeta?.assigned_to as string)
+                       ?? (dealMeta?.first_owner_id as string)
+                       ?? null
+      await notify(supabase, {
+        clinicId,
+        eventType:         'appointment_created',
+        entityType:        'appointment',
+        entityId:          appt.id,
+        responsibleUserId: responsible,
+        title:             `📅 Новая запись · ${selectedPatientName || 'пациент'}`,
+        body:              `${form.date} в ${form.time_start}`,
+        link:              `/schedule?date=${form.date}`,
+      })
+    }
 
     onCreated()
     onClose()

@@ -25,6 +25,7 @@
 // ============================================================
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { notify } from '@/lib/notifications/create'
 
 // ---- Stage mapping (kept in step with DEFAULT_MEDICAL_STAGES in /crm) ----
 
@@ -144,7 +145,7 @@ export async function syncDealOnPayment(
   try {
     const { data: deal } = await supabase
       .from('deals')
-      .select('id, deal_value, stage, status')
+      .select('id, deal_value, stage, status, assigned_to, first_owner_id')
       .eq('patient_id', patientId)
       .eq('funnel', 'medical')
       .eq('status', 'open')
@@ -153,6 +154,7 @@ export async function syncDealOnPayment(
       .maybeSingle()
 
     if (!deal?.id) return  // no open deal — nothing to sync
+    const dealResponsible = (deal.assigned_to as string) ?? (deal.first_owner_id as string) ?? null
 
     // Audit trail entry — `outcome` carries the structured ref.
     const verb = type === 'refund' ? 'Возврат' : type === 'prepayment' ? 'Предоплата' : 'Оплата'
@@ -166,6 +168,19 @@ export async function syncDealOnPayment(
       summary,
       outcome:    `payment:${paymentId}`,
     })
+
+    // Notify the deal's responsible — every payment is interesting to them.
+    if (type !== 'refund' && type !== 'writeoff') {
+      await notify(supabase, {
+        clinicId,
+        eventType:         'payment_received',
+        entityType:        'payment',
+        entityId:          paymentId,
+        responsibleUserId: dealResponsible,
+        title:             summary,
+        link:              `/crm?deal=${deal.id}`,
+      })
+    }
 
     // Auto-close on full payment.  Skip for refunds, writeoffs, and
     // deals where deal_value is not set yet (manager hasn't priced it).
@@ -200,6 +215,17 @@ export async function syncDealOnPayment(
       summary:    `Сделка автоматически закрыта как «успешная»: оплачено ${totalPaid.toLocaleString('ru-RU')} ₸ из ${dealValue.toLocaleString('ru-RU')} ₸`,
       outcome:    `payment:${paymentId}:auto_won`,
     })
+
+    await notify(supabase, {
+      clinicId,
+      eventType:         'deal_won',
+      entityType:        'deal',
+      entityId:          deal.id as string,
+      responsibleUserId: dealResponsible,
+      title:             '🏆 Сделка закрыта как успешная',
+      body:              `Оплачено ${totalPaid.toLocaleString('ru-RU')} ₸ из ${dealValue.toLocaleString('ru-RU')} ₸`,
+      link:              `/crm?deal=${deal.id}`,
+    })
   } catch (err) {
     console.warn('[crm/sync] syncDealOnPayment threw', err)
   }
@@ -223,7 +249,7 @@ export async function syncDealStageOnAppointmentStatus(
   try {
     const { data: deal } = await supabase
       .from('deals')
-      .select('id, stage')
+      .select('id, stage, assigned_to, first_owner_id')
       .eq('patient_id', patientId)
       .eq('funnel', 'medical')
       .eq('status', 'open')
@@ -233,6 +259,7 @@ export async function syncDealStageOnAppointmentStatus(
 
     const dealId       = deal?.id as string | undefined
     const currentStage = (deal?.stage as string | null) ?? null
+    let dealResponsible = (deal?.assigned_to as string) ?? (deal?.first_owner_id as string) ?? null
     const targetStage  = appointmentStatusToStage(newStatus, currentStage)
     if (!targetStage) return
 
@@ -243,6 +270,14 @@ export async function syncDealStageOnAppointmentStatus(
         clinicId, patientId, defaultStage: targetStage,
       }) ?? undefined
       if (!id) return
+      // Refetch responsible — newly created deal may have first_owner_id
+      // assigned by other triggers.
+      const { data: fresh } = await supabase
+        .from('deals')
+        .select('assigned_to, first_owner_id')
+        .eq('id', id)
+        .maybeSingle()
+      dealResponsible = (fresh?.assigned_to as string) ?? (fresh?.first_owner_id as string) ?? null
     } else if (currentStage !== targetStage) {
       const { error } = await supabase.from('deals').update({ stage: targetStage }).eq('id', id)
       if (error) { console.warn('[crm/sync] update stage failed', error); return }
@@ -259,6 +294,27 @@ export async function syncDealStageOnAppointmentStatus(
       direction:  null,
       summary:    `Этап сделки обновлён автоматически: статус записи → ${newStatus} → этап ${targetStage}`,
       outcome:    `appointment:${appointmentId}`,
+    })
+
+    // Notify responsible — different events for different transitions.
+    const eventType =
+      newStatus === 'no_show'    ? 'appointment_no_show'  :
+      newStatus === 'cancelled'  ? 'appointment_cancelled':
+                                   'deal_stage_changed'
+    const titleByEvent: Record<string, string> = {
+      appointment_no_show:   'Пациент не явился на запись',
+      appointment_cancelled: 'Запись отменена',
+      deal_stage_changed:    `Этап сделки → ${targetStage}`,
+    }
+    await notify(supabase, {
+      clinicId,
+      eventType,
+      entityType:        'deal',
+      entityId:          id,
+      responsibleUserId: dealResponsible,
+      title:             titleByEvent[eventType],
+      body:              `Запись от ${appointmentId.slice(0, 8)}`,
+      link:              `/crm?deal=${id}`,
     })
   } catch (err) {
     console.warn('[crm/sync] syncDealStageOnAppointmentStatus threw', err)

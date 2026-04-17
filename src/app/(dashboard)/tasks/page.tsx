@@ -9,6 +9,7 @@ import {
   TASK_PRIORITY_OPTIONS,
   TASK_STATUS_OPTIONS,
 } from '@/lib/crm/constants'
+import { notify } from '@/lib/notifications/create'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 // Visual styling stays here; values & labels come from the central
@@ -107,7 +108,7 @@ function CreateTaskModal({ clinicId, onClose, onCreated }: {
       ? `${form.due_at}T${form.due_time || '09:00'}:00`
       : null
 
-    const { error: err } = await supabase.from('tasks').insert({
+    const { data: created, error: err } = await supabase.from('tasks').insert({
       clinic_id: clinicId,
       title: form.title.trim(),
       type: form.type,
@@ -117,9 +118,24 @@ function CreateTaskModal({ clinicId, onClose, onCreated }: {
       patient_id: form.patient_id || null,
       due_at: dueAt,
       description: form.description.trim() || null,
-    })
+    }).select('id').single()
 
     if (err) { setError(err.message); setSaving(false); return }
+
+    // Notify the assignee — best-effort.
+    if (created?.id && form.assigned_to) {
+      await notify(supabase, {
+        clinicId,
+        eventType:         'task_assigned',
+        entityType:        'task',
+        entityId:          created.id as string,
+        responsibleUserId: form.assigned_to,
+        title:             `✅ Новая задача: ${form.title.trim()}`,
+        body:              dueAt ? `Срок: ${new Date(dueAt).toLocaleString('ru-RU')}` : null,
+        link:              `/tasks`,
+      })
+    }
+
     onCreated()
     onClose()
   }

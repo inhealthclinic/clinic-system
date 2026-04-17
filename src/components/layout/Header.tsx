@@ -1,6 +1,7 @@
 'use client'
 
 import { usePathname } from 'next/navigation'
+import { NotificationBell } from './NotificationBell'
 
 const TITLES: Record<string, string> = {
   '/': 'Дашборд',
@@ -36,6 +37,9 @@ export function Header({ onMenuClick }: HeaderProps) {
         </svg>
       </button>
       <h1 className="text-base font-semibold text-gray-900">{title}</h1>
+      <div className="ml-auto flex items-center">
+        <NotificationBell />
+      </div>
     </header>
   )
 }

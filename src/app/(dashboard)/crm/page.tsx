@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { WhatsAppChatPanel } from './_components/WhatsAppChatPanel'
 import {
   SOURCE_OPTIONS,
   normalizeSource,
@@ -724,6 +725,8 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
   onTransfer?: (deal: DealRow) => void
 }) {
   const supabase = createClient()
+  const drawerProfile = useAuthStore(s => s.profile)
+  const currentUserId = drawerProfile?.id ?? null
   const [interactions, setInteractions] = useState<Interaction[]>([])
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [appointments, setAppointments] = useState<DealAppointment[]>([])
@@ -1151,6 +1154,16 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
               </div>
             )}
           </div>
+
+          {/* WhatsApp chat — unified inbound + outbound thread */}
+          <WhatsAppChatPanel
+            clinicId={clinicId}
+            dealId={deal.id}
+            patientId={deal.patient_id}
+            patientPhone={deal.patient?.phones?.[0] ?? null}
+            patientName={deal.patient?.full_name ?? ''}
+            currentUserId={currentUserId}
+          />
 
           {/* Payments — last 5 completed */}
           {payments.length > 0 && (
