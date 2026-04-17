@@ -11,6 +11,8 @@ import {
   PRIORITY_OPTIONS,
   LOST_REASON_OPTIONS,
   INTERACTION_TYPE_OPTIONS,
+  STAGE_WHATSAPP_TEMPLATES,
+  applyWhatsAppTemplate,
 } from '@/lib/crm/constants'
 import {
   PHONE_PREFIX,
@@ -655,6 +657,61 @@ const STAGE_TASKS: Record<string, StageTaskTpl> = {
   failed:               { title: 'Разобрать причину отказа: {name}',                     type: 'call',      priority: 'normal', hours: 4  },
 }
 
+// ─── WhatsAppTemplatesMenu ───────────────────────────────────────────────────
+// Dropdown that lists pre-built scripts for the current stage. Picking one
+// opens wa.me with the substituted body. Used inside DealDrawer's header.
+
+function WhatsAppTemplatesMenu({ phone, fullName, stage }: {
+  phone: string
+  fullName: string
+  stage: string
+}) {
+  const [open, setOpen] = useState(false)
+  const templates = STAGE_WHATSAPP_TEMPLATES[stage] ?? []
+  if (templates.length === 0) return null
+
+  const digits = phone.replace(/\D/g, '')
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="Шаблоны WhatsApp для этого этапа"
+        className="text-xs bg-green-50 hover:bg-green-100 text-green-700 rounded-lg px-2 py-1.5 font-medium transition-colors"
+      >
+        ▾
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 w-72 bg-white rounded-xl shadow-xl border border-gray-100 z-50 overflow-hidden">
+            <p className="px-3 py-2 border-b border-gray-100 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+              Шаблоны для этапа
+            </p>
+            {templates.map((tpl, i) => {
+              const body = applyWhatsAppTemplate(tpl.text, { name: fullName })
+              const href = `https://wa.me/${digits}?text=${encodeURIComponent(body)}`
+              return (
+                <a
+                  key={i}
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={() => setOpen(false)}
+                  className="block px-3 py-2 hover:bg-gray-50 border-b border-gray-50 last:border-b-0"
+                >
+                  <p className="text-xs font-medium text-gray-800">{tpl.label}</p>
+                  <p className="text-xs text-gray-400 line-clamp-2 mt-0.5">{body}</p>
+                </a>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── DealDrawer ───────────────────────────────────────────────────────────────
 
 function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTransfer }: {
@@ -897,15 +954,22 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0">
             {waLink && (
-              <a
-                href={waLink}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs bg-green-50 hover:bg-green-100 text-green-700 rounded-lg px-2.5 py-1.5 font-medium transition-colors flex items-center gap-1"
-                title="Написать в WhatsApp"
-              >
-                💬 WA
-              </a>
+              <div className="flex items-center">
+                <a
+                  href={waLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs bg-green-50 hover:bg-green-100 text-green-700 rounded-l-lg px-2.5 py-1.5 font-medium transition-colors flex items-center gap-1"
+                  title="Написать в WhatsApp"
+                >
+                  💬 WA
+                </a>
+                <WhatsAppTemplatesMenu
+                  phone={phone!}
+                  fullName={deal.patient?.full_name ?? ''}
+                  stage={deal.stage}
+                />
+              </div>
             )}
             {phone && (
               <a
@@ -1990,6 +2054,17 @@ export default function CrmPage() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          <Link
+            href="/crm/analytics"
+            className="text-gray-400 hover:text-gray-600 border border-gray-200 hover:border-gray-300 rounded-lg px-3 py-2 text-sm transition-colors flex items-center gap-1.5"
+            title="Аналитика воронки"
+          >
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+              <path d="M3 3v18h18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M7 14l3-3 4 4 5-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            Аналитика
+          </Link>
           <Link
             href="/crm/settings"
             className="text-gray-400 hover:text-gray-600 border border-gray-200 hover:border-gray-300 rounded-lg px-3 py-2 text-sm transition-colors flex items-center gap-1.5"

@@ -160,3 +160,80 @@ export const TASK_STATUS_OPTIONS = [
   { value: 'cancelled',   label: 'Отменена' },
 ] as const
 export type TaskStatusValue = typeof TASK_STATUS_OPTIONS[number]['value']
+
+// ── WhatsApp templates per stage ──────────────────────────────────────────
+// Quick-reply scripts the manager can send directly from DealDrawer.
+// Substitution tokens:
+//   {name}    — patient.full_name (used; '' if unknown)
+//   {fname}   — first name only (split on whitespace)
+//   {clinic}  — clinic name (substituted by caller, optional)
+//
+// Each entry is a list so the manager can pick the most appropriate variant.
+
+export interface WhatsAppTemplate {
+  label: string   // short label shown in the dropdown
+  text:  string   // body with {tokens}
+}
+
+export const STAGE_WHATSAPP_TEMPLATES: Record<string, WhatsAppTemplate[]> = {
+  new: [
+    { label: 'Первичное приветствие', text: 'Здравствуйте, {fname}! Это {clinic}. Получили вашу заявку — когда удобно созвониться, чтобы обсудить детали?' },
+    { label: 'Короткий welcome',      text: 'Здравствуйте, {fname}! Спасибо за интерес к нашей клинике. Чем можем помочь?' },
+  ],
+  in_progress: [
+    { label: 'Запросить удобное время', text: '{fname}, подскажите удобное время для звонка — наберём в течение 5 минут.' },
+    { label: 'Уточнить запрос',         text: '{fname}, чтобы не отнимать у вас время — уточните, пожалуйста, какая процедура/услуга интересует?' },
+  ],
+  contact: [
+    { label: 'Касание после звонка', text: '{fname}, как и обещали, отправляем информацию по нашей клинике. Если будут вопросы — пишите!' },
+    { label: 'Прайс по запросу',      text: '{fname}, держите наш актуальный прайс. Готовы записать в любое удобное время.' },
+  ],
+  booked: [
+    { label: 'Подтверждение записи', text: 'Здравствуйте, {fname}! Подтверждаем вашу запись. Будем ждать!' },
+    { label: 'Что взять с собой',    text: '{fname}, на приём, пожалуйста, возьмите документ и результаты анализов, если есть.' },
+  ],
+  primary_scheduled: [
+    { label: 'Напоминание за день',  text: 'Здравствуйте, {fname}! Напоминаем о консультации завтра. Если планы изменились — сообщите, перенесём.' },
+    { label: 'Напоминание за час',   text: '{fname}, ждём вас через час на приёме. Адрес: …' },
+  ],
+  no_show: [
+    { label: 'Узнать причину',        text: 'Здравствуйте, {fname}! Не дождались вас сегодня. Всё ли в порядке? Можем перенести запись на удобное время.' },
+    { label: 'Перенести деликатно',   text: '{fname}, понимаем — бывают разные обстоятельства. Когда будет удобно прийти?' },
+  ],
+  primary_done: [
+    { label: 'Спасибо после визита',  text: '{fname}, спасибо за визит! Если появятся вопросы по рекомендациям врача — пишите, всегда на связи.' },
+    { label: 'Запрос обратной связи', text: '{fname}, нам важно ваше мнение. Поделитесь, как прошёл приём?' },
+  ],
+  secondary_scheduled: [
+    { label: 'Напоминание о вторичной', text: '{fname}, напоминаем о вашей повторной консультации. Подтвердите, пожалуйста, что придёте.' },
+  ],
+  deciding: [
+    { label: 'Мягкое касание',         text: '{fname}, не отвлекаем — просто узнать, остались ли вопросы по нашему предложению?' },
+    { label: 'Спецпредложение',        text: '{fname}, у нас сейчас есть приятная скидка на курс. Если актуально — расскажу подробнее.' },
+  ],
+  treatment: [
+    { label: 'Контроль самочувствия',  text: '{fname}, как самочувствие? Все ли рекомендации удалось выполнить? Если что-то беспокоит — сообщите врачу.' },
+  ],
+  control_tests: [
+    { label: 'Напоминание об анализах', text: '{fname}, не забудьте про контрольные анализы. Когда планируете сдать?' },
+  ],
+  success: [
+    { label: 'Финальное спасибо',      text: '{fname}, спасибо, что выбрали нашу клинику! Будем рады видеть вас снова.' },
+  ],
+  failed: [
+    { label: 'Прощальное',             text: '{fname}, спасибо, что рассмотрели нас. Если планы изменятся — будем рады помочь.' },
+  ],
+}
+
+/** Substitute {tokens} in a template body. */
+export function applyWhatsAppTemplate(
+  text: string,
+  vars: { name?: string; clinic?: string },
+): string {
+  const fullName = (vars.name ?? '').trim()
+  const fName    = fullName.split(/\s+/)[0] ?? ''
+  return text
+    .replace(/\{name\}/g,   fullName || '')
+    .replace(/\{fname\}/g,  fName    || '')
+    .replace(/\{clinic\}/g, vars.clinic ?? 'клиника')
+}
