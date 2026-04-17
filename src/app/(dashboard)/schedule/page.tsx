@@ -2447,19 +2447,25 @@ function LabServicesPicker({
   onAccept: (selections: Array<{ svc: ServiceCatalogRow; qty: number }>) => void | Promise<void>
 }) {
   const fmtMoney = (n: number) => Math.round(n).toLocaleString('ru-RU') + ' ₸'
-  const labServices = useMemo(
-    () => allServices,
-    [allServices],
-  )
+  // Show: all lab services + any services referenced by an active package
+  // (so packages like "Чекап" that contain non-lab services, e.g. consultations,
+  // can display those items too — without cluttering the picker with everything).
+  const labServices = useMemo(() => {
+    const pkgServiceIds = new Set(packages.flatMap(p => p.service_ids))
+    return allServices.filter(s => s.is_lab || pkgServiceIds.has(s.id))
+  }, [allServices, packages])
 
-  // Initial qty map from already-in-visit rows
+  // Initial qty map from already-in-visit rows (only for services visible here)
   const initialQty: Record<string, number> = useMemo(() => {
     const m: Record<string, number> = {}
+    const visibleIds = new Set(labServices.map(s => s.id))
     for (const row of visitServices) {
-      if (row.service_id) m[row.service_id] = row.quantity
+      if (row.service_id && visibleIds.has(row.service_id)) {
+        m[row.service_id] = row.quantity
+      }
     }
     return m
-  }, [visitServices])
+  }, [visitServices, labServices])
 
   const [qty, setQty] = useState<Record<string, number>>(initialQty)
   const [search, setSearch] = useState('')
@@ -2596,7 +2602,7 @@ function LabServicesPicker({
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-lg">🧪</span>
-            <h3 className="text-base font-semibold text-gray-900">Добавить анализы</h3>
+            <h3 className="text-base font-semibold text-gray-900">Анализы и пакеты</h3>
             <span className="text-xs text-gray-400">· {labServices.length} в каталоге</span>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1">
