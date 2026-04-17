@@ -213,6 +213,38 @@ export default function FinanceReportsPage() {
 
   useEffect(() => { load() }, [load])
 
+  /* ─── CSV export ─── */
+  const exportCsv = () => {
+    if (payments.length === 0) return
+    const esc = (v: string | number) => {
+      const s = String(v ?? '')
+      return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const header = ['Дата', 'Тип', 'Метод', 'Статус', 'Сумма (₸)']
+    const rows = payments
+      .slice()
+      .sort((a, b) => a.paid_at.localeCompare(b.paid_at))
+      .map(p => [
+        new Date(p.paid_at).toLocaleString('ru-RU'),
+        p.type,
+        METHOD_RU[p.method] ?? p.method,
+        p.status,
+        p.amount,
+      ].map(esc).join(';'))
+    const csv = '\uFEFF' + [header.map(esc).join(';'), ...rows].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const { start, end } = getRange(period, customStart, customEnd)
+    const fname = `payments_${start.slice(0, 10)}_${end.slice(0, 10)}.csv`
+    a.href = url
+    a.download = fname
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   /* ─── Derived KPIs ─── */
   const revenue    = payments.filter(p => p.type === 'payment').reduce((s, p) => s + p.amount, 0)
   const refunds    = payments.filter(p => p.type === 'refund').reduce((s, p) => s + p.amount, 0)
@@ -319,6 +351,14 @@ export default function FinanceReportsPage() {
         )}
 
         <div className="flex-1" />
+        <button
+          onClick={exportCsv}
+          disabled={loading || !clinicId || payments.length === 0}
+          className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 text-gray-700 text-sm font-medium rounded-lg transition-colors"
+          title="Экспорт оплат в CSV"
+        >
+          ⬇ CSV
+        </button>
         <button
           onClick={load}
           disabled={loading || !clinicId}
