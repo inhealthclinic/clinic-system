@@ -43,21 +43,9 @@ ALTER TABLE lab_order_items
   ADD COLUMN IF NOT EXISTS completed_by          UUID REFERENCES user_profiles(id),
   ADD COLUMN IF NOT EXISTS comment               TEXT;
 
--- Расширяем CHECK на новые статусы (сохраняем совместимость)
--- (в 008 было только pending/completed)
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.check_constraints
-    WHERE constraint_name LIKE '%lab_order_items_status%'
-  ) THEN
-    -- Попытка удалить старый чек (имя может отличаться) — безопасно в блоке
-    BEGIN
-      ALTER TABLE lab_order_items DROP CONSTRAINT lab_order_items_status_check;
-    EXCEPTION WHEN OTHERS THEN NULL;
-    END;
-  END IF;
-END$$;
+-- Расширяем CHECK на новые статусы (сохраняем совместимость).
+-- В 008 было только pending/completed — сносим старый чек (если есть) и ставим новый.
+ALTER TABLE lab_order_items DROP CONSTRAINT IF EXISTS lab_order_items_status_check;
 
 ALTER TABLE lab_order_items
   ADD CONSTRAINT lab_order_items_status_check
