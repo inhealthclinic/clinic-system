@@ -25,6 +25,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { usePermissions } from '@/lib/hooks/usePermissions'
 import {
   EVENT_TYPES, EVENT_LABEL, EVENT_GROUP, GROUP_LABEL,
   ROUTING_OPTIONS, CHANNEL_OPTIONS,
@@ -40,10 +41,13 @@ interface UserRow { id: string; first_name: string; last_name: string }
 export default function NotificationSettingsPage() {
   const supabase = createClient()
   const { profile } = useAuthStore()
+  const { isOwner, isAdmin } = usePermissions()
+  const canEditClinic = isOwner || isAdmin
   const clinicId = profile?.clinic_id ?? ''
   const userId = profile?.id ?? ''
 
-  const [tab, setTab] = useState<'clinic' | 'user'>('clinic')
+  // For non-admins, force the user tab — clinic tab is hidden.
+  const [tab, setTab] = useState<'clinic' | 'user'>(canEditClinic ? 'clinic' : 'user')
   const [prefs, setPrefs] = useState<NotificationPreferenceRow[]>([])
   const [roles, setRoles] = useState<RoleRow[]>([])
   const [users, setUsers] = useState<UserRow[]>([])
@@ -171,15 +175,17 @@ export default function NotificationSettingsPage() {
       </div>
 
       <div className="flex gap-1 bg-gray-100 rounded-xl p-1 mb-6 max-w-md">
-        <button
-          onClick={() => setTab('clinic')}
-          className={[
-            'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors',
-            tab === 'clinic' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
-          ].join(' ')}
-        >
-          🏥 Системные правила
-        </button>
+        {canEditClinic && (
+          <button
+            onClick={() => setTab('clinic')}
+            className={[
+              'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors',
+              tab === 'clinic' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+            ].join(' ')}
+          >
+            🏥 Системные правила
+          </button>
+        )}
         <button
           onClick={() => setTab('user')}
           className={[
@@ -190,6 +196,11 @@ export default function NotificationSettingsPage() {
           👤 Мои настройки
         </button>
       </div>
+      {!canEditClinic && (
+        <p className="text-xs text-gray-400 mb-4">
+          Системные правила настраивает владелец или администратор клиники.
+        </p>
+      )}
 
       {loading ? (
         <p className="text-sm text-gray-400 text-center py-12">Загрузка...</p>

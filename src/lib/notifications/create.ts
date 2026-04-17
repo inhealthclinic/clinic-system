@@ -25,6 +25,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { EventType, EntityType } from './types'
+import { getEmailSender } from './channels'
 
 export interface NotifyArgs {
   clinicId:           string
@@ -81,9 +82,59 @@ export async function notify(
       .insert(rows)
 
     if (iErr) console.warn('[notify] insert failed', iErr)
+
+    // Optional: fan out to email channel for those users where the
+    // clinic-level pref includes 'email'. Best-effort; runs in
+    // parallel and never blocks the in-app notification.
+    fanOutEmail(supabase, args.clinicId, args.eventType, userIds, args.title, args.body ?? '')
+      .catch(err => console.warn('[notify] email fan-out failed', err))
   } catch (err) {
     console.warn('[notify] threw', err)
   }
+}
+
+/** Helper: send email to users when 'email' is in the clinic-level channels. */
+async function fanOutEmail(
+  supabase: SupabaseClient,
+  clinicId: string,
+  eventType: EventType,
+  userIds: string[],
+  title: string,
+  body: string,
+) {
+  // Read clinic-level pref to check channels.
+  const { data: pref } = await supabase
+    .from('notification_preferences')
+    .select('channels')
+    .eq('clinic_id', clinicId)
+    .eq('scope', 'clinic')
+    .eq('event_type', eventType)
+    .is('user_id', null)
+    .maybeSingle()
+  const channels: string[] = (pref?.channels as string[] | undefined) ?? ['in_app']
+  if (!channels.includes('email')) return
+  if (userIds.length === 0) return
+
+  // Resolve user_profiles.id → auth.users.email via SECURITY DEFINER helper
+  // (migration 018). Returns only rows in the caller's clinic.
+  const { data: emails, error } = await supabase
+    .rpc('get_user_emails', { p_user_ids: userIds })
+  if (error) {
+    console.warn('[notify] get_user_emails failed', error)
+    return
+  }
+  const list = (emails ?? []) as Array<{ id: string; email: string | null }>
+  const valid = list.filter(e => !!e.email)
+  if (valid.length === 0) return
+
+  const sender = getEmailSender()
+  await Promise.all(valid.map(e =>
+    sender.send({
+      to:       e.email!,
+      subject:  title,
+      bodyText: body || title,
+    }).catch(err => console.warn('[notify] email send failed', e.email, err)),
+  ))
 }
 
 // ── Convenience markers ──────────────────────────────────────

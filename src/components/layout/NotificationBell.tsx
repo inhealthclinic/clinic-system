@@ -20,7 +20,8 @@ import { useCurrentUser } from '@/lib/hooks/useCurrentUser'
 import { markRead, markAllRead } from '@/lib/notifications/create'
 import type { StaffNotificationRow } from '@/lib/notifications/types'
 
-const POLL_MS = 30_000
+// Fallback poll if realtime is unavailable (network / config issues).
+const POLL_MS = 60_000
 
 const EVENT_ICON: Record<string, string> = {
   whatsapp_new_lead:    '🆕',
@@ -77,9 +78,42 @@ export function NotificationBell() {
   useEffect(() => {
     load()
     if (timerRef.current) clearInterval(timerRef.current)
-    if (userId) timerRef.current = setInterval(load, POLL_MS)
-    return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [userId, load])
+    if (!userId) return
+
+    // Slow polling as a safety net.
+    timerRef.current = setInterval(load, POLL_MS)
+
+    // Realtime: any new staff_notifications row for THIS user → reload.
+    const channel = supabase
+      .channel(`staff_notifications:${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'staff_notifications',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => { load() },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'staff_notifications',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => { load() },
+      )
+      .subscribe()
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      supabase.removeChannel(channel)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId])
 
   const handleClick = async (n: StaffNotificationRow) => {
     if (n.status === 'unread') {

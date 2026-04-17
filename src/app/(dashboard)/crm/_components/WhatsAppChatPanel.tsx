@@ -105,6 +105,10 @@ export function WhatsAppChatPanel({
     if (result.status === 'sent') {
       setText('')
       load()
+    } else if (result.status === 'failed') {
+      setText('')
+      load()  // failed message is still in the thread, with the ✕ marker
+      setError(result.error ?? 'Провайдер вернул ошибку — сообщение помечено failed')
     } else {
       setError(result.error ?? 'Не удалось отправить')
     }

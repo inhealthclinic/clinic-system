@@ -33,6 +33,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { normalizePhoneKZ } from '@/lib/utils/phone'
 import { ensureMedicalDealForPatient } from '@/lib/crm/sync'
 import { notify } from '@/lib/notifications/create'
+import { getWhatsAppProvider } from './providers'
 
 export interface InboundArgs {
   clinicId:    string
@@ -240,10 +241,25 @@ export async function sendOutboundMessage(
     return { status: 'invalid_phone' as const, error: 'Bad phone' }
   }
 
-  // TODO: real provider integration. For now we mark as 'sent'
-  // immediately so the manager sees the bubble in the chat.
-  const status: 'sent' | 'failed' = args.skipProviderCall ? 'sent' : 'sent'
-  const errorText: string | null = null
+  // Provider call (configurable: noop / whapi / etc — see providers.ts).
+  let status: 'sent' | 'failed' = 'sent'
+  let errorText: string | null = null
+  let waMessageId: string | null = null
+
+  if (!args.skipProviderCall) {
+    const provider = getWhatsAppProvider()
+    const result = await provider.sendText({
+      fromPhone: args.fromPhone,
+      toPhone:   normalizedPhone,
+      text:      args.text,
+    })
+    if (result.ok) {
+      waMessageId = result.providerId ?? null
+    } else {
+      status    = 'failed'
+      errorText = result.errorText ?? 'provider error'
+    }
+  }
 
   const { data: msg, error } = await supabase
     .from('whatsapp_messages')
@@ -260,6 +276,7 @@ export async function sendOutboundMessage(
       sent_at:          new Date().toISOString(),
       sent_by:          args.sentBy ?? null,
       error_text:       errorText,
+      wa_message_id:    waMessageId,
     })
     .select('id')
     .single()
@@ -267,5 +284,7 @@ export async function sendOutboundMessage(
   if (error || !msg) {
     return { status: 'error' as const, error: error?.message ?? 'insert failed' }
   }
-  return { status: 'sent' as const, messageId: msg.id as string }
+  return status === 'sent'
+    ? { status: 'sent' as const, messageId: msg.id as string }
+    : { status: 'failed' as const, messageId: msg.id as string, error: errorText ?? 'send failed' }
 }

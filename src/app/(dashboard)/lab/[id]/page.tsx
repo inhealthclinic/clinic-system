@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { notify } from '@/lib/notifications/create'
 
 /* ─── Types ─────────────────────────────────────────────────── */
 interface Parameter {
@@ -298,6 +299,36 @@ function ResultsForm({
       .from('lab_order_items')
       .update({ status: 'completed' })
       .eq('id', item.id)
+
+    // Notify on critical result. Find responsible: open deal's
+    // assigned_to → first_owner_id → fallback handled by DB function.
+    if (hasCritical) {
+      const { data: deal } = await supabase
+        .from('deals')
+        .select('id, assigned_to, first_owner_id')
+        .eq('patient_id', patientId)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      const responsible = (deal?.assigned_to as string)
+                       ?? (deal?.first_owner_id as string)
+                       ?? null
+      const criticalNames = results
+        .filter(r => r.flag === 'critical')
+        .map(r => r.parameter)
+        .join(', ')
+      await notify(supabase, {
+        clinicId,
+        eventType:         'lab_critical',
+        entityType:        'lab_order',
+        entityId:          item.order_id,
+        responsibleUserId: responsible,
+        title:             '🚨 Критический результат анализа',
+        body:              criticalNames ? `Параметры: ${criticalNames}` : null,
+        link:              `/lab/${item.order_id}`,
+      })
+    }
 
     setSaving(false)
     onSaved()
