@@ -11,6 +11,7 @@ interface LabService {
   name: string
   category: string
   price: number
+  is_lab: boolean
 }
 
 interface Package {
@@ -84,9 +85,8 @@ export default function PackagesPage() {
     if (!clinicId) return
     const { data } = await supabase
       .from('services')
-      .select('id, name, category, price')
+      .select('id, name, category, price, is_lab')
       .eq('clinic_id', clinicId)
-      .eq('is_lab', true)
       .eq('is_active', true)
       .order('category')
       .order('name')
@@ -427,6 +427,7 @@ export default function PackagesPage() {
                                 className="accent-purple-600"
                               />
                               <span className="flex-1 truncate">{svc.name}</span>
+                              {svc.is_lab && <span className="text-xs flex-shrink-0">🧪</span>}
                               {svc.price > 0 && (
                                 <span className="text-xs text-gray-400 flex-shrink-0">
                                   {svc.price.toLocaleString('ru')}
