@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { SOURCE_OPTIONS } from '@/lib/crm/constants'
 
 // ─── defaults ─────────────────────────────────────────────────────────────────
 
@@ -92,61 +93,40 @@ function StageList({ stages, onChange }: {
   )
 }
 
-// ─── SourcesList ──────────────────────────────────────────────────────────────
+// ─── SourcesView (read-only) ─────────────────────────────────────────────────
+//
+// Источники теперь зафиксированы в коде (src/lib/crm/constants.ts) и должны
+// совпадать с DB CHECK-констрейнтом deals.source. Раньше клиника могла
+// добавить произвольную строку («2GIS», «Таргет ВК»), и это ломало вставку
+// в БД. Поэтому редактирование убрано; список — только для просмотра.
+//
+// Если клинике нужен новый канонический источник — это PR в constants.ts +
+// миграция, чтобы CHECK его принимал.
 
-function SourcesList({ sources, onChange }: {
-  sources: string[]
-  onChange: (sources: string[]) => void
-}) {
-  const [newSource, setNewSource] = useState('')
-
-  const add = () => {
-    const trimmed = newSource.trim()
-    if (!trimmed || sources.includes(trimmed)) return
-    onChange([...sources, trimmed])
-    setNewSource('')
-  }
-
-  const remove = (idx: number) => {
-    onChange(sources.filter((_, i) => i !== idx))
-  }
-
+function SourcesView() {
   return (
     <div>
-      <div className="flex flex-wrap gap-2 mb-3">
-        {sources.map((s, idx) => (
-          <span
-            key={idx}
-            className="inline-flex items-center gap-1.5 bg-gray-100 text-gray-700 text-sm rounded-full px-3 py-1"
-          >
-            {s}
-            <button
-              onClick={() => remove(idx)}
-              className="text-gray-400 hover:text-red-500 transition-colors"
-            >
-              <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
-                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
-            </button>
-          </span>
-        ))}
+      <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 mb-4 text-xs text-amber-800">
+        Список источников зафиксирован в БД (CHECK-констрейнт <code className="font-mono bg-white px-1 rounded">deals.source</code>).
+        Чтобы добавить новый — обратитесь к разработчику.
       </div>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={newSource}
-          onChange={e => setNewSource(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && add()}
-          placeholder="Новый источник..."
-          className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-        />
-        <button
-          onClick={add}
-          disabled={!newSource.trim()}
-          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-medium"
-        >
-          + Добавить
-        </button>
+      <div className="overflow-hidden border border-gray-100 rounded-xl">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr className="text-left text-xs text-gray-500 uppercase tracking-wider">
+              <th className="px-3 py-2 font-semibold">Значение в БД</th>
+              <th className="px-3 py-2 font-semibold">Отображается как</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {SOURCE_OPTIONS.map(s => (
+              <tr key={s.value}>
+                <td className="px-3 py-2 font-mono text-xs text-gray-500">{s.value}</td>
+                <td className="px-3 py-2 text-gray-800">{s.label}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )
@@ -279,11 +259,8 @@ export default function CrmSettingsPage() {
         {activeTab === 'sources' && (
           <div>
             <h2 className="text-sm font-semibold text-gray-800 mb-1">Источники лидов</h2>
-            <p className="text-xs text-gray-400 mb-4">Управляйте списком источников, которые отображаются при создании лида.</p>
-            <SourcesList
-              sources={settings.sources}
-              onChange={sources => setSettings(s => ({ ...s, sources }))}
-            />
+            <p className="text-xs text-gray-400 mb-4">Канонический список — общий для всех клиник в системе.</p>
+            <SourcesView />
           </div>
         )}
       </div>

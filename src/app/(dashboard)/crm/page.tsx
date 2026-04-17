@@ -97,6 +97,14 @@ const INT_ICON: Record<string, string> = Object.fromEntries(
   INTERACTION_TYPE_OPTIONS.map(o => [o.value, o.icon]),
 )
 
+// Payment dictionaries — mirror migration 009_finance.sql.
+const PAY_METHOD_LBL: Record<string, string> = {
+  cash: 'Нал', kaspi: 'Kaspi', halyk: 'Halyk', credit: 'Кредит', balance: 'Баланс',
+}
+const PAY_TYPE_LBL: Record<string, string> = {
+  payment: 'Оплата', prepayment: 'Предоплата', refund: 'Возврат', writeoff: 'Списание',
+}
+
 // Appointment status — kept in sync with /schedule's STATUS_STYLE.
 const STATUS_BADGE: Record<string, string> = {
   pending:    'bg-gray-100 text-gray-600',
@@ -175,6 +183,14 @@ interface DealAppointment {
   status: string
   doctor_id: string | null
   doctor: { first_name: string; last_name: string } | null
+}
+
+interface DealPayment {
+  id: string
+  amount: number | string
+  method: string
+  type: string
+  paid_at: string
 }
 
 interface Stage { key: string; label: string; color: string }
@@ -609,13 +625,34 @@ function KanbanColumn({
 }
 
 // ─── Stage auto-tasks ────────────────────────────────────────────────────────
+// Triggered on stage transition (drag-drop OR moveStage()). Each entry
+// describes the follow-up that should be auto-created for the new stage.
+// type / priority values match tasks CHECK constraints (see migration 004).
 
-const STAGE_TASKS: Record<string, string> = {
-  'contact':            'Написать в WhatsApp: {name}',
-  'in_progress':        'Позвонить: {name}',
-  'primary_scheduled':  'Напомнить о консультации: {name}',
-  'no_show':            'Выяснить причину неявки: {name}',
-  'deciding':           'Позвонить, уточнить решение: {name}',
+interface StageTaskTpl {
+  title:    string                    // {name} placeholder is substituted
+  type:     'call' | 'follow_up' | 'confirm' | 'reminder' | 'lab_ready' | 'control' | 'other'
+  priority: 'low' | 'normal' | 'high' | 'urgent'
+  hours:    number                    // due_at offset from now
+}
+
+const STAGE_TASKS: Record<string, StageTaskTpl> = {
+  // ── Leads funnel ──
+  contact:              { title: 'Написать в WhatsApp: {name}',                         type: 'follow_up', priority: 'normal', hours: 2  },
+  in_progress:          { title: 'Позвонить: {name}',                                   type: 'call',      priority: 'high',   hours: 1  },
+  // ── Medical funnel ──
+  tirzepatide_service:  { title: 'Записать на услугу тирзепатид: {name}',               type: 'call',      priority: 'high',   hours: 4  },
+  primary_scheduled:    { title: 'Напомнить о первичной консультации: {name}',           type: 'reminder',  priority: 'normal', hours: 24 },
+  no_show:              { title: 'Выяснить причину неявки: {name}',                     type: 'call',      priority: 'high',   hours: 2  },
+  primary_done:         { title: 'Связаться после первичной, собрать обратную связь: {name}', type: 'call', priority: 'normal', hours: 24 },
+  secondary_scheduled:  { title: 'Напомнить о вторичной консультации: {name}',           type: 'reminder',  priority: 'normal', hours: 24 },
+  secondary_done:       { title: 'Уточнить впечатления после вторичной: {name}',         type: 'call',      priority: 'normal', hours: 48 },
+  deciding:             { title: 'Позвонить, уточнить решение: {name}',                  type: 'call',      priority: 'high',   hours: 24 },
+  treatment:            { title: 'Проконтролировать старт лечения: {name}',              type: 'control',   priority: 'normal', hours: 72 },
+  tirzepatide_tx:       { title: 'Контроль курса тирзепатид: {name}',                    type: 'control',   priority: 'normal', hours: 168 /* 1 week */ },
+  control_tests:        { title: 'Напомнить о контрольных анализах: {name}',             type: 'reminder',  priority: 'normal', hours: 48 },
+  success:              { title: 'Финальный звонок: благодарность и отзыв: {name}',      type: 'call',      priority: 'low',    hours: 48 },
+  failed:               { title: 'Разобрать причину отказа: {name}',                     type: 'call',      priority: 'normal', hours: 4  },
 }
 
 // ─── DealDrawer ───────────────────────────────────────────────────────────────
@@ -633,6 +670,7 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
   const [interactions, setInteractions] = useState<Interaction[]>([])
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [appointments, setAppointments] = useState<DealAppointment[]>([])
+  const [payments, setPayments] = useState<DealPayment[]>([])
   const [patientFin, setPatientFin] = useState<{ balance: number; debt: number } | null>(null)
   const [loadingInt, setLoadingInt] = useState(true)
   const [showLost, setShowLost] = useState(false)
@@ -661,7 +699,7 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
 
   const loadInteractions = useCallback(async () => {
     setLoadingInt(true)
-    const [intRes, taskRes, apptRes, finRes] = await Promise.all([
+    const [intRes, taskRes, apptRes, finRes, payRes] = await Promise.all([
       supabase.from('crm_interactions')
         .select('id, type, direction, summary, outcome, created_at')
         .eq('deal_id', deal.id)
@@ -682,10 +720,18 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
         .select('balance_amount, debt_amount')
         .eq('id', deal.patient_id)
         .maybeSingle(),
+      // Last 5 completed payments — financial activity context.
+      supabase.from('payments')
+        .select('id, amount, method, type, paid_at')
+        .eq('patient_id', deal.patient_id)
+        .eq('status', 'completed')
+        .order('paid_at', { ascending: false })
+        .limit(5),
     ])
     setInteractions((intRes.data ?? []) as Interaction[])
     setTasks((taskRes.data ?? []) as TaskRow[])
     setAppointments(((apptRes.data ?? []) as unknown as DealAppointment[]))
+    setPayments((payRes.data ?? []) as DealPayment[])
     if (finRes.data) {
       setPatientFin({
         balance: Number(finRes.data.balance_amount ?? 0),
@@ -734,18 +780,19 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
 
   const moveStage = async (stage: string) => {
     await supabase.from('deals').update({ stage }).eq('id', deal.id)
-    const taskTitle = STAGE_TASKS[stage]
-    if (taskTitle) {
+    const tpl = STAGE_TASKS[stage]
+    if (tpl) {
       const due = new Date()
-      due.setHours(due.getHours() + 2)
+      due.setHours(due.getHours() + tpl.hours)
       await supabase.from('tasks').insert({
         clinic_id: clinicId,
-        title: taskTitle.replace('{name}', deal.patient?.full_name ?? ''),
-        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'follow_up' : 'call',
-        priority: stage === 'no_show' ? 'high' : 'normal',
+        title: tpl.title.replace('{name}', deal.patient?.full_name ?? ''),
+        type: tpl.type,
+        priority: tpl.priority,
         status: 'new',
         patient_id: deal.patient_id,
         deal_id: deal.id,
+        assigned_to: deal.assigned_to ?? null,   // наследуем ответственного
         due_at: due.toISOString(),
       })
     }
@@ -1040,6 +1087,41 @@ function DealDrawer({ deal, stages, owners, clinicId, onClose, onUpdate, onTrans
               </div>
             )}
           </div>
+
+          {/* Payments — last 5 completed */}
+          {payments.length > 0 && (
+            <div className="px-5 py-4 border-b border-gray-50">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  Платежи <span className="text-gray-300 ml-1">{payments.length}</span>
+                </p>
+                <Link
+                  href={`/patients/${deal.patient_id}/finance`}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  Все →
+                </Link>
+              </div>
+              <div className="space-y-1.5">
+                {payments.map(p => {
+                  const isRefund = p.type === 'refund'
+                  const amt = Number(p.amount)
+                  const dt = new Date(p.paid_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+                  return (
+                    <div key={p.id} className="flex items-center justify-between gap-2 text-sm bg-gray-50 rounded-lg px-3 py-1.5">
+                      <span className="text-gray-700 flex-shrink-0 w-16">{dt}</span>
+                      <span className="text-gray-500 flex-1 truncate">
+                        {PAY_TYPE_LBL[p.type] ?? p.type} · {PAY_METHOD_LBL[p.method] ?? p.method}
+                      </span>
+                      <span className={`text-sm font-semibold flex-shrink-0 ${isRefund ? 'text-red-600' : 'text-emerald-700'}`}>
+                        {isRefund ? '−' : ''}{fmtTenge(amt)}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Quick links to other patient modules */}
           <div className="px-5 py-3 border-b border-gray-50 flex gap-2 flex-wrap">
@@ -1751,18 +1833,19 @@ export default function CrmPage() {
     const id = dragId
     setDragId(null)
     await supabase.from('deals').update({ stage }).eq('id', id)
-    const taskTitle = STAGE_TASKS[stage]
-    if (taskTitle) {
+    const tpl = STAGE_TASKS[stage]
+    if (tpl) {
       const due = new Date()
-      due.setHours(due.getHours() + 2)
+      due.setHours(due.getHours() + tpl.hours)
       await supabase.from('tasks').insert({
         clinic_id: clinicId,
-        title: taskTitle.replace('{name}', deal.patient?.full_name ?? ''),
-        type: stage === 'no_show' ? 'call' : stage === 'contact' ? 'follow_up' : 'call',
-        priority: stage === 'no_show' ? 'high' : 'normal',
+        title: tpl.title.replace('{name}', deal.patient?.full_name ?? ''),
+        type: tpl.type,
+        priority: tpl.priority,
         status: 'new',
         patient_id: deal.patient_id,
         deal_id: deal.id,
+        assigned_to: deal.assigned_to ?? null,
         due_at: due.toISOString(),
       })
     }
