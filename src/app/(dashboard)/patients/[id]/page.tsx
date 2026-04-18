@@ -397,6 +397,11 @@ export default function PatientCardPage() {
         email: editForm.email || null,
         iin: editForm.iin?.trim() || null,
         notes: editForm.notes || null,
+        pregnancy_status: editForm.gender === 'female' ? (editForm.pregnancy_status ?? 'unknown') : 'unknown',
+        pregnancy_weeks:  editForm.gender === 'female' && editForm.pregnancy_status === 'yes'
+                            ? (editForm.pregnancy_weeks ?? null) : null,
+        menopause_status: editForm.gender === 'female' ? (editForm.menopause_status ?? null) : null,
+        lab_notes:        editForm.lab_notes?.trim() || null,
       })
       .eq('id', patient.id)
       .select()
@@ -593,6 +598,74 @@ export default function PatientCardPage() {
                   onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
                 />
               </div>
+
+              {/* ── Лабораторно-релевантные поля ── */}
+              {editForm.gender === 'female' && (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Беременность</label>
+                    <select
+                      className={inputCls}
+                      value={editForm.pregnancy_status ?? 'unknown'}
+                      onChange={e => setEditForm(f => ({
+                        ...f,
+                        pregnancy_status: e.target.value as 'yes' | 'no' | 'unknown',
+                        pregnancy_weeks: e.target.value === 'yes' ? (f.pregnancy_weeks ?? null) : null,
+                      }))}
+                    >
+                      <option value="unknown">Неизвестно</option>
+                      <option value="no">Нет</option>
+                      <option value="yes">🤰 Да</option>
+                    </select>
+                  </div>
+                  {editForm.pregnancy_status === 'yes' && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Срок (недель)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={42}
+                        className={inputCls}
+                        value={editForm.pregnancy_weeks ?? ''}
+                        onChange={e => setEditForm(f => ({
+                          ...f,
+                          pregnancy_weeks: e.target.value === '' ? null : Number(e.target.value),
+                        }))}
+                        placeholder="22"
+                      />
+                    </div>
+                  )}
+                  <div className={editForm.pregnancy_status === 'yes' ? '' : 'col-span-1'}>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Менопауза</label>
+                    <select
+                      className={inputCls}
+                      value={editForm.menopause_status ?? ''}
+                      onChange={e => setEditForm(f => ({
+                        ...f,
+                        menopause_status: (e.target.value || null) as 'no' | 'peri' | 'post' | null,
+                      }))}
+                    >
+                      <option value="">—</option>
+                      <option value="no">Нет</option>
+                      <option value="peri">Пременопауза</option>
+                      <option value="post">Постменопауза</option>
+                    </select>
+                  </div>
+                </>
+              )}
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  Примечание для лаборатории
+                  <span className="text-gray-400 font-normal ml-1">(будет видно лаборанту)</span>
+                </label>
+                <textarea
+                  className={inputCls + ' resize-none'}
+                  rows={2}
+                  value={editForm.lab_notes ?? ''}
+                  onChange={e => setEditForm(f => ({ ...f, lab_notes: e.target.value }))}
+                  placeholder="Взять строго натощак; склонность к обмороку…"
+                />
+              </div>
             </div>
             <div className="flex gap-3">
               <button
@@ -635,6 +708,11 @@ export default function PatientCardPage() {
                 )}
                 {patient.gender && patient.gender !== 'other' && (
                   <span>{patient.gender === 'male' ? '♂ Мужской' : '♀ Женский'}</span>
+                )}
+                {patient.pregnancy_status === 'yes' && (
+                  <span className="text-pink-600 font-medium">
+                    🤰 Беременна{patient.pregnancy_weeks ? ` (${patient.pregnancy_weeks} нед.)` : ''}
+                  </span>
                 )}
                 {patient.city && <span>📍 {patient.city}</span>}
                 {patient.email && <span>✉️ {patient.email}</span>}
