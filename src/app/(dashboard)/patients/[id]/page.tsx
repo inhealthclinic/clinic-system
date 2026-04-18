@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Patient, Appointment } from '@/types'
+import PatientHistory from '@/components/PatientHistory'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -1535,6 +1536,11 @@ export default function PatientCardPage() {
               })}
             </div>
           )}
+
+          {/* ── Audit history ── */}
+          <div className="mt-4">
+            <PatientHistory patientId={patient.id} />
+          </div>
         </div>
       )}
     </div>
