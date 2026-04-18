@@ -79,7 +79,30 @@ interface ServiceLite {
   is_lab?: boolean | null
 }
 
-type Tab = 'reagents' | 'consumables' | 'movements' | 'templates'
+interface LabOrderCostRow {
+  lab_order_id: string
+  clinic_id: string
+  patient_id: string | null
+  status: string
+  ordered_at: string | null
+  auto_writeoff_at: string | null
+  cost_total: number
+  movements_count: number
+  items_used: number
+  patient_name?: string
+}
+
+interface ServiceMarginRow {
+  service_id: string
+  service_name: string
+  price: number | null
+  orders_count: number
+  cost_total: number
+  cost_per_order: number | null
+  margin_pct: number | null
+}
+
+type Tab = 'reagents' | 'consumables' | 'movements' | 'templates' | 'cost'
 type ItemType = Reagent | Consumable
 
 /* ─── Constants ──────────────────────────────────────────── */
@@ -282,6 +305,7 @@ function WriteoffModal({ clinicId, item, itemType, batch, userId, onClose, onSav
 
     // 2) Запись движения (тип = reason, чтобы в логе видеть почему)
     const movType = reason === 'correction' ? 'correction' : reason
+    const costSnapshot = batch.price_per_unit != null ? q * batch.price_per_unit : null
     const { error: mErr } = await supabase.from('inventory_movements').insert({
       clinic_id:   clinicId,
       batch_id:    batch.id,
@@ -291,6 +315,7 @@ function WriteoffModal({ clinicId, item, itemType, batch, userId, onClose, onSav
       quantity:    q,
       notes:       notes.trim() || WRITEOFF_REASONS.find(r => r.value === reason)?.label || null,
       performed_by: userId,
+      cost_snapshot: costSnapshot,
     })
     if (mErr) {
       // Откатываем остаток
@@ -1158,6 +1183,203 @@ function TemplatesTab({ clinicId }: { clinicId: string }) {
   )
 }
 
+/* ─── Cost tab ───────────────────────────────────────────── */
+function CostTab({ clinicId }: { clinicId: string }) {
+  const supabase = createClient()
+  const [orders, setOrders]     = useState<LabOrderCostRow[]>([])
+  const [margins, setMargins]   = useState<ServiceMarginRow[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo]     = useState('')
+  const [view, setView]         = useState<'orders' | 'services'>('orders')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+
+    // 1) Заказы с себестоимостью
+    let oq = supabase.from('v_lab_order_costs')
+      .select('*')
+      .eq('clinic_id', clinicId)
+      .gt('cost_total', 0)
+      .order('ordered_at', { ascending: false })
+      .limit(200)
+    if (dateFrom) oq = oq.gte('ordered_at', dateFrom)
+    if (dateTo)   oq = oq.lte('ordered_at', dateTo + 'T23:59:59')
+    const { data: ordData } = await oq
+
+    // Enrich with patient names
+    const patientIds = [...new Set((ordData ?? []).map(o => o.patient_id).filter(Boolean))] as string[]
+    let nameMap: Record<string, string> = {}
+    if (patientIds.length > 0) {
+      const { data: pts } = await supabase.from('patients')
+        .select('id,last_name,first_name').in('id', patientIds)
+      for (const p of (pts ?? [])) nameMap[p.id] = `${p.last_name ?? ''} ${p.first_name ?? ''}`.trim()
+    }
+    const enriched: LabOrderCostRow[] = (ordData ?? []).map(o => ({
+      ...(o as LabOrderCostRow),
+      patient_name: o.patient_id ? nameMap[o.patient_id] : undefined,
+    }))
+    setOrders(enriched)
+
+    // 2) Маржа по услугам
+    const { data: mData } = await supabase.from('v_service_margin')
+      .select('*')
+      .eq('clinic_id', clinicId)
+      .gt('orders_count', 0)
+      .order('cost_total', { ascending: false })
+      .limit(100)
+    setMargins((mData ?? []) as ServiceMarginRow[])
+
+    setLoading(false)
+  }, [clinicId, dateFrom, dateTo, supabase])
+
+  useEffect(() => { if (clinicId) load() }, [clinicId, load])
+
+  const totalCost = orders.reduce((s, o) => s + (o.cost_total || 0), 0)
+
+  const fmt = (v: number | null | undefined) =>
+    v == null ? '—' : v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  return (
+    <>
+      {/* Sub-tabs */}
+      <div className="flex gap-1 mb-4">
+        {[
+          { k: 'orders',   label: 'По заказам' },
+          { k: 'services', label: 'По услугам' },
+        ].map(v => (
+          <button
+            key={v.k}
+            onClick={() => setView(v.k as typeof view)}
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+              view === v.k
+                ? 'bg-gray-900 text-white border-gray-900'
+                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+            }`}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'orders' ? (
+        <>
+          {/* Filters + total */}
+          <div className="bg-white border border-gray-100 rounded-xl px-4 py-3 mb-4 flex items-center gap-3 flex-wrap">
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              className="border border-gray-200 rounded-md px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+            <span className="text-xs text-gray-400">—</span>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              className="border border-gray-200 rounded-md px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+            <div className="ml-auto text-sm">
+              <span className="text-gray-400">Себестоимость всего: </span>
+              <span className="font-semibold text-gray-900">{fmt(totalCost)} сом</span>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+            {loading ? (
+              <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
+            ) : orders.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-400">
+                Нет заказов с себестоимостью. Настрой шаблоны списания и оприходуй партии с указанной ценой за единицу.
+              </div>
+            ) : (
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-100 bg-gray-50">
+                    <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Заказ</th>
+                    <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Пациент</th>
+                    <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Статус</th>
+                    <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Позиций</th>
+                    <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Себест-ть</th>
+                    <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Дата</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.map(o => (
+                    <tr key={o.lab_order_id} className="border-b border-gray-50 hover:bg-gray-50/50">
+                      <td className="px-5 py-3 text-xs font-mono text-gray-500">
+                        {o.lab_order_id.slice(0, 8)}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-800">
+                        {o.patient_name ?? '—'}
+                      </td>
+                      <td className="px-5 py-3">
+                        <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                          {o.status}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-600 text-right">{o.items_used}</td>
+                      <td className="px-5 py-3 text-sm font-semibold text-gray-900 text-right">
+                        {fmt(o.cost_total)}
+                      </td>
+                      <td className="px-5 py-3 text-xs text-gray-400 whitespace-nowrap">
+                        {o.ordered_at
+                          ? new Date(o.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
+                          : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          {loading ? (
+            <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
+          ) : margins.length === 0 ? (
+            <div className="p-8 text-center text-sm text-gray-400">
+              Данных по услугам пока нет.
+            </div>
+          ) : (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Услуга</th>
+                  <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Цена</th>
+                  <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Себест-ть / заказ</th>
+                  <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Маржа %</th>
+                  <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Заказов</th>
+                  <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Себест-ть всего</th>
+                </tr>
+              </thead>
+              <tbody>
+                {margins.map(m => {
+                  const mPct = m.margin_pct
+                  const mColor = mPct == null
+                    ? 'text-gray-400'
+                    : mPct >= 50 ? 'text-green-600'
+                    : mPct >= 20 ? 'text-yellow-600'
+                    : mPct >= 0  ? 'text-orange-600'
+                                 : 'text-red-600'
+                  return (
+                    <tr key={m.service_id} className="border-b border-gray-50 hover:bg-gray-50/50">
+                      <td className="px-5 py-3 text-sm text-gray-800">{m.service_name}</td>
+                      <td className="px-5 py-3 text-sm text-gray-600 text-right">{fmt(m.price)}</td>
+                      <td className="px-5 py-3 text-sm text-gray-600 text-right">{fmt(m.cost_per_order)}</td>
+                      <td className={`px-5 py-3 text-sm font-semibold text-right ${mColor}`}>
+                        {mPct == null ? '—' : `${mPct.toFixed(1)}%`}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-600 text-right">{m.orders_count}</td>
+                      <td className="px-5 py-3 text-sm font-semibold text-gray-900 text-right">{fmt(m.cost_total)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-gray-400">
+        💡 Себестоимость снимается в момент списания (qty × цена партии). Исторические списания пересчитаны по текущей цене партии миграцией 031.
+      </p>
+    </>
+  )
+}
+
 /* ─── Page ───────────────────────────────────────────────── */
 export default function InventoryPage() {
   const { profile }   = useAuthStore()
@@ -1170,6 +1392,7 @@ export default function InventoryPage() {
     { key: 'consumables', label: 'Расходники' },
     { key: 'movements',   label: 'Движения'   },
     { key: 'templates',   label: 'Шаблоны'    },
+    { key: 'cost',        label: 'Себестоимость' },
   ]
 
   return (
@@ -1203,6 +1426,9 @@ export default function InventoryPage() {
       )}
       {tab === 'templates' && (
         <TemplatesTab clinicId={clinicId} />
+      )}
+      {tab === 'cost' && (
+        <CostTab clinicId={clinicId} />
       )}
     </div>
   )
