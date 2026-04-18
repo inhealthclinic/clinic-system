@@ -1474,6 +1474,10 @@ export default function LabPage() {
           {visibleOrders.length}{visibleOrders.length !== orders.length ? ` / ${orders.length}` : ''} направлений
         </span>
         <div className="flex-1" />
+        <Link href="/lab/qc"
+          className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
+          QC / Levey-Jennings
+        </Link>
         <button onClick={() => setCreate(true)} disabled={!clinicId}
           className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors">
           + Направление
