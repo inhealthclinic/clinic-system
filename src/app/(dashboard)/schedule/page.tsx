@@ -3272,6 +3272,24 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
   const [loading, setLoading] = useState(true)
   const [p, setP] = useState<PatientCardData | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  // Editable form state (initialised from p after fetch)
+  const [fullName, setFullName] = useState('')
+  const [phonesStr, setPhonesStr] = useState('')
+  const [iin, setIin] = useState('')
+  const [gender, setGender] = useState<'male' | 'female' | 'other' | ''>('')
+  const [birthDate, setBirthDate] = useState('')
+  const [city, setCity] = useState('')
+  const [email, setEmail] = useState('')
+  const [status, setStatus] = useState('')
+  const [isVip, setIsVip] = useState(false)
+  const [tagsStr, setTagsStr] = useState('')
+  const [notes, setNotes] = useState('')
+  const [preg, setPreg] = useState<'yes' | 'no' | 'unknown' | ''>('')
+  const [pregWeeks, setPregWeeks] = useState('')
+  const [meno, setMeno] = useState<'no' | 'peri' | 'post' | ''>('')
+  const [labNotes, setLabNotes] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -3283,28 +3301,77 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
       .maybeSingle()
       .then(({ data, error }) => {
         if (cancelled) return
-        if (error) setErr(error.message)
-        else setP(data as PatientCardData)
+        if (error) { setErr(error.message); setLoading(false); return }
+        const d = data as PatientCardData | null
+        setP(d)
+        if (d) {
+          setFullName(d.full_name ?? '')
+          setPhonesStr((d.phones ?? []).join(', '))
+          setIin(d.iin ?? '')
+          setGender((d.gender as 'male' | 'female' | 'other' | null) ?? '')
+          setBirthDate(d.birth_date ?? '')
+          setCity(d.city ?? '')
+          setEmail(d.email ?? '')
+          setStatus(d.status ?? '')
+          setIsVip(!!d.is_vip)
+          setTagsStr((d.tags ?? []).join(', '))
+          setNotes(d.notes ?? '')
+          setPreg((d.pregnancy_status as 'yes' | 'no' | 'unknown' | null) ?? '')
+          setPregWeeks(d.pregnancy_weeks != null ? String(d.pregnancy_weeks) : '')
+          setMeno((d.menopause_status as 'no' | 'peri' | 'post' | null) ?? '')
+          setLabNotes(d.lab_notes ?? '')
+        }
         setLoading(false)
       })
     return () => { cancelled = true }
   }, [patientId, supabase])
 
-  const age = p?.birth_date
-    ? Math.floor((Date.now() - new Date(p.birth_date).getTime()) / (365.25 * 24 * 3600 * 1000))
+  const age = birthDate
+    ? Math.floor((Date.now() - new Date(birthDate).getTime()) / (365.25 * 24 * 3600 * 1000))
     : null
+
+  async function save() {
+    if (!fullName.trim()) { alert('ФИО обязательно'); return }
+    setSaving(true)
+    const phones = phonesStr.split(',').map(s => s.trim()).filter(Boolean)
+    const tags = tagsStr.split(',').map(s => s.trim()).filter(Boolean)
+    const pregWeeksNum = preg === 'yes' && pregWeeks.trim()
+      ? Math.max(1, Math.min(42, parseInt(pregWeeks, 10) || 0)) || null
+      : null
+    const patch: Record<string, unknown> = {
+      full_name:        fullName.trim(),
+      phones,
+      iin:              iin.trim() || null,
+      gender:           gender || null,
+      birth_date:       birthDate || null,
+      city:             city.trim() || null,
+      email:            email.trim() || null,
+      status:           status || 'new',
+      is_vip:           isVip,
+      tags,
+      notes:            notes.trim() || null,
+      pregnancy_status: preg || 'unknown',
+      pregnancy_weeks:  pregWeeksNum,
+      menopause_status: gender === 'female' ? (meno || null) : null,
+      lab_notes:        labNotes.trim() || null,
+    }
+    const { error } = await supabase.from('patients').update(patch).eq('id', patientId)
+    setSaving(false)
+    if (error) { alert('Ошибка сохранения: ' + error.message); return }
+    onClose()
+  }
 
   return (
     <>
       <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(640px,calc(100vw-24px))] max-h-[calc(100vh-40px)] bg-white rounded-2xl shadow-2xl z-[61] flex flex-col overflow-hidden">
+      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(720px,calc(100vw-24px))] max-h-[calc(100vh-40px)] bg-white rounded-2xl shadow-2xl z-[61] flex flex-col overflow-hidden">
 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
           <div>
             <p className="text-base font-semibold text-gray-900">
-              {p?.full_name ?? 'Пациент'}
-              {p?.is_vip && <span className="ml-2 text-xs font-bold text-yellow-600">VIP</span>}
+              Карта пациента
+              {isVip && <span className="ml-2 text-xs font-bold text-yellow-600">VIP</span>}
             </p>
             {p?.patient_number && <p className="text-xs text-gray-400 mt-0.5">№ {p.patient_number}</p>}
           </div>
@@ -3317,96 +3384,192 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
         <div className="flex-1 overflow-y-auto px-5 py-4 text-sm space-y-4">
           {loading && <p className="text-gray-400">Загрузка…</p>}
           {err && <p className="text-red-600">Ошибка: {err}</p>}
-          {p && !loading && (
+          {!loading && p && (
             <>
-              {/* Status chips */}
-              <div className="flex flex-wrap gap-1.5">
-                {p.status && (
-                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-blue-50 text-blue-700">
-                    {PATIENT_STATUS_LABEL[p.status] ?? p.status}
-                  </span>
-                )}
-                {p.pregnancy_status === 'yes' && (
-                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-pink-50 text-pink-700">
-                    🤰 Беременность{p.pregnancy_weeks ? ` · ${p.pregnancy_weeks} нед` : ''}
-                  </span>
-                )}
-                {p.menopause_status && p.menopause_status !== 'no' && (
-                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-purple-50 text-purple-700">
-                    Менопауза: {p.menopause_status === 'peri' ? 'пери' : 'пост'}
-                  </span>
-                )}
-                {(p.tags ?? []).map(t => (
-                  <span key={t} className="text-xs font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600">{t}</span>
-                ))}
+              {/* ФИО + VIP */}
+              <Field label="ФИО">
+                <input value={fullName} onChange={e => setFullName(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+              </Field>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Статус">
+                  <select value={status} onChange={e => setStatus(e.target.value)}
+                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+                    {Object.entries(PATIENT_STATUS_LABEL).map(([k, v]) => (
+                      <option key={k} value={k}>{v}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="VIP">
+                  <label className="flex items-center gap-2 py-2">
+                    <input type="checkbox" checked={isVip} onChange={e => setIsVip(e.target.checked)}
+                      className="w-4 h-4 accent-yellow-500" />
+                    <span className="text-sm text-gray-700">Отметить как VIP</span>
+                  </label>
+                </Field>
               </div>
 
-              {/* Demographics grid */}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <InfoRow label="Пол" value={p.gender === 'male' ? 'Мужской' : p.gender === 'female' ? 'Женский' : p.gender === 'other' ? 'Другой' : '—'} />
-                <InfoRow label="Возраст" value={age != null ? `${age} лет` : '—'} />
-                <InfoRow label="Дата рождения" value={p.birth_date ? new Date(p.birth_date).toLocaleDateString('ru-RU') : '—'} />
-                <InfoRow label="ИИН" value={p.iin ?? '—'} />
-                <InfoRow label="Телефон" value={(p.phones ?? []).join(', ') || '—'} />
-                <InfoRow label="Email" value={p.email ?? '—'} />
-                <InfoRow label="Город" value={p.city ?? '—'} />
-                <InfoRow label="Создан" value={p.created_at ? new Date(p.created_at).toLocaleDateString('ru-RU') : '—'} />
-              </div>
-
-              {/* Finance */}
+              {/* Demographics */}
               <div className="border-t border-gray-100 pt-3">
-                <p className="text-xs font-semibold text-gray-500 mb-2">ФИНАНСЫ</p>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                  <InfoRow label="Баланс" value={`${(p.balance_amount ?? 0).toLocaleString('ru-RU')} ₸`} valueClass={(p.balance_amount ?? 0) > 0 ? 'text-green-700' : ''} />
-                  <InfoRow label="Долг" value={`${(p.debt_amount ?? 0).toLocaleString('ru-RU')} ₸`} valueClass={(p.debt_amount ?? 0) > 0 ? 'text-red-700' : ''} />
+                <p className="text-xs font-semibold text-gray-500 mb-2">ДЕМОГРАФИЯ</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Пол">
+                    <select value={gender} onChange={e => setGender(e.target.value as typeof gender)}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+                      <option value="">—</option>
+                      <option value="male">Мужской</option>
+                      <option value="female">Женский</option>
+                      <option value="other">Другой</option>
+                    </select>
+                  </Field>
+                  <Field label={`Дата рождения${age != null ? ` · ${age} лет` : ''}`}>
+                    <input type="date" value={birthDate} onChange={e => setBirthDate(e.target.value)}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                  </Field>
+                  <Field label="ИИН">
+                    <input value={iin} onChange={e => setIin(e.target.value)} maxLength={12}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                  </Field>
+                  <Field label="Город">
+                    <input value={city} onChange={e => setCity(e.target.value)}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                  </Field>
+                  <Field label="Телефоны (через запятую)">
+                    <input value={phonesStr} onChange={e => setPhonesStr(e.target.value)}
+                      placeholder="+7701…, +7702…"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                  </Field>
+                  <Field label="Email">
+                    <input value={email} onChange={e => setEmail(e.target.value)} type="email"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                  </Field>
                 </div>
               </div>
 
-              {/* Lab notes */}
-              {p.lab_notes && (
-                <div className="border-t border-gray-100 pt-3">
-                  <p className="text-xs font-semibold text-gray-500 mb-1">ЛАБ. ЗАМЕТКИ</p>
-                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{p.lab_notes}</p>
+              {/* Lab nuances */}
+              <div className="border-t border-gray-100 pt-3">
+                <p className="text-xs font-semibold text-gray-500 mb-2">ЛАБОРАТОРНЫЕ НЮАНСЫ</p>
+                {gender === 'female' ? (
+                  <div className="space-y-3">
+                    <Field label="Беременность">
+                      <div className="flex gap-2">
+                        {([['yes', 'Да'], ['no', 'Нет'], ['unknown', 'Неизвестно']] as const).map(([k, l]) => (
+                          <button key={k} type="button" onClick={() => setPreg(k)}
+                            className={`flex-1 py-2 rounded-lg border text-sm ${preg === k ? 'border-pink-500 bg-pink-50 text-pink-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                            {l}
+                          </button>
+                        ))}
+                      </div>
+                    </Field>
+                    {preg === 'yes' && (
+                      <Field label="Срок (недели, 1–42)">
+                        <input value={pregWeeks} onChange={e => setPregWeeks(e.target.value)}
+                          type="number" min={1} max={42}
+                          className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                      </Field>
+                    )}
+                    {preg !== 'yes' && (
+                      <Field label="Менопауза">
+                        <div className="flex gap-2">
+                          {([['', '—'], ['no', 'Нет'], ['peri', 'Пери'], ['post', 'Пост']] as const).map(([k, l]) => (
+                            <button key={k || 'none'} type="button" onClick={() => setMeno(k)}
+                              className={`flex-1 py-2 rounded-lg border text-sm ${meno === k ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                              {l}
+                            </button>
+                          ))}
+                        </div>
+                      </Field>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400 italic">Беременность и менопауза — только для женского пола.</p>
+                )}
+                <div className="mt-3">
+                  <Field label="Лаб. заметки (аллергии, приём лекарств и т.п.)">
+                    <textarea value={labNotes} onChange={e => setLabNotes(e.target.value)}
+                      rows={2}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                  </Field>
                 </div>
-              )}
+              </div>
 
-              {/* Notes */}
-              {p.notes && (
-                <div className="border-t border-gray-100 pt-3">
-                  <p className="text-xs font-semibold text-gray-500 mb-1">ЗАМЕТКИ</p>
-                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{p.notes}</p>
+              {/* Tags + notes */}
+              <div className="border-t border-gray-100 pt-3 space-y-3">
+                <Field label="Теги (через запятую)">
+                  <input value={tagsStr} onChange={e => setTagsStr(e.target.value)}
+                    placeholder="vip, сложный случай, постоянный"
+                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                </Field>
+                <Field label="Общие заметки">
+                  <textarea value={notes} onChange={e => setNotes(e.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                </Field>
+              </div>
+
+              {/* Finance (read-only) */}
+              <div className="border-t border-gray-100 pt-3">
+                <p className="text-xs font-semibold text-gray-500 mb-2">ФИНАНСЫ <span className="font-normal text-gray-400">(считается автоматически)</span></p>
+                <div className="grid grid-cols-3 gap-3">
+                  <InfoBlock label="Баланс" value={`${(p.balance_amount ?? 0).toLocaleString('ru-RU')} ₸`}
+                    tone={(p.balance_amount ?? 0) > 0 ? 'green' : 'gray'} />
+                  <InfoBlock label="Долг" value={`${(p.debt_amount ?? 0).toLocaleString('ru-RU')} ₸`}
+                    tone={(p.debt_amount ?? 0) > 0 ? 'red' : 'gray'} />
+                  <InfoBlock label="Создан" value={p.created_at ? new Date(p.created_at).toLocaleDateString('ru-RU') : '—'} tone="gray" />
                 </div>
-              )}
+              </div>
             </>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 flex justify-end gap-2">
+        <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 flex justify-between items-center gap-2">
           <a
             href={`/patients/${patientId}`}
             className="text-xs font-medium text-blue-600 hover:text-blue-800 px-3 py-2 rounded-lg hover:bg-blue-50"
           >
-            Открыть полную карточку →
+            Полная карточка →
           </a>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-xs font-medium text-gray-600 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100"
-          >
-            Закрыть
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="text-sm font-medium text-gray-600 hover:text-gray-900 px-4 py-2 rounded-lg hover:bg-gray-100 disabled:opacity-40"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving || loading}
+              className="text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg disabled:opacity-40"
+            >
+              {saving ? 'Сохранение…' : 'Сохранить'}
+            </button>
+          </div>
         </div>
       </div>
     </>
   )
 }
 
-function InfoRow({ label, value, valueClass = '' }: { label: string; value: string; valueClass?: string }) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-500 mb-1">{label}</p>
+      {children}
+    </div>
+  )
+}
+
+function InfoBlock({ label, value, tone }: { label: string; value: string; tone: 'green' | 'red' | 'gray' }) {
+  const cls = tone === 'green' ? 'text-green-700' : tone === 'red' ? 'text-red-700' : 'text-gray-800'
   return (
     <div>
       <p className="text-xs text-gray-400">{label}</p>
-      <p className={`text-sm text-gray-800 ${valueClass}`}>{value}</p>
+      <p className={`text-sm font-medium ${cls}`}>{value}</p>
     </div>
   )
 }
