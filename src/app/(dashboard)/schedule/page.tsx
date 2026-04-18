@@ -1669,6 +1669,22 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const [labPickerOpen, setLabPickerOpen] = useState(false)
   const [packages, setPackages] = useState<ServicePackageRow[]>([])
 
+  // Patient demographics for lab snapshot (fetched once drawer opens)
+  const [patDemo, setPatDemo] = useState<{
+    gender: 'male' | 'female' | 'other' | null
+    birth_date: string | null
+    pregnancy_status: 'yes' | 'no' | 'unknown' | null
+    pregnancy_weeks: number | null
+    menopause_status: 'no' | 'peri' | 'post' | null
+    lab_notes: string | null
+    full_name: string | null
+  } | null>(null)
+  // Editable nuance drafts — used for snapshot + persisted back to patient
+  const [labPreg,       setLabPreg]      = useState<'yes' | 'no' | 'unknown'>('unknown')
+  const [labPregWeeks,  setLabPregWeeks] = useState<string>('')
+  const [labMeno,       setLabMeno]      = useState<'no' | 'peri' | 'post' | ''>('')
+  const [labNotesDraft, setLabNotesDraft] = useState('')
+
   // ── Load finance data ─────────────────────────────────────────
   const loadFinance = useCallback(async () => {
     setFinLoading(true)
@@ -1732,6 +1748,29 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           }))
         )
       })
+    // Patient demographic snapshot fields (for lab order snapshot)
+    if (appt.patient_id) {
+      supabase.from('patients')
+        .select('full_name, gender, birth_date, pregnancy_status, pregnancy_weeks, menopause_status, lab_notes')
+        .eq('id', appt.patient_id).maybeSingle()
+        .then(({ data }) => {
+          if (!data) return
+          const d = data as {
+            full_name: string | null
+            gender: 'male' | 'female' | 'other' | null
+            birth_date: string | null
+            pregnancy_status: 'yes' | 'no' | 'unknown' | null
+            pregnancy_weeks: number | null
+            menopause_status: 'no' | 'peri' | 'post' | null
+            lab_notes: string | null
+          }
+          setPatDemo(d)
+          setLabPreg(d.pregnancy_status ?? 'unknown')
+          setLabPregWeeks(d.pregnancy_weeks != null ? String(d.pregnancy_weeks) : '')
+          setLabMeno(d.menopause_status ?? '')
+          setLabNotesDraft(d.lab_notes ?? '')
+        })
+    }
   }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close service dropdown on outside click
@@ -2006,6 +2045,29 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       if (names.includes(t.name.toLowerCase())) tplByName.set(t.name.toLowerCase(), t.id)
     }
 
+    // Snapshot: freeze patient demographics at order-creation time.
+    // Priority: current draft (edited at transfer) > patDemo from DB.
+    const age = patDemo?.birth_date
+      ? Math.floor((Date.now() - new Date(patDemo.birth_date).getTime()) / (365.25 * 24 * 3600 * 1000))
+      : null
+    const pregWeeksNum = labPreg === 'yes' && labPregWeeks.trim()
+      ? Math.max(1, Math.min(42, parseInt(labPregWeeks, 10) || 0)) || null
+      : null
+    const labNotesClean = labNotesDraft.trim() || null
+
+    // Persist nuances back to patient card (source of truth)
+    if (appt.patient_id) {
+      const patientUpdate: Record<string, unknown> = {
+        pregnancy_status: labPreg,
+        pregnancy_weeks:  pregWeeksNum,
+        lab_notes:        labNotesClean,
+      }
+      if (patDemo?.gender === 'female') {
+        patientUpdate.menopause_status = labMeno || null
+      }
+      await supabase.from('patients').update(patientUpdate).eq('id', appt.patient_id)
+    }
+
     // Create lab_order
     const { data: order, error: orderErr } = await supabase.from('lab_orders').insert({
       clinic_id:  clinicId,
@@ -2014,6 +2076,13 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       visit_id:   vid,
       status:     'ordered',
       created_by: profile?.id ?? null,
+      // Demographic snapshot — frozen for historical accuracy
+      patient_name_snapshot:    patDemo?.full_name ?? null,
+      sex_snapshot:             patDemo?.gender ?? null,
+      age_snapshot:             age,
+      pregnancy_snapshot:       labPreg,
+      pregnancy_weeks_snapshot: pregWeeksNum,
+      lab_notes_snapshot:       labNotesClean,
     }).select('id').single()
     if (orderErr || !order) {
       setTransferringLab(false)
@@ -2336,6 +2405,66 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
 
         {/* ── Open visit / Lab transfer ───────────────────────── */}
         <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 space-y-2">
+          {/* Lab demographic nuances — confirmed at transfer time.
+              Influence reference-range matching in the lab. */}
+          {hasLab && !labOrderId && patDemo && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-2.5 space-y-2">
+              <p className="text-[11px] font-semibold text-amber-800 flex items-center gap-1">
+                🧪 Нюансы для лаборатории
+              </p>
+              {patDemo.gender === 'female' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Беременность</label>
+                      <select value={labPreg}
+                        onChange={e => setLabPreg(e.target.value as 'yes' | 'no' | 'unknown')}
+                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400">
+                        <option value="unknown">Не уточнено</option>
+                        <option value="no">Нет</option>
+                        <option value="yes">🤰 Да</option>
+                      </select>
+                    </div>
+                    {labPreg === 'yes' && (
+                      <div>
+                        <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Срок, нед.</label>
+                        <input type="number" min={1} max={42}
+                          value={labPregWeeks} onChange={e => setLabPregWeeks(e.target.value)}
+                          placeholder="24"
+                          className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400" />
+                      </div>
+                    )}
+                  </div>
+                  {labPreg !== 'yes' && (
+                    <div>
+                      <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Менопауза</label>
+                      <select value={labMeno}
+                        onChange={e => setLabMeno(e.target.value as 'no' | 'peri' | 'post' | '')}
+                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400">
+                        <option value="">— не указано —</option>
+                        <option value="no">Нет</option>
+                        <option value="peri">Пре-/перименопауза</option>
+                        <option value="post">Постменопауза</option>
+                      </select>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-[10px] text-gray-500">
+                  Пол: {patDemo.gender === 'male' ? '♂ мужской' : 'не указан'} — поля беременности не применимы.
+                </p>
+              )}
+              <div>
+                <label className="block text-[10px] font-medium text-gray-600 mb-0.5">
+                  Лаб. примечание <span className="text-gray-400 font-normal">(препараты, хроника, аллергии)</span>
+                </label>
+                <textarea rows={2} value={labNotesDraft}
+                  onChange={e => setLabNotesDraft(e.target.value)}
+                  placeholder="например: принимает L-тироксин"
+                  className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400 resize-none" />
+              </div>
+            </div>
+          )}
           {hasLab && !labOrderId && (
             <button
               onClick={transferToLab}
