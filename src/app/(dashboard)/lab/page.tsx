@@ -138,6 +138,7 @@ interface PatientHit {
   birth_date?: string | null
   pregnancy_status?: 'yes' | 'no' | 'unknown' | null
   pregnancy_weeks?: number | null
+  menopause_status?: 'no' | 'peri' | 'post' | null
   lab_notes?: string | null
 }
 interface Doctor     { id: string; first_name: string; last_name: string }
@@ -705,7 +706,22 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
   const [notes, setNotes]         = useState('')
   const [saving, setSaving]       = useState(false)
   const [error, setError]         = useState('')
+  // Demographic nuances — editable by registrar at order-creation time.
+  // Prefilled from patient, committed back to patient on save.
+  const [pregStatus, setPregStatus]       = useState<'yes' | 'no' | 'unknown'>('unknown')
+  const [pregWeeks,  setPregWeeks]        = useState<string>('')
+  const [menoStatus, setMenoStatus]       = useState<'no' | 'peri' | 'post' | ''>('')
+  const [labNotesDraft, setLabNotesDraft] = useState('')
   const debRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // When a patient is picked, pre-fill nuances from their record.
+  useEffect(() => {
+    if (!patient) return
+    setPregStatus(patient.pregnancy_status ?? 'unknown')
+    setPregWeeks(patient.pregnancy_weeks != null ? String(patient.pregnancy_weeks) : '')
+    setMenoStatus(patient.menopause_status ?? '')
+    setLabNotesDraft(patient.lab_notes ?? '')
+  }, [patient])
 
   useEffect(() => {
     Promise.all([
@@ -723,7 +739,7 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
     if (q.length < 2) { setHits([]); return }
     debRef.current = setTimeout(async () => {
       const { data } = await supabase.from('patients')
-        .select('id,full_name,phones,gender,birth_date,pregnancy_status,pregnancy_weeks,lab_notes')
+        .select('id,full_name,phones,gender,birth_date,pregnancy_status,pregnancy_weeks,menopause_status,lab_notes')
         .ilike('full_name', `%${q}%`).limit(6)
       setHits((data ?? []) as PatientHit[])
     }, 300)
@@ -744,6 +760,22 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
     setSaving(true); setError('')
 
     const age = ageFromBirth(patient.birth_date ?? null)
+    const pregWeeksNum = pregStatus === 'yes' && pregWeeks.trim()
+      ? Math.max(1, Math.min(42, parseInt(pregWeeks, 10) || 0)) || null
+      : null
+    const labNotesClean = labNotesDraft.trim() || null
+
+    // Persist nuances back to patient record (source of truth for future orders).
+    const patientUpdate: Record<string, unknown> = {
+      pregnancy_status: pregStatus,
+      pregnancy_weeks:  pregWeeksNum,
+      lab_notes:        labNotesClean,
+    }
+    if (patient.gender === 'female') {
+      patientUpdate.menopause_status = menoStatus || null
+    }
+    await supabase.from('patients').update(patientUpdate).eq('id', patient.id)
+
     const { data: order, error: err } = await supabase
       .from('lab_orders')
       .insert({
@@ -757,9 +789,9 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
         patient_name_snapshot:    patient.full_name,
         sex_snapshot:             patient.gender ?? null,
         age_snapshot:             age,
-        pregnancy_snapshot:       patient.pregnancy_status ?? null,
-        pregnancy_weeks_snapshot: patient.pregnancy_weeks ?? null,
-        lab_notes_snapshot:       patient.lab_notes?.trim() || null,
+        pregnancy_snapshot:       pregStatus,
+        pregnancy_weeks_snapshot: pregWeeksNum,
+        lab_notes_snapshot:       labNotesClean,
       })
       .select('id').single()
 
@@ -837,6 +869,67 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
               </div>
             )}
           </div>
+
+          {/* Lab-relevant demographic nuances — editable at order time */}
+          {patient && selected.size > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-3">
+              <p className="text-xs font-semibold text-amber-800 flex items-center gap-1">
+                🧪 Нюансы для лаборатории
+                <span className="text-[10px] font-normal text-amber-600">— влияют на подбор референсов</span>
+              </p>
+
+              {patient.gender === 'female' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-medium text-gray-600 mb-1">Беременность</label>
+                      <select className={inp} value={pregStatus}
+                        onChange={e => setPregStatus(e.target.value as 'yes' | 'no' | 'unknown')}>
+                        <option value="unknown">Не уточнено</option>
+                        <option value="no">Нет</option>
+                        <option value="yes">🤰 Да</option>
+                      </select>
+                    </div>
+                    {pregStatus === 'yes' && (
+                      <div>
+                        <label className="block text-[11px] font-medium text-gray-600 mb-1">Срок (нед.)</label>
+                        <input type="number" min={1} max={42} className={inp}
+                          value={pregWeeks} onChange={e => setPregWeeks(e.target.value)}
+                          placeholder="например, 24" />
+                      </div>
+                    )}
+                  </div>
+
+                  {pregStatus !== 'yes' && (
+                    <div>
+                      <label className="block text-[11px] font-medium text-gray-600 mb-1">Менопауза</label>
+                      <select className={inp} value={menoStatus}
+                        onChange={e => setMenoStatus(e.target.value as 'no' | 'peri' | 'post' | '')}>
+                        <option value="">— не указано —</option>
+                        <option value="no">Нет</option>
+                        <option value="peri">Пре-/перименопауза</option>
+                        <option value="post">Постменопауза</option>
+                      </select>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-[11px] text-gray-500">
+                  Пол: {patient.gender === 'male' ? '♂ мужской' : 'не указан'} — поля беременности/менопаузы не применимы.
+                </p>
+              )}
+
+              <div>
+                <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                  Лаб. примечание
+                  <span className="text-gray-400 font-normal"> (приём препаратов, хроника, аллергии)</span>
+                </label>
+                <textarea className={inp + ' resize-none'} rows={2}
+                  value={labNotesDraft} onChange={e => setLabNotesDraft(e.target.value)}
+                  placeholder="например: принимает L-тироксин, диабет 2 типа…" />
+              </div>
+            </div>
+          )}
 
           {/* Urgent + Notes */}
           <div className="flex items-center gap-3">
