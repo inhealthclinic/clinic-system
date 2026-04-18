@@ -65,17 +65,29 @@ type ItemType = Reagent | Consumable
 
 /* ─── Constants ──────────────────────────────────────────── */
 const MOVEMENT_LABEL: Record<string, string> = {
-  receipt:     'Приход',
-  consumption: 'Расход',
-  correction:  'Корректировка',
-  writeoff:    'Списание',
+  receipt:          'Приход',
+  incoming:         'Приход',
+  consumption:      'Расход',
+  writeoff_service: 'Расход (услуга)',
+  writeoff_lab:     'Расход (лаб.)',
+  correction:       'Корректировка',
+  writeoff:         'Списание',
+  damaged:          'Повреждение',
+  expired:          'Истёк срок',
+  return:           'Возврат',
 }
 
 const MOVEMENT_CLR: Record<string, string> = {
-  receipt:     'bg-green-100 text-green-700',
-  consumption: 'bg-red-100 text-red-600',
-  correction:  'bg-yellow-100 text-yellow-700',
-  writeoff:    'bg-orange-100 text-orange-700',
+  receipt:          'bg-green-100 text-green-700',
+  incoming:         'bg-green-100 text-green-700',
+  consumption:      'bg-red-100 text-red-600',
+  writeoff_service: 'bg-red-100 text-red-600',
+  writeoff_lab:     'bg-red-100 text-red-600',
+  correction:       'bg-yellow-100 text-yellow-700',
+  writeoff:         'bg-orange-100 text-orange-700',
+  damaged:          'bg-orange-100 text-orange-700',
+  expired:          'bg-red-100 text-red-700',
+  return:           'bg-blue-100 text-blue-600',
 }
 
 const UNITS = ['мл', 'г', 'шт', 'уп']
@@ -209,6 +221,146 @@ function AddItemModal({ clinicId, itemType, onClose, onSaved }: {
   )
 }
 
+/* ─── Writeoff Modal (manual) ───────────────────────────── */
+const WRITEOFF_REASONS: Array<{ value: 'damaged'|'expired'|'correction'|'writeoff'; label: string; cls: string }> = [
+  { value: 'damaged',    label: 'Повреждение',   cls: 'bg-orange-600 hover:bg-orange-700' },
+  { value: 'expired',    label: 'Истёк срок',    cls: 'bg-red-600 hover:bg-red-700' },
+  { value: 'correction', label: 'Корректировка', cls: 'bg-yellow-600 hover:bg-yellow-700' },
+  { value: 'writeoff',   label: 'Прочее',        cls: 'bg-gray-600 hover:bg-gray-700' },
+]
+
+function WriteoffModal({ clinicId, item, itemType, batch, userId, onClose, onSaved }: {
+  clinicId: string
+  item: ItemType
+  itemType: 'reagent' | 'consumable'
+  batch: Batch
+  userId: string | null
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const supabase = createClient()
+  const [qty, setQty]         = useState('')
+  const [reason, setReason]   = useState<typeof WRITEOFF_REASONS[number]['value']>('damaged')
+  const [notes, setNotes]     = useState('')
+  const [saving, setSaving]   = useState(false)
+  const [error, setError]     = useState('')
+
+  const max = batch.quantity_remaining
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const q = parseFloat(qty)
+    if (!q || q <= 0)  { setError('Укажите количество больше 0'); return }
+    if (q > max)       { setError(`Макс. доступно: ${max} ${batch.unit}`); return }
+    setSaving(true); setError('')
+
+    // 1) Уменьшить остаток партии
+    const { error: bErr } = await supabase
+      .from('inventory_batches')
+      .update({ quantity_remaining: max - q })
+      .eq('id', batch.id)
+    if (bErr) { setError(bErr.message); setSaving(false); return }
+
+    // 2) Запись движения (тип = reason, чтобы в логе видеть почему)
+    const movType = reason === 'correction' ? 'correction' : reason
+    const { error: mErr } = await supabase.from('inventory_movements').insert({
+      clinic_id:   clinicId,
+      batch_id:    batch.id,
+      item_type:   itemType,
+      item_id:     item.id,
+      type:        movType,
+      quantity:    q,
+      notes:       notes.trim() || WRITEOFF_REASONS.find(r => r.value === reason)?.label || null,
+      performed_by: userId,
+    })
+    if (mErr) {
+      // Откатываем остаток
+      await supabase.from('inventory_batches')
+        .update({ quantity_remaining: max })
+        .eq('id', batch.id)
+      setError(mErr.message); setSaving(false); return
+    }
+
+    onSaved(); onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-red-100 bg-red-50">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">Ручное списание</h3>
+            <p className="text-xs text-red-700 mt-0.5">{item.name} · партия {batch.batch_number}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-600 flex items-center justify-between">
+            <span>Текущий остаток:</span>
+            <span className="font-semibold text-gray-900">{max.toLocaleString('ru-RU')} {batch.unit}</span>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-2">Причина *</label>
+            <div className="grid grid-cols-2 gap-2">
+              {WRITEOFF_REASONS.map(r => {
+                const active = reason === r.value
+                return (
+                  <button
+                    key={r.value}
+                    type="button"
+                    onClick={() => setReason(r.value)}
+                    className={`px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                      active
+                        ? `text-white border-transparent ${r.cls}`
+                        : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Количество *</label>
+            <div className="flex items-center gap-2">
+              <input className={INP} type="number" min="0.01" step="0.01" max={max}
+                value={qty} onChange={e => setQty(e.target.value)} placeholder="0" autoFocus />
+              <span className="text-sm text-gray-500 flex-shrink-0">{batch.unit}</span>
+              <button type="button" onClick={() => setQty(String(max))}
+                className="text-xs text-blue-600 hover:text-blue-700 whitespace-nowrap">
+                всё
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Примечание</label>
+            <textarea className={INP + ' resize-none'} rows={2}
+              value={notes} onChange={e => setNotes(e.target.value)}
+              placeholder="Детали (необязательно)" />
+          </div>
+
+          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
+
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose} disabled={saving}
+              className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-60 rounded-lg py-2.5 text-sm font-medium transition-colors">
+              Отмена
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+              {saving ? 'Списание...' : 'Списать'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 /* ─── Add Batch Modal ────────────────────────────────────── */
 function AddBatchModal({ clinicId, item, itemType, onClose, onSaved }: {
   clinicId: string
@@ -324,15 +476,18 @@ function AddBatchModal({ clinicId, item, itemType, onClose, onSaved }: {
 }
 
 /* ─── Expanded row with batches ──────────────────────────── */
-function ItemBatchRow({ item, itemType, clinicId, batches, onBatchAdded }: {
+function ItemBatchRow({ item, itemType, clinicId, batches, userId, onBatchAdded }: {
   item: ItemType
   itemType: 'reagent' | 'consumable'
   clinicId: string
   batches: Batch[]
+  userId: string | null
   onBatchAdded: () => void
 }) {
   const [showBatchModal, setShowBatchModal] = useState(false)
+  const [writeoffBatch, setWriteoffBatch] = useState<Batch | null>(null)
   const itemBatches = batches.filter(b => b.item_id === item.id)
+  const now30 = new Date(); now30.setDate(now30.getDate() + 30)
 
   return (
     <>
@@ -342,6 +497,17 @@ function ItemBatchRow({ item, itemType, clinicId, batches, onBatchAdded }: {
           item={item}
           itemType={itemType}
           onClose={() => setShowBatchModal(false)}
+          onSaved={onBatchAdded}
+        />
+      )}
+      {writeoffBatch && (
+        <WriteoffModal
+          clinicId={clinicId}
+          item={item}
+          itemType={itemType}
+          batch={writeoffBatch}
+          userId={userId}
+          onClose={() => setWriteoffBatch(null)}
           onSaved={onBatchAdded}
         />
       )}
@@ -360,20 +526,35 @@ function ItemBatchRow({ item, itemType, clinicId, batches, onBatchAdded }: {
               <p className="text-xs text-gray-400 py-2">Нет активных партий</p>
             ) : (
               <div className="space-y-1">
-                {itemBatches.map(b => (
-                  <div key={b.id} className="flex items-center gap-4 text-xs py-1.5 px-3 bg-white rounded-lg border border-gray-100">
-                    <span className="font-mono text-gray-700 font-medium w-32 truncate">{b.batch_number}</span>
-                    <span className="text-gray-400">
-                      {b.expires_at
-                        ? `до ${new Date(b.expires_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })}`
-                        : 'Срок не указан'}
-                    </span>
-                    <span className="text-gray-600 font-medium">
-                      {b.quantity_remaining.toLocaleString('ru-RU')} {b.unit}
-                    </span>
-                    {b.supplier && <span className="text-gray-400 truncate">{b.supplier}</span>}
-                  </div>
-                ))}
+                {itemBatches.map(b => {
+                  const expiring = b.expires_at && new Date(b.expires_at) <= now30
+                  const empty    = b.quantity_remaining <= 0
+                  return (
+                    <div key={b.id} className={`flex items-center gap-4 text-xs py-1.5 px-3 rounded-lg border ${
+                      empty      ? 'bg-gray-50 border-gray-200 opacity-60'
+                      : expiring ? 'bg-orange-50/40 border-orange-100'
+                                 : 'bg-white border-gray-100'
+                    }`}>
+                      <span className="font-mono text-gray-700 font-medium w-32 truncate">{b.batch_number}</span>
+                      <span className={expiring ? 'text-orange-600' : 'text-gray-400'}>
+                        {b.expires_at
+                          ? `до ${new Date(b.expires_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                          : 'Срок не указан'}
+                      </span>
+                      <span className={`font-medium ${empty ? 'text-gray-400' : 'text-gray-700'}`}>
+                        {b.quantity_remaining.toLocaleString('ru-RU')} {b.unit}
+                      </span>
+                      {b.supplier && <span className="text-gray-400 truncate flex-1">{b.supplier}</span>}
+                      {!empty && (
+                        <button
+                          onClick={() => setWriteoffBatch(b)}
+                          className="ml-auto text-[11px] font-medium text-red-600 hover:text-red-700 hover:bg-red-50 px-2 py-0.5 rounded transition-colors flex-shrink-0">
+                          Списать
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -384,8 +565,9 @@ function ItemBatchRow({ item, itemType, clinicId, batches, onBatchAdded }: {
 }
 
 /* ─── Items tab (shared for reagents & consumables) ──────── */
-function ItemsTab({ clinicId, itemType }: {
+function ItemsTab({ clinicId, userId, itemType }: {
   clinicId: string
+  userId: string | null
   itemType: 'reagent' | 'consumable'
 }) {
   const supabase   = createClient()
@@ -529,6 +711,7 @@ function ItemsTab({ clinicId, itemType }: {
                         item={item}
                         itemType={itemType}
                         clinicId={clinicId}
+                        userId={userId}
                         batches={batches}
                         onBatchAdded={load}
                       />
@@ -550,14 +733,23 @@ function MovementsTab({ clinicId }: { clinicId: string }) {
   const [movements, setMovements] = useState<Movement[]>([])
   const [loading, setLoading]     = useState(true)
 
+  // Filters
+  const [typeFilter, setTypeFilter] = useState<'all' | 'in' | 'out'>('all')
+  const [dateFrom, setDateFrom]     = useState('')
+  const [dateTo, setDateTo]         = useState('')
+  const [search, setSearch]         = useState('')
+
   const load = useCallback(async () => {
     setLoading(true)
     // Load movements
-    const { data: movData } = await supabase
+    let q = supabase
       .from('inventory_movements')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(50)
+      .limit(200)
+    if (dateFrom) q = q.gte('created_at', dateFrom)
+    if (dateTo)   q = q.lte('created_at', dateTo + 'T23:59:59')
+    const { data: movData } = await q
 
     if (!movData || movData.length === 0) {
       setMovements([])
@@ -597,16 +789,77 @@ function MovementsTab({ clinicId }: { clinicId: string }) {
 
     setMovements(enriched)
     setLoading(false)
-  }, [clinicId])
+  }, [clinicId, dateFrom, dateTo])  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { if (clinicId) load() }, [clinicId, load])
 
+  const IN_TYPES  = new Set(['receipt','incoming','return'])
+  const OUT_TYPES = new Set(['consumption','writeoff','writeoff_service','writeoff_lab','damaged','expired'])
+  const filtered = movements.filter(m => {
+    if (typeFilter === 'in'  && !IN_TYPES.has(m.type))  return false
+    if (typeFilter === 'out' && !OUT_TYPES.has(m.type)) return false
+    const q = search.trim().toLowerCase()
+    if (q && !(m.item_name ?? '').toLowerCase().includes(q)
+          && !(m.batch_number ?? '').toLowerCase().includes(q)) return false
+    return true
+  })
+
   return (
+    <>
+      <div className="bg-white border border-gray-100 rounded-xl px-4 py-3 mb-4 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="🔍 Поиск по наименованию или партии"
+            className="flex-1 min-w-[200px] border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+          />
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={e => setDateFrom(e.target.value)}
+            className="border border-gray-200 rounded-md px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+          />
+          <span className="text-xs text-gray-400">—</span>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={e => setDateTo(e.target.value)}
+            className="border border-gray-200 rounded-md px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+          />
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {[
+            { k: 'all', label: 'Все движения', cls: 'border-gray-300 text-gray-700' },
+            { k: 'in',  label: '⬆ Приход',     cls: 'border-green-300 text-green-700' },
+            { k: 'out', label: '⬇ Расход',     cls: 'border-red-300 text-red-700' },
+          ].map(f => (
+            <button
+              key={f.k}
+              onClick={() => setTypeFilter(f.k as typeof typeFilter)}
+              className={`px-3 py-1 text-xs font-medium rounded-full border transition-colors ${
+                typeFilter === f.k
+                  ? 'bg-gray-900 text-white border-gray-900'
+                  : `bg-white hover:bg-gray-50 ${f.cls}`
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+          <span className="text-xs text-gray-400 ml-auto">
+            Показано: {filtered.length} из {movements.length}
+          </span>
+        </div>
+      </div>
+
     <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
       {loading ? (
         <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
-      ) : movements.length === 0 ? (
-        <div className="p-8 text-center text-sm text-gray-400">Движений нет</div>
+      ) : filtered.length === 0 ? (
+        <div className="p-8 text-center text-sm text-gray-400">
+          {movements.length === 0 ? 'Движений нет' : 'По фильтрам ничего не найдено'}
+        </div>
       ) : (
         <table className="w-full">
           <thead>
@@ -620,7 +873,7 @@ function MovementsTab({ clinicId }: { clinicId: string }) {
             </tr>
           </thead>
           <tbody>
-            {movements.map(m => (
+            {filtered.map(m => (
               <tr key={m.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                 <td className="px-5 py-3.5">
                   <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${MOVEMENT_CLR[m.type] ?? 'bg-gray-100 text-gray-600'}`}>
@@ -646,6 +899,7 @@ function MovementsTab({ clinicId }: { clinicId: string }) {
         </table>
       )}
     </div>
+    </>
   )
 }
 
@@ -653,6 +907,7 @@ function MovementsTab({ clinicId }: { clinicId: string }) {
 export default function InventoryPage() {
   const { profile }   = useAuthStore()
   const clinicId      = profile?.clinic_id ?? ''
+  const userId        = profile?.id ?? null
   const [tab, setTab] = useState<Tab>('reagents')
 
   const TABS: { key: Tab; label: string }[] = [
@@ -682,10 +937,10 @@ export default function InventoryPage() {
 
       {/* Tab content */}
       {tab === 'reagents' && (
-        <ItemsTab key="reagents" clinicId={clinicId} itemType="reagent" />
+        <ItemsTab key="reagents" clinicId={clinicId} userId={userId} itemType="reagent" />
       )}
       {tab === 'consumables' && (
-        <ItemsTab key="consumables" clinicId={clinicId} itemType="consumable" />
+        <ItemsTab key="consumables" clinicId={clinicId} userId={userId} itemType="consumable" />
       )}
       {tab === 'movements' && (
         <MovementsTab clinicId={clinicId} />
