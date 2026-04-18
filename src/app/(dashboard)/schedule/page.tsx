@@ -2170,8 +2170,8 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
-      <div className="fixed right-0 top-0 h-full w-80 bg-white shadow-2xl z-50 flex flex-col">
+      <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(560px,calc(100vw-24px))] max-h-[calc(100vh-40px)] bg-white rounded-2xl shadow-2xl z-50 flex flex-col overflow-hidden">
 
         {/* ── Header ─────────────────────────────────────────── */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
