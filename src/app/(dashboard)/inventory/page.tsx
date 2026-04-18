@@ -60,7 +60,26 @@ interface Movement {
   batch_number?: string
 }
 
-type Tab = 'reagents' | 'consumables' | 'movements'
+interface ServiceUsageRow {
+  id: string
+  clinic_id: string
+  service_id: string
+  item_type: 'reagent' | 'consumable'
+  item_id: string
+  qty_per_service: number
+  notes: string | null
+  is_active: boolean
+  created_at: string
+}
+
+interface ServiceLite {
+  id: string
+  name: string
+  code: string | null
+  is_lab?: boolean | null
+}
+
+type Tab = 'reagents' | 'consumables' | 'movements' | 'templates'
 type ItemType = Reagent | Consumable
 
 /* ─── Constants ──────────────────────────────────────────── */
@@ -903,6 +922,242 @@ function MovementsTab({ clinicId }: { clinicId: string }) {
   )
 }
 
+/* ─── Templates tab (service → item × qty) ──────────────── */
+function TemplatesTab({ clinicId }: { clinicId: string }) {
+  const supabase = createClient()
+  const [services, setServices]       = useState<ServiceLite[]>([])
+  const [reagents, setReagents]       = useState<Reagent[]>([])
+  const [consumables, setConsumables] = useState<Consumable[]>([])
+  const [rows, setRows]               = useState<ServiceUsageRow[]>([])
+  const [loading, setLoading]         = useState(true)
+  const [search, setSearch]           = useState('')
+
+  // Add form state
+  const [formService, setFormService] = useState('')
+  const [formItemType, setFormItemType] = useState<'reagent'|'consumable'>('reagent')
+  const [formItem, setFormItem]       = useState('')
+  const [formQty, setFormQty]         = useState('')
+  const [saving, setSaving]           = useState(false)
+  const [error, setError]             = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const [{ data: svc }, { data: reag }, { data: cons }, { data: rws }] = await Promise.all([
+      supabase.from('services')
+        .select('id,name,code,is_lab')
+        .eq('clinic_id', clinicId)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .order('name'),
+      supabase.from('reagents')
+        .select('*').eq('clinic_id', clinicId).eq('is_active', true).order('name'),
+      supabase.from('consumables')
+        .select('*').eq('clinic_id', clinicId).eq('is_active', true).order('name'),
+      supabase.from('service_inventory_usage')
+        .select('*').eq('clinic_id', clinicId).eq('is_active', true).order('created_at', { ascending: false }),
+    ])
+    setServices((svc ?? []) as ServiceLite[])
+    setReagents((reag ?? []) as Reagent[])
+    setConsumables((cons ?? []) as Consumable[])
+    setRows((rws ?? []) as ServiceUsageRow[])
+    setLoading(false)
+  }, [clinicId, supabase])
+
+  useEffect(() => { if (clinicId) load() }, [clinicId, load])
+
+  const itemPool = formItemType === 'reagent' ? reagents : consumables
+  const itemMap: Record<string, ItemType> = {}
+  for (const r of reagents)    itemMap[r.id] = r
+  for (const c of consumables) itemMap[c.id] = c
+  const svcMap: Record<string, ServiceLite> = {}
+  for (const s of services) svcMap[s.id] = s
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    if (!formService) { setError('Выберите услугу'); return }
+    if (!formItem)    { setError('Выберите реагент/расходник'); return }
+    const q = parseFloat(formQty)
+    if (!q || q <= 0) { setError('Укажите количество > 0'); return }
+    setSaving(true)
+    const { error: err } = await supabase.from('service_inventory_usage').insert({
+      clinic_id:       clinicId,
+      service_id:      formService,
+      item_type:       formItemType,
+      item_id:         formItem,
+      qty_per_service: q,
+    })
+    setSaving(false)
+    if (err) {
+      setError(err.message.includes('unique')
+        ? 'Такая связка услуга ↔ позиция уже существует'
+        : err.message)
+      return
+    }
+    setFormItem(''); setFormQty('')
+    load()
+  }
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Удалить шаблон?')) return
+    await supabase.from('service_inventory_usage').delete().eq('id', id)
+    load()
+  }
+
+  const handleQtyEdit = async (id: string, newQty: number) => {
+    if (!newQty || newQty <= 0) return
+    await supabase.from('service_inventory_usage')
+      .update({ qty_per_service: newQty })
+      .eq('id', id)
+    load()
+  }
+
+  // Group rows by service
+  const grouped: Record<string, ServiceUsageRow[]> = {}
+  for (const r of rows) {
+    const sName = svcMap[r.service_id]?.name ?? ''
+    const iName = itemMap[r.item_id]?.name ?? ''
+    const q = search.trim().toLowerCase()
+    if (q && !sName.toLowerCase().includes(q) && !iName.toLowerCase().includes(q)) continue
+    if (!grouped[r.service_id]) grouped[r.service_id] = []
+    grouped[r.service_id].push(r)
+  }
+  const serviceIds = Object.keys(grouped).sort((a, b) =>
+    (svcMap[a]?.name ?? '').localeCompare(svcMap[b]?.name ?? '', 'ru')
+  )
+
+  return (
+    <>
+      {/* Add form */}
+      <form onSubmit={handleAdd} className="bg-white rounded-xl border border-gray-100 p-4 mb-4">
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Добавить шаблон списания</p>
+        <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr_2fr_1fr_auto] gap-2 items-end">
+          <div>
+            <label className="block text-[11px] text-gray-500 mb-1">Услуга</label>
+            <select className={INP} value={formService} onChange={e => setFormService(e.target.value)}>
+              <option value="">— выбрать —</option>
+              {services.map(s => (
+                <option key={s.id} value={s.id}>
+                  {s.is_lab ? '🔬 ' : ''}{s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] text-gray-500 mb-1">Тип</label>
+            <select className={INP} value={formItemType}
+              onChange={e => { setFormItemType(e.target.value as 'reagent'|'consumable'); setFormItem('') }}>
+              <option value="reagent">Реагент</option>
+              <option value="consumable">Расходник</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] text-gray-500 mb-1">Позиция</label>
+            <select className={INP} value={formItem} onChange={e => setFormItem(e.target.value)}>
+              <option value="">— выбрать —</option>
+              {itemPool.map(i => (
+                <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] text-gray-500 mb-1">Кол-во</label>
+            <input className={INP} type="number" min="0.001" step="0.001"
+              value={formQty} onChange={e => setFormQty(e.target.value)} placeholder="0" />
+          </div>
+          <button type="submit" disabled={saving}
+            className="h-[42px] px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors">
+            {saving ? '...' : '+ Добавить'}
+          </button>
+        </div>
+        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+      </form>
+
+      {/* Search */}
+      <div className="mb-4">
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="🔍 Поиск по услуге или позиции"
+          className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+        />
+      </div>
+
+      {/* List */}
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center text-sm text-gray-400">Загрузка...</div>
+        ) : rows.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-400">
+            Шаблонов нет. При заборе образца расходники списываются только если настроен шаблон для услуги.
+          </div>
+        ) : serviceIds.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-400">По фильтру ничего не найдено</div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {serviceIds.map(sid => {
+              const s = svcMap[sid]
+              const entries = grouped[sid]
+              return (
+                <div key={sid} className="p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm font-semibold text-gray-900">
+                      {s?.is_lab ? '🔬 ' : ''}{s?.name ?? 'Неизвестная услуга'}
+                    </span>
+                    {s?.code && (
+                      <span className="text-[11px] font-mono text-gray-400">{s.code}</span>
+                    )}
+                    <span className="text-xs text-gray-400 ml-auto">{entries.length} позиций</span>
+                  </div>
+                  <div className="space-y-1 ml-4 border-l-2 border-blue-100 pl-4">
+                    {entries.map(r => {
+                      const item = itemMap[r.item_id]
+                      return (
+                        <div key={r.id} className="flex items-center gap-3 text-xs py-1.5 px-3 rounded-lg bg-gray-50/50">
+                          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                            r.item_type === 'reagent' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {r.item_type === 'reagent' ? 'Р' : 'Р/М'}
+                          </span>
+                          <span className="text-gray-700 flex-1 truncate">
+                            {item?.name ?? '—'}
+                          </span>
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="0.001"
+                            defaultValue={r.qty_per_service}
+                            onBlur={e => {
+                              const v = parseFloat(e.target.value)
+                              if (v && v !== r.qty_per_service) handleQtyEdit(r.id, v)
+                            }}
+                            className="w-20 text-right border border-gray-200 rounded px-2 py-0.5 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                          />
+                          <span className="text-gray-400 w-8">{item?.unit ?? ''}</span>
+                          <button
+                            onClick={() => handleDelete(r.id)}
+                            className="text-red-500 hover:text-red-700 text-sm leading-none flex-shrink-0">
+                            ×
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      <p className="mt-3 text-xs text-gray-400">
+        💡 При переходе заказа в статус «Образец взят» расходники списываются автоматически по FEFO (ближайший срок годности).
+      </p>
+    </>
+  )
+}
+
 /* ─── Page ───────────────────────────────────────────────── */
 export default function InventoryPage() {
   const { profile }   = useAuthStore()
@@ -914,6 +1169,7 @@ export default function InventoryPage() {
     { key: 'reagents',    label: 'Реагенты'   },
     { key: 'consumables', label: 'Расходники' },
     { key: 'movements',   label: 'Движения'   },
+    { key: 'templates',   label: 'Шаблоны'    },
   ]
 
   return (
@@ -944,6 +1200,9 @@ export default function InventoryPage() {
       )}
       {tab === 'movements' && (
         <MovementsTab clinicId={clinicId} />
+      )}
+      {tab === 'templates' && (
+        <TemplatesTab clinicId={clinicId} />
       )}
     </div>
   )
