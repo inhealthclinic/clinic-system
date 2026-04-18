@@ -297,6 +297,13 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const effectiveSex = patSex ?? liveSex
   const effectiveAge = patAge ?? liveAge
 
+  // Demographic-nuance editor (for "forgot to mark pregnancy" cases)
+  const [demoEditOpen, setDemoEditOpen] = useState(false)
+  const [demoPreg, setDemoPreg]         = useState<'yes' | 'no' | 'unknown'>(order.pregnancy_snapshot ?? 'unknown')
+  const [demoPregWeeks, setDemoPregWeeks] = useState<string>(order.pregnancy_weeks_snapshot != null ? String(order.pregnancy_weeks_snapshot) : '')
+  const [demoNotes, setDemoNotes]       = useState<string>(order.lab_notes_snapshot ?? '')
+  const [demoSaving, setDemoSaving]     = useState(false)
+
   // Per-service: default + all demographic ranges
   const [svcData, setSvcData] = useState<Record<string, {
     defaultUnit: string | null
@@ -568,6 +575,20 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                   )}
                 </p>
               </div>
+              {!locked && (
+                <button
+                  type="button"
+                  onClick={() => setDemoEditOpen(true)}
+                  title="Исправить демографию (беременность/примечания)"
+                  className="text-[11px] text-blue-600 hover:text-blue-700 hover:bg-blue-100 px-2 py-1 rounded-md flex items-center gap-1 flex-shrink-0"
+                >
+                  <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
+                    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                  </svg>
+                  Изменить
+                </button>
+              )}
             </div>
             {order.lab_notes_snapshot && (
               <div className="flex items-start gap-2 pt-1.5 border-t border-blue-100">
@@ -684,6 +705,97 @@ function OrderDrawer({ order, onClose, onUpdated }: {
           )}
         </div>
       </div>
+
+      {/* Demographic nuance editor — for cases where registrar
+          forgot to mark pregnancy / lab_notes at order creation.
+          Updates both THIS order's snapshot and the patient card. */}
+      {demoEditOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => !demoSaving && setDemoEditOpen(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md z-10 overflow-hidden">
+            <div className="px-5 py-4 border-b border-amber-100 bg-amber-50 flex items-center gap-2">
+              <span className="text-lg">🧪</span>
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Исправить нюансы</h3>
+                <p className="text-[11px] text-amber-700 mt-0.5">Обновит и этот заказ, и карту пациента</p>
+              </div>
+            </div>
+            <div className="p-5 space-y-4">
+              {effectiveSex === 'F' ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Беременность</label>
+                    <select value={demoPreg}
+                      onChange={e => setDemoPreg(e.target.value as 'yes' | 'no' | 'unknown')}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400">
+                      <option value="unknown">Не уточнено</option>
+                      <option value="no">Нет</option>
+                      <option value="yes">🤰 Да</option>
+                    </select>
+                  </div>
+                  {demoPreg === 'yes' && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Срок (нед.)</label>
+                      <input type="number" min={1} max={42}
+                        value={demoPregWeeks} onChange={e => setDemoPregWeeks(e.target.value)}
+                        placeholder="например, 24"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400" />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+                  Пол: {effectiveSex === 'M' ? '♂ мужской' : 'не указан'} — беременность не применима.
+                </p>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  Лаб. примечание <span className="text-gray-400 font-normal">(препараты, хроника, аллергии)</span>
+                </label>
+                <textarea rows={3}
+                  value={demoNotes} onChange={e => setDemoNotes(e.target.value)}
+                  placeholder="например: принимает L-тироксин"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none" />
+              </div>
+            </div>
+            <div className="px-5 pb-5 flex gap-3">
+              <button onClick={() => setDemoEditOpen(false)} disabled={demoSaving}
+                className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-60 rounded-lg py-2.5 text-sm font-medium transition-colors">
+                Отмена
+              </button>
+              <button disabled={demoSaving}
+                onClick={async () => {
+                  if (demoSaving) return
+                  setDemoSaving(true)
+                  const weeksNum = demoPreg === 'yes' && demoPregWeeks.trim()
+                    ? Math.max(1, Math.min(42, parseInt(demoPregWeeks, 10) || 0)) || null
+                    : null
+                  const notesClean = demoNotes.trim() || null
+                  // Update order snapshot
+                  await supabase.from('lab_orders').update({
+                    pregnancy_snapshot:       demoPreg,
+                    pregnancy_weeks_snapshot: weeksNum,
+                    lab_notes_snapshot:       notesClean,
+                  }).eq('id', order.id)
+                  // Update patient record (source of truth for future orders)
+                  await supabase.from('patients').update({
+                    pregnancy_status: demoPreg,
+                    pregnancy_weeks:  weeksNum,
+                    lab_notes:        notesClean,
+                  }).eq('id', order.patient_id)
+                  setIsPregnant(demoPreg === 'yes')
+                  setDemoSaving(false)
+                  setDemoEditOpen(false)
+                  onUpdated()
+                }}
+                className="flex-1 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+                {demoSaving ? 'Сохранение…' : 'Сохранить'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
