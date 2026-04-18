@@ -38,6 +38,10 @@ export type Patient = {
   debt_amount: number
   tags: string[]
   notes: string | null
+  pregnancy_status: 'yes' | 'no' | 'unknown' | null
+  pregnancy_weeks: number | null
+  menopause_status: 'no' | 'peri' | 'post' | null
+  lab_notes: string | null
   deleted_at: string | null
   created_at: string
   updated_at: string

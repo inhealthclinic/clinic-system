@@ -29,6 +29,13 @@ interface LabOrder {
   notes: string | null
   ordered_at: string
   sample_taken_at: string | null
+  // Snapshot (filled at creation time)
+  patient_name_snapshot?: string | null
+  sex_snapshot?: 'male' | 'female' | 'other' | null
+  age_snapshot?: number | null
+  pregnancy_snapshot?: 'yes' | 'no' | 'unknown' | null
+  pregnancy_weeks_snapshot?: number | null
+  lab_notes_snapshot?: string | null
   patient?: { id: string; full_name: string } | null
   doctor?: { id: string; first_name: string; last_name: string } | null
   items?: LabItem[]
@@ -123,7 +130,16 @@ function pickRange(
   return eligible.slice().sort((a, b) => score(b) - score(a))[0]
 }
 
-interface PatientHit { id: string; full_name: string; phones: string[] }
+interface PatientHit {
+  id: string
+  full_name: string
+  phones: string[]
+  gender?: 'male' | 'female' | 'other' | null
+  birth_date?: string | null
+  pregnancy_status?: 'yes' | 'no' | 'unknown' | null
+  pregnancy_weeks?: number | null
+  lab_notes?: string | null
+}
 interface Doctor     { id: string; first_name: string; last_name: string }
 interface Template   { id: string; name: string; price: number | null }
 
@@ -225,12 +241,16 @@ function printLabReport(
   <h2>IN HEALTH — Результаты анализов</h2>
   <div class="sub">Лаборатория медицинского центра</div>
   <div class="info">
-    <div><b>Пациент:</b> ${order.patient?.full_name ?? '—'}</div>
+    <div><b>Пациент:</b> ${order.patient_name_snapshot ?? order.patient?.full_name ?? '—'}</div>
+    ${order.sex_snapshot ? `<div><b>Пол:</b> ${order.sex_snapshot === 'male' ? 'М' : order.sex_snapshot === 'female' ? 'Ж' : '—'}</div>` : ''}
+    ${order.age_snapshot != null ? `<div><b>Возраст:</b> ${order.age_snapshot} лет</div>` : ''}
+    ${order.pregnancy_snapshot === 'yes' ? `<div style="color:#be185d"><b>Беременность:</b> ${order.pregnancy_weeks_snapshot ? order.pregnancy_weeks_snapshot + ' нед.' : 'да'}</div>` : ''}
     <div><b>Дата:</b> ${dt}</div>
     ${order.doctor ? `<div><b>Врач:</b> ${order.doctor.last_name} ${order.doctor.first_name}</div>` : ''}
     ${order.order_number ? `<div><b>№:</b> ${order.order_number}</div>` : ''}
     ${order.urgent ? '<div class="badge">🔴 СРОЧНЫЙ</div>' : ''}
   </div>
+  ${order.lab_notes_snapshot ? `<div style="margin:-8px 0 14px;padding:8px 12px;background:#fef3c7;border-left:3px solid #f59e0b;font-size:12px;color:#92400e"><b>⚠ Лаб. примечания:</b> ${order.lab_notes_snapshot}</div>` : ''}
   <table>
     <thead>
       <tr>
@@ -266,10 +286,15 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const [takingSample, setTakingSample] = useState(false)
   const [results, setResults]     = useState<Record<string, string>>({})
 
-  // Patient demographics (for ref-range picking)
-  const [patSex, setPatSex] = useState<'M' | 'F' | null>(null)
-  const [patAge, setPatAge] = useState<number | null>(null)
-  const [isPregnant, setIsPregnant] = useState(false)
+  // Patient demographics from snapshot (or live fallback)
+  const patSex = useMemo(() => mapSex(order.sex_snapshot), [order.sex_snapshot])
+  const patAge = order.age_snapshot ?? null
+  const patPregnancyFromSnapshot = order.pregnancy_snapshot === 'yes'
+  const [isPregnant, setIsPregnant] = useState(patPregnancyFromSnapshot)
+  const [liveSex, setLiveSex] = useState<'M' | 'F' | null>(null)
+  const [liveAge, setLiveAge] = useState<number | null>(null)
+  const effectiveSex = patSex ?? liveSex
+  const effectiveAge = patAge ?? liveAge
 
   // Per-service: default + all demographic ranges
   const [svcData, setSvcData] = useState<Record<string, {
@@ -289,17 +314,19 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     })
     setResults(init)
 
-    // Load patient demographics
-    supabase.from('patients')
-      .select('gender, birth_date')
-      .eq('id', order.patient_id)
-      .single()
-      .then(({ data }) => {
-        if (data) {
-          setPatSex(mapSex((data as { gender: string }).gender))
-          setPatAge(ageFromBirth((data as { birth_date: string | null }).birth_date))
-        }
-      })
+    // Fallback: for legacy orders without snapshot, fetch live patient
+    if (order.sex_snapshot == null || order.age_snapshot == null) {
+      supabase.from('patients')
+        .select('gender, birth_date')
+        .eq('id', order.patient_id)
+        .single()
+        .then(({ data }) => {
+          if (data) {
+            setLiveSex(mapSex((data as { gender: string }).gender))
+            setLiveAge(ageFromBirth((data as { birth_date: string | null }).birth_date))
+          }
+        })
+    }
 
     const svcIds = (order.items ?? [])
       .map(i => i.service_id).filter((x): x is string => !!x)
@@ -347,7 +374,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
       label: string | null  // null = default (no specific range matched)
     }> = {}
     for (const [sid, d] of Object.entries(svcData)) {
-      const picked = pickRange(d.ranges, patSex, patAge, isPregnant)
+      const picked = pickRange(d.ranges, effectiveSex, effectiveAge, isPregnant)
       if (picked) {
         m[sid] = {
           unit: picked.unit ?? d.defaultUnit,
@@ -367,7 +394,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
       }
     }
     return m
-  }, [svcData, patSex, patAge, isPregnant])
+  }, [svcData, effectiveSex, effectiveAge, isPregnant])
 
   const advance = async () => {
     const next = NEXT_STATUS[order.status]
@@ -455,6 +482,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
 
   const next = NEXT_STATUS[order.status]
   const hasResults = (order.items ?? []).length > 0
+  const locked = order.status === 'verified' || order.status === 'delivered'
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -521,39 +549,62 @@ function OrderDrawer({ order, onClose, onUpdated }: {
             )}
           </div>
 
-          {/* Demographics summary + pregnant toggle */}
-          {hasResults && (patSex || patAge != null) && (
-            <div className="flex flex-wrap items-center gap-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs">
-              <span className="text-gray-600">
-                Для подбора нормы:
-                {patSex === 'F' ? ' ♀ женский' : patSex === 'M' ? ' ♂ мужской' : ''}
-                {patAge != null ? `, ${patAge} лет` : ''}
-              </span>
-              {patSex === 'F' && (
-                <label className="flex items-center gap-1.5 cursor-pointer ml-auto">
-                  <input
-                    type="checkbox"
-                    checked={isPregnant}
-                    onChange={e => setIsPregnant(e.target.checked)}
-                    className="accent-blue-600"
-                  />
-                  <span className="text-gray-700 font-medium">🤰 Беременна</span>
-                </label>
-              )}
+          {/* Patient snapshot block */}
+          <div className="bg-gradient-to-br from-blue-50 to-blue-50/40 border border-blue-100 rounded-lg px-4 py-3 space-y-1.5">
+            <div className="flex items-start gap-2">
+              <span className="text-gray-500 text-xs flex-shrink-0 mt-0.5">Пациент:</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900">
+                  {order.patient_name_snapshot ?? order.patient?.full_name ?? '—'}
+                </p>
+                <p className="text-xs text-gray-600 mt-0.5">
+                  {effectiveSex === 'F' ? '♀ Ж' : effectiveSex === 'M' ? '♂ М' : '—'}
+                  {effectiveAge != null ? ` · ${effectiveAge} лет` : ''}
+                  {order.pregnancy_snapshot === 'yes' && (
+                    <span className="text-pink-700 font-medium ml-1">
+                      · 🤰 беременна{order.pregnancy_weeks_snapshot ? ` (${order.pregnancy_weeks_snapshot} нед.)` : ''}
+                    </span>
+                  )}
+                </p>
+              </div>
             </div>
-          )}
+            {order.lab_notes_snapshot && (
+              <div className="flex items-start gap-2 pt-1.5 border-t border-blue-100">
+                <span className="text-xs flex-shrink-0 mt-0.5">📝</span>
+                <p className="text-xs text-amber-900 italic flex-1">{order.lab_notes_snapshot}</p>
+              </div>
+            )}
+            {effectiveSex === 'F' && (
+              <label className="flex items-center gap-2 cursor-pointer pt-1.5 border-t border-blue-100">
+                <input
+                  type="checkbox"
+                  checked={isPregnant}
+                  onChange={e => setIsPregnant(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                <span className="text-xs text-gray-700 font-medium">
+                  🤰 Применять референсы для беременных
+                </span>
+              </label>
+            )}
+          </div>
 
           {/* Items + Results entry */}
           {hasResults && (
             <div>
               <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Анализы и результаты</p>
-                <button
-                  onClick={saveResults}
-                  disabled={saveRes}
-                  className="text-xs text-blue-600 hover:text-blue-700 font-medium disabled:opacity-50">
-                  {saveRes ? 'Сохранение...' : '💾 Сохранить результаты'}
-                </button>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  Анализы и результаты
+                  {locked && <span className="ml-2 text-[10px] text-purple-600 normal-case tracking-normal">🔒 только чтение</span>}
+                </p>
+                {!locked && (
+                  <button
+                    onClick={saveResults}
+                    disabled={saveRes}
+                    className="text-xs text-blue-600 hover:text-blue-700 font-medium disabled:opacity-50">
+                    {saveRes ? 'Сохранение...' : '💾 Сохранить результаты'}
+                  </button>
+                )}
               </div>
               <div className="space-y-2">
                 {order.items!.map(item => {
@@ -582,7 +633,8 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                           value={raw}
                           onChange={e => setResults(prev => ({ ...prev, [item.id]: e.target.value }))}
                           placeholder="Результат"
-                          className="flex-1 border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
+                          readOnly={locked}
+                          className={`flex-1 border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none ${locked ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}`}
                         />
                         {refs?.unit && (
                           <span className="text-xs text-gray-500 whitespace-nowrap">{refs.unit}</span>
@@ -671,8 +723,9 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
     if (q.length < 2) { setHits([]); return }
     debRef.current = setTimeout(async () => {
       const { data } = await supabase.from('patients')
-        .select('id,full_name,phones').ilike('full_name', `%${q}%`).limit(6)
-      setHits(data ?? [])
+        .select('id,full_name,phones,gender,birth_date,pregnancy_status,pregnancy_weeks,lab_notes')
+        .ilike('full_name', `%${q}%`).limit(6)
+      setHits((data ?? []) as PatientHit[])
     }, 300)
   }
 
@@ -690,6 +743,7 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
     if (selected.size === 0){ setError('Выберите хотя бы один анализ'); return }
     setSaving(true); setError('')
 
+    const age = ageFromBirth(patient.birth_date ?? null)
     const { data: order, error: err } = await supabase
       .from('lab_orders')
       .insert({
@@ -699,6 +753,13 @@ function CreateOrderModal({ clinicId, onClose, onSaved }: {
         urgent,
         notes:      notes.trim() || null,
         status:     'ordered',
+        // Snapshot — demographics are frozen at order-creation time
+        patient_name_snapshot:    patient.full_name,
+        sex_snapshot:             patient.gender ?? null,
+        age_snapshot:             age,
+        pregnancy_snapshot:       patient.pregnancy_status ?? null,
+        pregnancy_weeks_snapshot: patient.pregnancy_weeks ?? null,
+        lab_notes_snapshot:       patient.lab_notes?.trim() || null,
       })
       .select('id').single()
 
@@ -953,9 +1014,17 @@ export default function LabPage() {
                   <td className="px-5 py-4" onClick={e => e.stopPropagation()}>
                     <Link href={`/patients/${o.patient_id}`}
                       className="text-sm font-medium text-gray-900 hover:text-blue-600 hover:underline">
-                      {o.patient?.full_name ?? '—'}
+                      {o.patient_name_snapshot ?? o.patient?.full_name ?? '—'}
                     </Link>
-                    {o.order_number && <p className="text-xs text-gray-400 font-mono mt-0.5">{o.order_number}</p>}
+                    <p className="text-[11px] text-gray-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      {o.sex_snapshot === 'female' && <span>♀</span>}
+                      {o.sex_snapshot === 'male' && <span>♂</span>}
+                      {o.age_snapshot != null && <span>{o.age_snapshot} лет</span>}
+                      {o.pregnancy_snapshot === 'yes' && (
+                        <span className="text-pink-600">🤰{o.pregnancy_weeks_snapshot ? `${o.pregnancy_weeks_snapshot}н` : ''}</span>
+                      )}
+                      {o.order_number && <span className="text-gray-400 font-mono">{o.order_number}</span>}
+                    </p>
                   </td>
                   <td className="px-5 py-4 text-sm text-gray-500">
                     {o.doctor ? `${o.doctor.last_name} ${o.doctor.first_name[0]}.` : '—'}
