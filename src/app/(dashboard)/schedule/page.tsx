@@ -1674,6 +1674,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const [transferringLab, setTransferringLab] = useState(false)
   const [labPickerOpen, setLabPickerOpen] = useState(false)
   const [nuanceOpen, setNuanceOpen]       = useState(false)
+  const [cardOpen, setCardOpen]           = useState(false)
   const [packages, setPackages] = useState<ServicePackageRow[]>([])
 
   // Patient demographics for lab snapshot (fetched once drawer opens)
@@ -2181,14 +2182,15 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           </div>
           <div className="flex items-center gap-1 mt-0.5">
             {patient?.id && (
-              <a
-                href={`/patients/${patient.id}`}
+              <button
+                type="button"
+                onClick={() => setCardOpen(true)}
                 title="Открыть карту пациента"
                 className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-emerald-600 px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 border border-gray-200 hover:border-emerald-200 transition-colors"
               >
                 <svg width="12" height="12" fill="none" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="1.5"/></svg>
                 Карта пациента
-              </a>
+              </button>
             )}
             <button onClick={() => setEditOpen(true)} title="Редактировать"
               className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-blue-600 px-2.5 py-1.5 rounded-lg hover:bg-blue-50 border border-gray-200 hover:border-blue-200 transition-colors">
@@ -2683,6 +2685,12 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             const anyLab = selections.some(s => s.svc.is_lab)
             if (anyLab && patDemo) setNuanceOpen(true)
           }}
+        />
+      )}
+      {cardOpen && patient?.id && (
+        <PatientCardModal
+          patientId={patient.id}
+          onClose={() => setCardOpen(false)}
         />
       )}
       {nuanceOpen && patDemo && (
@@ -3223,6 +3231,182 @@ function LabNuancesModal({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── PatientCardModal ─────────────────────────────────────────────────────────
+// Lightweight patient info panel — opens as overlay on top of schedule drawer.
+// No navigation; shows key demographic/financial/lab fields in-place.
+
+type PatientCardData = {
+  id: string
+  full_name: string
+  phones: string[] | null
+  iin: string | null
+  gender: 'male' | 'female' | 'other' | null
+  birth_date: string | null
+  city: string | null
+  email: string | null
+  patient_number: string | null
+  status: string | null
+  is_vip: boolean | null
+  balance_amount: number | null
+  debt_amount: number | null
+  tags: string[] | null
+  notes: string | null
+  pregnancy_status: 'yes' | 'no' | 'unknown' | null
+  pregnancy_weeks: number | null
+  menopause_status: 'no' | 'peri' | 'post' | null
+  lab_notes: string | null
+  created_at: string | null
+}
+
+const PATIENT_STATUS_LABEL: Record<string, string> = {
+  new: 'Новый', active: 'Активный', in_treatment: 'На лечении',
+  completed: 'Завершён', lost: 'Потерян', vip: 'VIP',
+}
+
+function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: () => void }) {
+  const supabase = createClient()
+  const [loading, setLoading] = useState(true)
+  const [p, setP] = useState<PatientCardData | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    supabase
+      .from('patients')
+      .select('id, full_name, phones, iin, gender, birth_date, city, email, patient_number, status, is_vip, balance_amount, debt_amount, tags, notes, pregnancy_status, pregnancy_weeks, menopause_status, lab_notes, created_at')
+      .eq('id', patientId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return
+        if (error) setErr(error.message)
+        else setP(data as PatientCardData)
+        setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [patientId, supabase])
+
+  const age = p?.birth_date
+    ? Math.floor((Date.now() - new Date(p.birth_date).getTime()) / (365.25 * 24 * 3600 * 1000))
+    : null
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(640px,calc(100vw-24px))] max-h-[calc(100vh-40px)] bg-white rounded-2xl shadow-2xl z-[61] flex flex-col overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
+          <div>
+            <p className="text-base font-semibold text-gray-900">
+              {p?.full_name ?? 'Пациент'}
+              {p?.is_vip && <span className="ml-2 text-xs font-bold text-yellow-600">VIP</span>}
+            </p>
+            {p?.patient_number && <p className="text-xs text-gray-400 mt-0.5">№ {p.patient_number}</p>}
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1" title="Закрыть">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 text-sm space-y-4">
+          {loading && <p className="text-gray-400">Загрузка…</p>}
+          {err && <p className="text-red-600">Ошибка: {err}</p>}
+          {p && !loading && (
+            <>
+              {/* Status chips */}
+              <div className="flex flex-wrap gap-1.5">
+                {p.status && (
+                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-blue-50 text-blue-700">
+                    {PATIENT_STATUS_LABEL[p.status] ?? p.status}
+                  </span>
+                )}
+                {p.pregnancy_status === 'yes' && (
+                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-pink-50 text-pink-700">
+                    🤰 Беременность{p.pregnancy_weeks ? ` · ${p.pregnancy_weeks} нед` : ''}
+                  </span>
+                )}
+                {p.menopause_status && p.menopause_status !== 'no' && (
+                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-purple-50 text-purple-700">
+                    Менопауза: {p.menopause_status === 'peri' ? 'пери' : 'пост'}
+                  </span>
+                )}
+                {(p.tags ?? []).map(t => (
+                  <span key={t} className="text-xs font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600">{t}</span>
+                ))}
+              </div>
+
+              {/* Demographics grid */}
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <InfoRow label="Пол" value={p.gender === 'male' ? 'Мужской' : p.gender === 'female' ? 'Женский' : p.gender === 'other' ? 'Другой' : '—'} />
+                <InfoRow label="Возраст" value={age != null ? `${age} лет` : '—'} />
+                <InfoRow label="Дата рождения" value={p.birth_date ? new Date(p.birth_date).toLocaleDateString('ru-RU') : '—'} />
+                <InfoRow label="ИИН" value={p.iin ?? '—'} />
+                <InfoRow label="Телефон" value={(p.phones ?? []).join(', ') || '—'} />
+                <InfoRow label="Email" value={p.email ?? '—'} />
+                <InfoRow label="Город" value={p.city ?? '—'} />
+                <InfoRow label="Создан" value={p.created_at ? new Date(p.created_at).toLocaleDateString('ru-RU') : '—'} />
+              </div>
+
+              {/* Finance */}
+              <div className="border-t border-gray-100 pt-3">
+                <p className="text-xs font-semibold text-gray-500 mb-2">ФИНАНСЫ</p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                  <InfoRow label="Баланс" value={`${(p.balance_amount ?? 0).toLocaleString('ru-RU')} ₸`} valueClass={(p.balance_amount ?? 0) > 0 ? 'text-green-700' : ''} />
+                  <InfoRow label="Долг" value={`${(p.debt_amount ?? 0).toLocaleString('ru-RU')} ₸`} valueClass={(p.debt_amount ?? 0) > 0 ? 'text-red-700' : ''} />
+                </div>
+              </div>
+
+              {/* Lab notes */}
+              {p.lab_notes && (
+                <div className="border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold text-gray-500 mb-1">ЛАБ. ЗАМЕТКИ</p>
+                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{p.lab_notes}</p>
+                </div>
+              )}
+
+              {/* Notes */}
+              {p.notes && (
+                <div className="border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold text-gray-500 mb-1">ЗАМЕТКИ</p>
+                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{p.notes}</p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 flex justify-end gap-2">
+          <a
+            href={`/patients/${patientId}`}
+            className="text-xs font-medium text-blue-600 hover:text-blue-800 px-3 py-2 rounded-lg hover:bg-blue-50"
+          >
+            Открыть полную карточку →
+          </a>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs font-medium text-gray-600 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100"
+          >
+            Закрыть
+          </button>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function InfoRow({ label, value, valueClass = '' }: { label: string; value: string; valueClass?: string }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-400">{label}</p>
+      <p className={`text-sm text-gray-800 ${valueClass}`}>{value}</p>
     </div>
   )
 }
