@@ -1209,6 +1209,153 @@ function downloadCSV(filename: string, rows: (string | number | null | undefined
   URL.revokeObjectURL(url)
 }
 
+/* ─── Cost report (print → save as PDF) ─────────────────── */
+function printCostReport(
+  orders: LabOrderCostRow[],
+  margins: ServiceMarginRow[],
+  monthly: MonthlyCostRow[],
+  kpis: { totalCost: number; ordersCount: number; avgCost: number; avgMargin: number | null; unprofitable: number },
+  dateFrom: string,
+  dateTo: string,
+) {
+  const w = window.open('', '_blank', 'width=900,height=800')
+  if (!w) return
+  const fmt = (v: number | null | undefined) =>
+    v == null ? '—' : v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const fmtInt = (v: number) => v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+
+  // Chart SVG (inline, same logic as CostMonthlyChart)
+  const W = 700, H = 140, PAD_L = 42, PAD_R = 8, PAD_T = 10, PAD_B = 24
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B
+  const max = Math.max(...monthly.map(d => d.cost_total), 1)
+  const barW = plotW / Math.max(monthly.length, 1)
+  const fmtShort = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+  const monthLabel = (m: string) => new Date(m).toLocaleDateString('ru-RU', { month: 'short' })
+  const bars = monthly.map((d, i) => {
+    const h = (d.cost_total / max) * plotH
+    const x = PAD_L + i * barW + barW * 0.15
+    const y = PAD_T + plotH - h
+    const bw = barW * 0.7
+    const label = d.cost_total > 0
+      ? `<text x="${x + bw / 2}" y="${y - 2}" text-anchor="middle" font-size="9" fill="#1f2937" font-weight="600">${fmtShort(d.cost_total)}</text>`
+      : ''
+    return `<g>
+      <rect x="${x}" y="${y}" width="${bw}" height="${h}" fill="#3b82f6" fill-opacity="0.85" rx="2" />
+      <text x="${x + bw / 2}" y="${PAD_T + plotH + 14}" text-anchor="middle" font-size="10" fill="#6b7280">${monthLabel(d.month)}</text>
+      ${label}
+    </g>`
+  }).join('')
+  const chartSvg = monthly.every(m => m.cost_total === 0)
+    ? '<div class="muted" style="padding:20px;text-align:center">Нет данных для графика</div>'
+    : `<svg width="100%" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+        <text x="${PAD_L - 4}" y="${PAD_T + 4}" text-anchor="end" font-size="10" fill="#9ca3af">${fmtShort(max)}</text>
+        <text x="${PAD_L - 4}" y="${PAD_T + plotH}" text-anchor="end" font-size="10" fill="#9ca3af">0</text>
+        <line x1="${PAD_L}" y1="${PAD_T + plotH}" x2="${W - PAD_R}" y2="${PAD_T + plotH}" stroke="#e5e7eb" />
+        ${bars}
+      </svg>`
+
+  const ordersRows = orders.slice(0, 100).map(o => `<tr>
+    <td style="font-family:monospace;font-size:10px">${o.lab_order_id.slice(0, 8)}</td>
+    <td>${(o.patient_name ?? '').replace(/</g, '&lt;')}</td>
+    <td>${o.status}</td>
+    <td style="text-align:right">${o.items_used}</td>
+    <td style="text-align:right;font-weight:600">${fmt(o.cost_total)}</td>
+    <td>${o.ordered_at ? new Date(o.ordered_at).toLocaleDateString('ru-RU') : '—'}</td>
+  </tr>`).join('')
+
+  const servicesRows = margins.map(m => {
+    const pct = m.margin_pct
+    const color = pct == null ? '#9ca3af'
+      : pct >= 50 ? '#16a34a'
+      : pct >= 20 ? '#ca8a04'
+      : pct >= 0  ? '#ea580c'
+                  : '#dc2626'
+    return `<tr>
+      <td>${m.service_name.replace(/</g, '&lt;')}</td>
+      <td style="text-align:right">${fmt(m.price)}</td>
+      <td style="text-align:right">${fmt(m.cost_per_order)}</td>
+      <td style="text-align:right;color:${color};font-weight:600">${pct == null ? '—' : pct.toFixed(1) + '%'}</td>
+      <td style="text-align:right">${m.orders_count}</td>
+      <td style="text-align:right;font-weight:600">${fmt(m.cost_total)}</td>
+    </tr>`
+  }).join('')
+
+  const period = `${dateFrom || '—'} ... ${dateTo || 'сегодня'}`
+  const marginColor = kpis.avgMargin == null ? '#9ca3af'
+    : kpis.avgMargin >= 50 ? '#16a34a'
+    : kpis.avgMargin >= 20 ? '#ca8a04'
+    : kpis.avgMargin >= 0  ? '#ea580c'
+                           : '#dc2626'
+
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Себестоимость лаб. заказов</title>
+  <style>
+    @page { size: A4; margin: 15mm; }
+    body { font-family: Arial, sans-serif; font-size: 12px; color: #111; margin: 0; }
+    h2 { margin: 0 0 4px }
+    .sub { color: #777; font-size: 11px; margin-bottom: 14px }
+    .muted { color: #9ca3af }
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px }
+    .kpi { border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px }
+    .kpi .lbl { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: .4px }
+    .kpi .val { font-size: 18px; font-weight: 600; color: #111; margin-top: 2px }
+    .kpi .u   { font-size: 10px; color: #9ca3af }
+    .section-title { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; margin: 16px 0 6px }
+    table { width: 100%; border-collapse: collapse; font-size: 11px }
+    th { text-align: left; padding: 5px 7px; background: #f8fafc; border-bottom: 2px solid #e2e8f0;
+         font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .3px }
+    td { padding: 5px 7px; border-bottom: 1px solid #f0f0f0 }
+    .foot { margin-top: 18px; font-size: 9px; color: #ccc; border-top: 1px dashed #ddd; padding-top: 6px }
+    .chart-box { border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; margin-bottom: 12px }
+  </style></head><body>
+    <h2>IN HEALTH — Себестоимость лаб. заказов</h2>
+    <div class="sub">Период: ${period} · Сформировано ${new Date().toLocaleString('ru-RU')}</div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lbl">Заказов</div><div class="val">${fmtInt(kpis.ordersCount)}</div></div>
+      <div class="kpi"><div class="lbl">Себест-ть всего</div><div class="val">${fmt(kpis.totalCost)}</div><div class="u">сом</div></div>
+      <div class="kpi"><div class="lbl">Средн. себест-ть</div><div class="val">${fmt(kpis.avgCost)}</div><div class="u">сом / заказ</div></div>
+      <div class="kpi"><div class="lbl">Средн. маржа</div>
+        <div class="val" style="color:${marginColor}">${kpis.avgMargin == null ? '—' : kpis.avgMargin.toFixed(1) + '%'}</div>
+        ${kpis.unprofitable > 0 ? `<div class="u" style="color:#dc2626">⚠ убыточных: ${kpis.unprofitable}</div>` : ''}
+      </div>
+    </div>
+
+    <div class="section-title">Себестоимость по месяцам (12 мес)</div>
+    <div class="chart-box">${chartSvg}</div>
+
+    <div class="section-title">Маржа по услугам</div>
+    <table>
+      <thead><tr>
+        <th>Услуга</th>
+        <th style="text-align:right">Цена</th>
+        <th style="text-align:right">Себест-ть / заказ</th>
+        <th style="text-align:right">Маржа %</th>
+        <th style="text-align:right">Заказов</th>
+        <th style="text-align:right">Себест-ть всего</th>
+      </tr></thead>
+      <tbody>${servicesRows || '<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Данных нет</td></tr>'}</tbody>
+    </table>
+
+    <div class="section-title">Заказы (первые 100)</div>
+    <table>
+      <thead><tr>
+        <th>ID</th><th>Пациент</th><th>Статус</th>
+        <th style="text-align:right">Поз-й</th>
+        <th style="text-align:right">Себест-ть</th>
+        <th>Дата</th>
+      </tr></thead>
+      <tbody>${ordersRows || '<tr><td colspan="6" class="muted" style="text-align:center;padding:12px">Заказов нет</td></tr>'}</tbody>
+    </table>
+
+    <div class="foot">
+      Всего заказов в выборке: ${orders.length} · Услуг с маржой: ${margins.length} · IN HEALTH Clinic System
+    </div>
+    <script>window.onload=()=>{setTimeout(()=>window.print(),300)}</script>
+  </body></html>`)
+  w.document.close()
+}
+
 /* ─── Monthly cost bar chart ─────────────────────────────── */
 function CostMonthlyChart({ data }: { data: MonthlyCostRow[] }) {
   if (data.length === 0) return null
@@ -1485,9 +1632,16 @@ function CostTab({ clinicId }: { clinicId: string }) {
           </button>
         ))}
         <button
+          onClick={() => printCostReport(orders, margins, monthly, kpis, dateFrom, dateTo)}
+          disabled={loading || (orders.length === 0 && margins.length === 0)}
+          title="Отчёт для печати / сохранения в PDF"
+          className="ml-auto px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">
+          🖨 PDF
+        </button>
+        <button
           onClick={view === 'orders' ? exportOrdersCSV : exportServicesCSV}
           disabled={loading || (view === 'orders' ? orders.length === 0 : margins.length === 0)}
-          className="ml-auto px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">
+          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">
           ⬇ CSV
         </button>
       </div>
