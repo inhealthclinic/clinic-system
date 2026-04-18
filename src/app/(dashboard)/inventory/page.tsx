@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
@@ -1183,6 +1183,25 @@ function TemplatesTab({ clinicId }: { clinicId: string }) {
   )
 }
 
+/* ─── CSV helper ─────────────────────────────────────────── */
+function downloadCSV(filename: string, rows: (string | number | null | undefined)[][]) {
+  const esc = (v: string | number | null | undefined) => {
+    if (v == null) return ''
+    const s = String(v)
+    if (/[",;\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+    return s
+  }
+  const csv = rows.map(r => r.map(esc).join(';')).join('\r\n')
+  // Add BOM so Excel picks UTF-8 correctly for Russian text
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+  const url  = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 /* ─── Cost tab ───────────────────────────────────────────── */
 function CostTab({ clinicId }: { clinicId: string }) {
   const supabase = createClient()
@@ -1235,15 +1254,91 @@ function CostTab({ clinicId }: { clinicId: string }) {
 
   useEffect(() => { if (clinicId) load() }, [clinicId, load])
 
-  const totalCost = orders.reduce((s, o) => s + (o.cost_total || 0), 0)
-
   const fmt = (v: number | null | undefined) =>
     v == null ? '—' : v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+  // KPI calculations
+  const kpis = useMemo(() => {
+    const totalCost      = orders.reduce((s, o) => s + (o.cost_total || 0), 0)
+    const ordersCount    = orders.length
+    const avgCost        = ordersCount ? totalCost / ordersCount : 0
+    // Weighted margin across services (weight = orders_count)
+    const marginsWeighted = margins.filter(m => m.margin_pct != null && m.orders_count > 0)
+    const totalWeight = marginsWeighted.reduce((s, m) => s + m.orders_count, 0)
+    const avgMargin = totalWeight > 0
+      ? marginsWeighted.reduce((s, m) => s + (m.margin_pct ?? 0) * m.orders_count, 0) / totalWeight
+      : null
+    const unprofitable = margins.filter(m => m.margin_pct != null && m.margin_pct < 0).length
+    return { totalCost, ordersCount, avgCost, avgMargin, unprofitable }
+  }, [orders, margins])
+  const totalCost = kpis.totalCost
+
+  // Export handlers
+  const exportOrdersCSV = () => {
+    const header = ['ID заказа', 'Пациент', 'Статус', 'Позиций', 'Себестоимость', 'Дата заказа']
+    const rows = orders.map(o => [
+      o.lab_order_id,
+      o.patient_name ?? '',
+      o.status,
+      o.items_used,
+      o.cost_total,
+      o.ordered_at ? new Date(o.ordered_at).toLocaleDateString('ru-RU') : '',
+    ])
+    const period = [dateFrom || 'начало', dateTo || 'сегодня'].join('_')
+    downloadCSV(`lab-costs-orders_${period}.csv`, [header, ...rows])
+  }
+  const exportServicesCSV = () => {
+    const header = ['Услуга', 'Цена', 'Себест-ть/заказ', 'Маржа %', 'Заказов', 'Себест-ть всего']
+    const rows = margins.map(m => [
+      m.service_name,
+      m.price,
+      m.cost_per_order,
+      m.margin_pct,
+      m.orders_count,
+      m.cost_total,
+    ])
+    downloadCSV('lab-costs-services.csv', [header, ...rows])
+  }
+
   return (
     <>
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div className="bg-white border border-gray-100 rounded-xl px-4 py-3">
+          <p className="text-[11px] text-gray-400 uppercase tracking-wide">Заказов</p>
+          <p className="text-xl font-semibold text-gray-900 mt-0.5">{kpis.ordersCount}</p>
+        </div>
+        <div className="bg-white border border-gray-100 rounded-xl px-4 py-3">
+          <p className="text-[11px] text-gray-400 uppercase tracking-wide">Себест-ть всего</p>
+          <p className="text-xl font-semibold text-gray-900 mt-0.5">{fmt(kpis.totalCost)}</p>
+          <p className="text-[11px] text-gray-400">сом</p>
+        </div>
+        <div className="bg-white border border-gray-100 rounded-xl px-4 py-3">
+          <p className="text-[11px] text-gray-400 uppercase tracking-wide">Средн. себест-ть</p>
+          <p className="text-xl font-semibold text-gray-900 mt-0.5">{fmt(kpis.avgCost)}</p>
+          <p className="text-[11px] text-gray-400">сом / заказ</p>
+        </div>
+        <div className={`bg-white border rounded-xl px-4 py-3 ${
+          kpis.unprofitable > 0 ? 'border-red-200' : 'border-gray-100'
+        }`}>
+          <p className="text-[11px] text-gray-400 uppercase tracking-wide">Средн. маржа</p>
+          <p className={`text-xl font-semibold mt-0.5 ${
+            kpis.avgMargin == null ? 'text-gray-400'
+            : kpis.avgMargin >= 50 ? 'text-green-600'
+            : kpis.avgMargin >= 20 ? 'text-yellow-600'
+            : kpis.avgMargin >= 0  ? 'text-orange-600'
+                                   : 'text-red-600'
+          }`}>
+            {kpis.avgMargin == null ? '—' : `${kpis.avgMargin.toFixed(1)}%`}
+          </p>
+          {kpis.unprofitable > 0 && (
+            <p className="text-[11px] text-red-600 mt-0.5">⚠ убыточных: {kpis.unprofitable}</p>
+          )}
+        </div>
+      </div>
+
       {/* Sub-tabs */}
-      <div className="flex gap-1 mb-4">
+      <div className="flex gap-1 mb-4 items-center">
         {[
           { k: 'orders',   label: 'По заказам' },
           { k: 'services', label: 'По услугам' },
@@ -1259,6 +1354,12 @@ function CostTab({ clinicId }: { clinicId: string }) {
             {v.label}
           </button>
         ))}
+        <button
+          onClick={view === 'orders' ? exportOrdersCSV : exportServicesCSV}
+          disabled={loading || (view === 'orders' ? orders.length === 0 : margins.length === 0)}
+          className="ml-auto px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors">
+          ⬇ CSV
+        </button>
       </div>
 
       {view === 'orders' ? (
