@@ -2504,13 +2504,13 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
                         )}
                       </div>
                       <span className="text-xs font-semibold text-gray-800 mr-2">{fmtMoney(Number(p.amount))}</span>
-                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-0.5 flex-shrink-0">
                         <button
                           onClick={() => startEditPayment(p)}
                           title="Редактировать оплату"
-                          className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
+                          className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 border border-blue-100 rounded-md"
                         >
-                          <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
+                          <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
                             <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
                             <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
                           </svg>
@@ -2518,9 +2518,9 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
                         <button
                           onClick={() => deletePayment(p)}
                           title="Удалить оплату"
-                          className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                          className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-100 rounded-md"
                         >
-                          <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
+                          <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
                             <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
                           </svg>
                         </button>
