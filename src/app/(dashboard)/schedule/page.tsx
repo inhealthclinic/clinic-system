@@ -2183,8 +2183,6 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             {patient?.id && (
               <a
                 href={`/patients/${patient.id}`}
-                target="_blank"
-                rel="noopener noreferrer"
                 title="Открыть карту пациента"
                 className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-emerald-600 px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 border border-gray-200 hover:border-emerald-200 transition-colors"
               >
