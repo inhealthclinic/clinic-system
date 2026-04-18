@@ -1683,15 +1683,23 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     birth_date: string | null
     pregnancy_status: 'yes' | 'no' | 'unknown' | null
     pregnancy_weeks: number | null
-    menopause_status: 'no' | 'peri' | 'post' | null
+    menopause_status: 'no' | 'peri' | 'post' | 'unknown' | null
     lab_notes: string | null
+    fasting_status: 'yes' | 'no' | 'unknown' | null
+    taking_medications: 'yes' | 'no' | 'unknown' | null
+    medications_note: string | null
+    cycle_day: number | null
     full_name: string | null
   } | null>(null)
   // Editable nuance drafts — used for snapshot + persisted back to patient
   const [labPreg,       setLabPreg]      = useState<'yes' | 'no' | 'unknown'>('unknown')
   const [labPregWeeks,  setLabPregWeeks] = useState<string>('')
-  const [labMeno,       setLabMeno]      = useState<'no' | 'peri' | 'post' | ''>('')
+  const [labMeno,       setLabMeno]      = useState<'no' | 'peri' | 'post' | 'unknown' | ''>('')
   const [labNotesDraft, setLabNotesDraft] = useState('')
+  const [labFasting,    setLabFasting]   = useState<'yes' | 'no' | 'unknown'>('unknown')
+  const [labMeds,       setLabMeds]      = useState<'yes' | 'no' | 'unknown'>('unknown')
+  const [labMedsNote,   setLabMedsNote]  = useState('')
+  const [labCycleDay,   setLabCycleDay]  = useState<string>('')
 
   // ── Load finance data ─────────────────────────────────────────
   const loadFinance = useCallback(async () => {
@@ -1759,7 +1767,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     // Patient demographic snapshot fields (for lab order snapshot)
     if (appt.patient_id) {
       supabase.from('patients')
-        .select('full_name, gender, birth_date, pregnancy_status, pregnancy_weeks, menopause_status, lab_notes')
+        .select('full_name, gender, birth_date, pregnancy_status, pregnancy_weeks, menopause_status, lab_notes, fasting_status, taking_medications, medications_note, cycle_day')
         .eq('id', appt.patient_id).maybeSingle()
         .then(({ data }) => {
           if (!data) return
@@ -1769,14 +1777,22 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             birth_date: string | null
             pregnancy_status: 'yes' | 'no' | 'unknown' | null
             pregnancy_weeks: number | null
-            menopause_status: 'no' | 'peri' | 'post' | null
+            menopause_status: 'no' | 'peri' | 'post' | 'unknown' | null
             lab_notes: string | null
+            fasting_status: 'yes' | 'no' | 'unknown' | null
+            taking_medications: 'yes' | 'no' | 'unknown' | null
+            medications_note: string | null
+            cycle_day: number | null
           }
           setPatDemo(d)
           setLabPreg(d.pregnancy_status ?? 'unknown')
           setLabPregWeeks(d.pregnancy_weeks != null ? String(d.pregnancy_weeks) : '')
           setLabMeno(d.menopause_status ?? '')
           setLabNotesDraft(d.lab_notes ?? '')
+          setLabFasting(d.fasting_status ?? 'unknown')
+          setLabMeds(d.taking_medications ?? 'unknown')
+          setLabMedsNote(d.medications_note ?? '')
+          setLabCycleDay(d.cycle_day != null ? String(d.cycle_day) : '')
         })
     }
   }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -2104,17 +2120,26 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     const pregWeeksNum = labPreg === 'yes' && labPregWeeks.trim()
       ? Math.max(1, Math.min(42, parseInt(labPregWeeks, 10) || 0)) || null
       : null
+    const cycleDayNum = patDemo?.gender === 'female' && labPreg !== 'yes' && labCycleDay.trim()
+      ? Math.max(1, Math.min(60, parseInt(labCycleDay, 10) || 0)) || null
+      : null
     const labNotesClean = labNotesDraft.trim() || null
+    const medsNoteClean = labMeds === 'yes' ? (labMedsNote.trim() || null) : null
+    const menoSnap = patDemo?.gender === 'female' && labPreg !== 'yes' ? (labMeno || null) : null
 
     // Persist nuances back to patient card (source of truth)
     if (appt.patient_id) {
       const patientUpdate: Record<string, unknown> = {
-        pregnancy_status: labPreg,
-        pregnancy_weeks:  pregWeeksNum,
-        lab_notes:        labNotesClean,
+        pregnancy_status:   labPreg,
+        pregnancy_weeks:    pregWeeksNum,
+        lab_notes:          labNotesClean,
+        fasting_status:     labFasting,
+        taking_medications: labMeds,
+        medications_note:   medsNoteClean,
+        cycle_day:          cycleDayNum,
       }
       if (patDemo?.gender === 'female') {
-        patientUpdate.menopause_status = labMeno || null
+        patientUpdate.menopause_status = menoSnap
       }
       await supabase.from('patients').update(patientUpdate).eq('id', appt.patient_id)
     }
@@ -2128,12 +2153,17 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       status:     'ordered',
       created_by: profile?.id ?? null,
       // Demographic snapshot — frozen for historical accuracy
-      patient_name_snapshot:    patDemo?.full_name ?? null,
-      sex_snapshot:             patDemo?.gender ?? null,
-      age_snapshot:             age,
-      pregnancy_snapshot:       labPreg,
-      pregnancy_weeks_snapshot: pregWeeksNum,
-      lab_notes_snapshot:       labNotesClean,
+      patient_name_snapshot:       patDemo?.full_name ?? null,
+      sex_snapshot:                patDemo?.gender ?? null,
+      age_snapshot:                age,
+      pregnancy_snapshot:          labPreg,
+      pregnancy_weeks_snapshot:    pregWeeksNum,
+      lab_notes_snapshot:          labNotesClean,
+      menopause_snapshot:          menoSnap,
+      fasting_snapshot:            labFasting,
+      taking_medications_snapshot: labMeds,
+      medications_note_snapshot:   medsNoteClean,
+      cycle_day_snapshot:          cycleDayNum,
     }).select('id').single()
     if (orderErr || !order) {
       setTransferringLab(false)
@@ -2705,28 +2735,44 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           pregWeeks={labPregWeeks} setPregWeeks={setLabPregWeeks}
           meno={labMeno} setMeno={setLabMeno}
           notes={labNotesDraft} setNotes={setLabNotesDraft}
+          fasting={labFasting} setFasting={setLabFasting}
+          meds={labMeds} setMeds={setLabMeds}
+          medsNote={labMedsNote} setMedsNote={setLabMedsNote}
+          cycleDay={labCycleDay} setCycleDay={setLabCycleDay}
           onClose={() => setNuanceOpen(false)}
           onSave={async () => {
             if (!appt.patient_id) { setNuanceOpen(false); return }
             const pregWeeksNum = labPreg === 'yes' && labPregWeeks.trim()
               ? Math.max(1, Math.min(42, parseInt(labPregWeeks, 10) || 0)) || null
               : null
+            const cycleDayNum = patDemo.gender === 'female' && labPreg !== 'yes' && labCycleDay.trim()
+              ? Math.max(1, Math.min(60, parseInt(labCycleDay, 10) || 0)) || null
+              : null
+            const medsNoteClean = labMeds === 'yes' ? (labMedsNote.trim() || null) : null
             const patientUpdate: Record<string, unknown> = {
-              pregnancy_status: labPreg,
-              pregnancy_weeks:  pregWeeksNum,
-              lab_notes:        labNotesDraft.trim() || null,
+              pregnancy_status:   labPreg,
+              pregnancy_weeks:    pregWeeksNum,
+              lab_notes:          labNotesDraft.trim() || null,
+              fasting_status:     labFasting,
+              taking_medications: labMeds,
+              medications_note:   medsNoteClean,
+              cycle_day:          cycleDayNum,
             }
             if (patDemo.gender === 'female') {
-              patientUpdate.menopause_status = labMeno || null
+              patientUpdate.menopause_status = labPreg !== 'yes' ? (labMeno || null) : null
             }
             await supabase.from('patients').update(patientUpdate).eq('id', appt.patient_id)
             // Refresh local patDemo so transferToLab uses fresh values
             setPatDemo(prev => prev ? {
               ...prev,
-              pregnancy_status: labPreg,
-              pregnancy_weeks:  pregWeeksNum,
-              menopause_status: patDemo.gender === 'female' ? (labMeno || null) : prev.menopause_status,
-              lab_notes:        labNotesDraft.trim() || null,
+              pregnancy_status:   labPreg,
+              pregnancy_weeks:    pregWeeksNum,
+              menopause_status:   patDemo.gender === 'female' && labPreg !== 'yes' ? (labMeno || null) : null,
+              lab_notes:          labNotesDraft.trim() || null,
+              fasting_status:     labFasting,
+              taking_medications: labMeds,
+              medications_note:   medsNoteClean,
+              cycle_day:          cycleDayNum,
             } : prev)
             setNuanceOpen(false)
           }}
@@ -3147,14 +3193,22 @@ function LabServicesPicker({
 // to the patient record and become the source of truth for the snapshot on
 // "Передать в лабораторию".
 function LabNuancesModal({
-  gender, preg, setPreg, pregWeeks, setPregWeeks, meno, setMeno, notes, setNotes,
+  gender, preg, setPreg, pregWeeks, setPregWeeks, meno, setMeno,
+  notes, setNotes,
+  fasting, setFasting, meds, setMeds, medsNote, setMedsNote,
+  cycleDay, setCycleDay,
   onClose, onSave,
 }: {
   gender: 'male' | 'female' | 'other' | null
   preg: 'yes' | 'no' | 'unknown'; setPreg: (v: 'yes' | 'no' | 'unknown') => void
   pregWeeks: string; setPregWeeks: (v: string) => void
-  meno: 'no' | 'peri' | 'post' | ''; setMeno: (v: 'no' | 'peri' | 'post' | '') => void
+  meno: 'no' | 'peri' | 'post' | 'unknown' | ''
+  setMeno: (v: 'no' | 'peri' | 'post' | 'unknown' | '') => void
   notes: string; setNotes: (v: string) => void
+  fasting: 'yes' | 'no' | 'unknown'; setFasting: (v: 'yes' | 'no' | 'unknown') => void
+  meds: 'yes' | 'no' | 'unknown'; setMeds: (v: 'yes' | 'no' | 'unknown') => void
+  medsNote: string; setMedsNote: (v: string) => void
+  cycleDay: string; setCycleDay: (v: string) => void
   onClose: () => void
   onSave: () => void | Promise<void>
 }) {
@@ -3168,17 +3222,49 @@ function LabNuancesModal({
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md z-10 overflow-hidden">
-        <div className="px-5 py-4 border-b border-amber-100 bg-amber-50 flex items-center gap-2">
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg z-10 overflow-hidden max-h-[calc(100vh-40px)] flex flex-col">
+        <div className="px-5 py-4 border-b border-amber-100 bg-amber-50 flex items-center gap-2 flex-shrink-0">
           <span className="text-lg">🧪</span>
           <div>
             <h3 className="text-base font-semibold text-gray-900">Нюансы для лаборатории</h3>
             <p className="text-[11px] text-amber-700 mt-0.5">Влияют на подбор референсных значений</p>
           </div>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto">
+          {/* Fasting — universal */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Натощак?</label>
+            <div className="grid grid-cols-3 gap-2">
+              {([['yes', 'Да'], ['no', 'Нет'], ['unknown', '—']] as const).map(([k, l]) => (
+                <button key={k} type="button" onClick={() => setFasting(k)}
+                  className={`py-2 rounded-lg border text-sm ${fasting === k ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Medications — universal */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Принимает лекарства?</label>
+            <div className="grid grid-cols-3 gap-2">
+              {([['yes', 'Да'], ['no', 'Нет'], ['unknown', '—']] as const).map(([k, l]) => (
+                <button key={k} type="button" onClick={() => setMeds(k)}
+                  className={`py-2 rounded-lg border text-sm ${meds === k ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            {meds === 'yes' && (
+              <input className={inp + ' mt-2'} value={medsNote}
+                onChange={e => setMedsNote(e.target.value)}
+                placeholder="например: L-тироксин 50 мкг, метформин…" />
+            )}
+          </div>
+
+          {/* Female-only: pregnancy, menopause, cycle day */}
           {gender === 'female' ? (
-            <>
+            <div className="border-t border-gray-100 pt-4 space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">Беременность</label>
@@ -3194,38 +3280,52 @@ function LabNuancesModal({
                     <label className="block text-xs font-medium text-gray-500 mb-1">Срок (нед.)</label>
                     <input type="number" min={1} max={42} className={inp}
                       value={pregWeeks} onChange={e => setPregWeeks(e.target.value)}
-                      placeholder="например, 24" />
+                      placeholder="24" />
                   </div>
                 )}
               </div>
               {preg !== 'yes' && (
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Менопауза</label>
-                  <select className={inp} value={meno}
-                    onChange={e => setMeno(e.target.value as 'no' | 'peri' | 'post' | '')}>
-                    <option value="">— не указано —</option>
-                    <option value="no">Нет</option>
-                    <option value="peri">Пре-/перименопауза</option>
-                    <option value="post">Постменопауза</option>
-                  </select>
-                </div>
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Менопауза</label>
+                    <select className={inp} value={meno}
+                      onChange={e => setMeno(e.target.value as 'no' | 'peri' | 'post' | 'unknown' | '')}>
+                      <option value="">— не указано —</option>
+                      <option value="unknown">Не знаю</option>
+                      <option value="no">Нет</option>
+                      <option value="peri">Пре-/перименопауза</option>
+                      <option value="post">Постменопауза</option>
+                    </select>
+                  </div>
+                  {(meno === 'no' || meno === '' || meno === 'unknown') && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">
+                        День менструального цикла <span className="text-gray-400 font-normal">(необязательно, 1–60)</span>
+                      </label>
+                      <input type="number" min={1} max={60} className={inp}
+                        value={cycleDay} onChange={e => setCycleDay(e.target.value)}
+                        placeholder="например, 3 или 21" />
+                    </div>
+                  )}
+                </>
               )}
-            </>
+            </div>
           ) : (
             <p className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-              Пол: {gender === 'male' ? '♂ мужской' : 'не указан'} — поля беременности/менопаузы не применимы.
+              Пол: {gender === 'male' ? '♂ мужской' : 'не указан'} — поля беременности/менопаузы/цикла не применимы.
             </p>
           )}
-          <div>
+
+          <div className="border-t border-gray-100 pt-4">
             <label className="block text-xs font-medium text-gray-500 mb-1">
-              Лаб. примечание <span className="text-gray-400 font-normal">(препараты, хроника, аллергии)</span>
+              Прочие заметки <span className="text-gray-400 font-normal">(хроника, аллергии)</span>
             </label>
-            <textarea rows={3} className={inp + ' resize-none'}
+            <textarea rows={2} className={inp + ' resize-none'}
               value={notes} onChange={e => setNotes(e.target.value)}
-              placeholder="например: принимает L-тироксин, диабет 2 типа…" />
+              placeholder="например: диабет 2 типа, аллергия на латекс…" />
           </div>
         </div>
-        <div className="px-5 pb-5 flex gap-3">
+        <div className="px-5 py-4 border-t border-gray-100 flex gap-3 flex-shrink-0">
           <button onClick={onClose}
             className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium transition-colors">
             Пропустить
@@ -3262,8 +3362,12 @@ type PatientCardData = {
   notes: string | null
   pregnancy_status: 'yes' | 'no' | 'unknown' | null
   pregnancy_weeks: number | null
-  menopause_status: 'no' | 'peri' | 'post' | null
+  menopause_status: 'no' | 'peri' | 'post' | 'unknown' | null
   lab_notes: string | null
+  fasting_status: 'yes' | 'no' | 'unknown' | null
+  taking_medications: 'yes' | 'no' | 'unknown' | null
+  medications_note: string | null
+  cycle_day: number | null
   created_at: string | null
 }
 
@@ -3293,15 +3397,19 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
   const [notes, setNotes] = useState('')
   const [preg, setPreg] = useState<'yes' | 'no' | 'unknown' | ''>('')
   const [pregWeeks, setPregWeeks] = useState('')
-  const [meno, setMeno] = useState<'no' | 'peri' | 'post' | ''>('')
+  const [meno, setMeno] = useState<'no' | 'peri' | 'post' | 'unknown' | ''>('')
   const [labNotes, setLabNotes] = useState('')
+  const [fasting, setFasting] = useState<'yes' | 'no' | 'unknown' | ''>('')
+  const [meds, setMeds] = useState<'yes' | 'no' | 'unknown' | ''>('')
+  const [medsNote, setMedsNote] = useState('')
+  const [cycleDay, setCycleDay] = useState('')
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     supabase
       .from('patients')
-      .select('id, full_name, phones, iin, gender, birth_date, city, email, patient_number, status, is_vip, balance_amount, debt_amount, tags, notes, pregnancy_status, pregnancy_weeks, menopause_status, lab_notes, created_at')
+      .select('id, full_name, phones, iin, gender, birth_date, city, email, patient_number, status, is_vip, balance_amount, debt_amount, tags, notes, pregnancy_status, pregnancy_weeks, menopause_status, lab_notes, fasting_status, taking_medications, medications_note, cycle_day, created_at')
       .eq('id', patientId)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -3323,8 +3431,12 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
           setNotes(d.notes ?? '')
           setPreg((d.pregnancy_status as 'yes' | 'no' | 'unknown' | null) ?? '')
           setPregWeeks(d.pregnancy_weeks != null ? String(d.pregnancy_weeks) : '')
-          setMeno((d.menopause_status as 'no' | 'peri' | 'post' | null) ?? '')
+          setMeno((d.menopause_status as 'no' | 'peri' | 'post' | 'unknown' | null) ?? '')
           setLabNotes(d.lab_notes ?? '')
+          setFasting((d.fasting_status as 'yes' | 'no' | 'unknown' | null) ?? '')
+          setMeds((d.taking_medications as 'yes' | 'no' | 'unknown' | null) ?? '')
+          setMedsNote(d.medications_note ?? '')
+          setCycleDay(d.cycle_day != null ? String(d.cycle_day) : '')
         }
         setLoading(false)
       })
@@ -3343,22 +3455,29 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
     const pregWeeksNum = preg === 'yes' && pregWeeks.trim()
       ? Math.max(1, Math.min(42, parseInt(pregWeeks, 10) || 0)) || null
       : null
+    const cycleDayNum = gender === 'female' && preg !== 'yes' && cycleDay.trim()
+      ? Math.max(1, Math.min(60, parseInt(cycleDay, 10) || 0)) || null
+      : null
     const patch: Record<string, unknown> = {
-      full_name:        fullName.trim(),
+      full_name:          fullName.trim(),
       phones,
-      iin:              iin.trim() || null,
-      gender:           gender || null,
-      birth_date:       birthDate || null,
-      city:             city.trim() || null,
-      email:            email.trim() || null,
-      status:           status || 'new',
-      is_vip:           isVip,
+      iin:                iin.trim() || null,
+      gender:             gender || null,
+      birth_date:         birthDate || null,
+      city:               city.trim() || null,
+      email:              email.trim() || null,
+      status:             status || 'new',
+      is_vip:             isVip,
       tags,
-      notes:            notes.trim() || null,
-      pregnancy_status: preg || 'unknown',
-      pregnancy_weeks:  pregWeeksNum,
-      menopause_status: gender === 'female' ? (meno || null) : null,
-      lab_notes:        labNotes.trim() || null,
+      notes:              notes.trim() || null,
+      pregnancy_status:   preg || 'unknown',
+      pregnancy_weeks:    pregWeeksNum,
+      menopause_status:   gender === 'female' && preg !== 'yes' ? (meno || null) : null,
+      lab_notes:          labNotes.trim() || null,
+      fasting_status:     fasting || null,
+      taking_medications: meds || null,
+      medications_note:   meds === 'yes' ? (medsNote.trim() || null) : null,
+      cycle_day:          cycleDayNum,
     }
     const { error } = await supabase.from('patients').update(patch).eq('id', patientId)
     setSaving(false)
@@ -3453,10 +3572,43 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
               </div>
 
               {/* Lab nuances */}
-              <div className="border-t border-gray-100 pt-3">
-                <p className="text-xs font-semibold text-gray-500 mb-2">ЛАБОРАТОРНЫЕ НЮАНСЫ</p>
+              <div className="border-t border-gray-100 pt-3 space-y-3">
+                <p className="text-xs font-semibold text-gray-500">ЛАБОРАТОРНЫЕ НЮАНСЫ</p>
+
+                {/* Fasting + meds (universal) */}
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Натощак?">
+                    <div className="flex gap-1">
+                      {([['yes', 'Да'], ['no', 'Нет'], ['unknown', '—'], ['', '']] as const).filter(([k]) => k !== '').map(([k, l]) => (
+                        <button key={k} type="button" onClick={() => setFasting(k as 'yes' | 'no' | 'unknown')}
+                          className={`flex-1 py-1.5 rounded-lg border text-xs ${fasting === k ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+                  </Field>
+                  <Field label="Принимает лекарства?">
+                    <div className="flex gap-1">
+                      {([['yes', 'Да'], ['no', 'Нет'], ['unknown', '—']] as const).map(([k, l]) => (
+                        <button key={k} type="button" onClick={() => setMeds(k)}
+                          className={`flex-1 py-1.5 rounded-lg border text-xs ${meds === k ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+                  </Field>
+                </div>
+                {meds === 'yes' && (
+                  <Field label="Какие лекарства">
+                    <input value={medsNote} onChange={e => setMedsNote(e.target.value)}
+                      placeholder="L-тироксин 50 мкг, метформин…"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                  </Field>
+                )}
+
+                {/* Female-only */}
                 {gender === 'female' ? (
-                  <div className="space-y-3">
+                  <div className="space-y-3 border-t border-gray-100 pt-3">
                     <Field label="Беременность">
                       <div className="flex gap-2">
                         {([['yes', 'Да'], ['no', 'Нет'], ['unknown', 'Неизвестно']] as const).map(([k, l]) => (
@@ -3475,23 +3627,34 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
                       </Field>
                     )}
                     {preg !== 'yes' && (
-                      <Field label="Менопауза">
-                        <div className="flex gap-2">
-                          {([['', '—'], ['no', 'Нет'], ['peri', 'Пери'], ['post', 'Пост']] as const).map(([k, l]) => (
-                            <button key={k || 'none'} type="button" onClick={() => setMeno(k)}
-                              className={`flex-1 py-2 rounded-lg border text-sm ${meno === k ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
-                              {l}
-                            </button>
-                          ))}
-                        </div>
-                      </Field>
+                      <>
+                        <Field label="Менопауза">
+                          <div className="flex gap-2">
+                            {([['', '—'], ['no', 'Нет'], ['peri', 'Пери'], ['post', 'Пост']] as const).map(([k, l]) => (
+                              <button key={k || 'none'} type="button" onClick={() => setMeno(k)}
+                                className={`flex-1 py-2 rounded-lg border text-sm ${meno === k ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                                {l}
+                              </button>
+                            ))}
+                          </div>
+                        </Field>
+                        {(meno === 'no' || meno === '' || meno === 'unknown') && (
+                          <Field label="День менструального цикла (1–60, необязательно)">
+                            <input value={cycleDay} onChange={e => setCycleDay(e.target.value)}
+                              type="number" min={1} max={60}
+                              placeholder="например, 3 или 21"
+                              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                          </Field>
+                        )}
+                      </>
                     )}
                   </div>
                 ) : (
-                  <p className="text-xs text-gray-400 italic">Беременность и менопауза — только для женского пола.</p>
+                  <p className="text-xs text-gray-400 italic">Беременность, менопауза и день цикла — только для женского пола.</p>
                 )}
-                <div className="mt-3">
-                  <Field label="Лаб. заметки (аллергии, приём лекарств и т.п.)">
+
+                <div>
+                  <Field label="Прочие заметки (аллергии, хроника и т.п.)">
                     <textarea value={labNotes} onChange={e => setLabNotes(e.target.value)}
                       rows={2}
                       className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
