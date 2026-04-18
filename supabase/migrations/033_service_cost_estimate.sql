@@ -6,6 +6,56 @@
 -- Идемпотентно.
 -- ============================================================
 
+-- 0) Нормализация схемы inventory_batches.
+--    В проде застряли имена из миграции 011 (remaining, quantity).
+--    UI и эта вьюха ожидают quantity_remaining / quantity_initial.
+DO $normalize_batches$
+BEGIN
+  -- remaining → quantity_remaining
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'inventory_batches' AND column_name = 'quantity_remaining'
+  ) THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'inventory_batches' AND column_name = 'remaining'
+    ) THEN
+      ALTER TABLE inventory_batches RENAME COLUMN remaining TO quantity_remaining;
+    ELSE
+      ALTER TABLE inventory_batches ADD COLUMN quantity_remaining DECIMAL(10,3) NOT NULL DEFAULT 0;
+    END IF;
+  END IF;
+
+  -- quantity → quantity_initial (UI показывает исходное кол-во партии)
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'inventory_batches' AND column_name = 'quantity_initial'
+  ) THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'inventory_batches' AND column_name = 'quantity'
+    ) THEN
+      ALTER TABLE inventory_batches RENAME COLUMN quantity TO quantity_initial;
+    END IF;
+    -- если ни того, ни другого — не добавляем: вьюхе не нужно, UI сам выставит при приходе
+  END IF;
+
+  -- Полезные колонки, на которые UI полагается, добавляем если нет.
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_batches' AND column_name='unit') THEN
+    ALTER TABLE inventory_batches ADD COLUMN unit TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_batches' AND column_name='supplier') THEN
+    ALTER TABLE inventory_batches ADD COLUMN supplier TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_batches' AND column_name='manufactured_at') THEN
+    ALTER TABLE inventory_batches ADD COLUMN manufactured_at DATE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_batches' AND column_name='is_active') THEN
+    ALTER TABLE inventory_batches ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT true;
+  END IF;
+END
+$normalize_batches$;
+
 CREATE OR REPLACE VIEW v_service_cost_estimate AS
 WITH batch_prices AS (
   SELECT
