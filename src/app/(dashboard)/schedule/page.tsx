@@ -1667,6 +1667,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const [labOrderId, setLabOrderId] = useState<string | null>(null)
   const [transferringLab, setTransferringLab] = useState(false)
   const [labPickerOpen, setLabPickerOpen] = useState(false)
+  const [nuanceOpen, setNuanceOpen]       = useState(false)
   const [packages, setPackages] = useState<ServicePackageRow[]>([])
 
   // Patient demographics for lab snapshot (fetched once drawer opens)
@@ -2405,66 +2406,6 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
 
         {/* ── Open visit / Lab transfer ───────────────────────── */}
         <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 space-y-2">
-          {/* Lab demographic nuances — confirmed at transfer time.
-              Influence reference-range matching in the lab. */}
-          {hasLab && !labOrderId && patDemo && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-2.5 space-y-2">
-              <p className="text-[11px] font-semibold text-amber-800 flex items-center gap-1">
-                🧪 Нюансы для лаборатории
-              </p>
-              {patDemo.gender === 'female' ? (
-                <>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div>
-                      <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Беременность</label>
-                      <select value={labPreg}
-                        onChange={e => setLabPreg(e.target.value as 'yes' | 'no' | 'unknown')}
-                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400">
-                        <option value="unknown">Не уточнено</option>
-                        <option value="no">Нет</option>
-                        <option value="yes">🤰 Да</option>
-                      </select>
-                    </div>
-                    {labPreg === 'yes' && (
-                      <div>
-                        <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Срок, нед.</label>
-                        <input type="number" min={1} max={42}
-                          value={labPregWeeks} onChange={e => setLabPregWeeks(e.target.value)}
-                          placeholder="24"
-                          className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400" />
-                      </div>
-                    )}
-                  </div>
-                  {labPreg !== 'yes' && (
-                    <div>
-                      <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Менопауза</label>
-                      <select value={labMeno}
-                        onChange={e => setLabMeno(e.target.value as 'no' | 'peri' | 'post' | '')}
-                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400">
-                        <option value="">— не указано —</option>
-                        <option value="no">Нет</option>
-                        <option value="peri">Пре-/перименопауза</option>
-                        <option value="post">Постменопауза</option>
-                      </select>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <p className="text-[10px] text-gray-500">
-                  Пол: {patDemo.gender === 'male' ? '♂ мужской' : 'не указан'} — поля беременности не применимы.
-                </p>
-              )}
-              <div>
-                <label className="block text-[10px] font-medium text-gray-600 mb-0.5">
-                  Лаб. примечание <span className="text-gray-400 font-normal">(препараты, хроника, аллергии)</span>
-                </label>
-                <textarea rows={2} value={labNotesDraft}
-                  onChange={e => setLabNotesDraft(e.target.value)}
-                  placeholder="например: принимает L-тироксин"
-                  className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-400 resize-none" />
-              </div>
-            </div>
-          )}
           {hasLab && !labOrderId && (
             <button
               onClick={transferToLab}
@@ -2556,6 +2497,44 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           onAccept={async selections => {
             await bulkAddServices(selections)
             setLabPickerOpen(false)
+            // After adding lab analyses, prompt for demographic nuances
+            // that will drive reference-range selection downstream.
+            const anyLab = selections.some(s => s.svc.is_lab)
+            if (anyLab && patDemo) setNuanceOpen(true)
+          }}
+        />
+      )}
+      {nuanceOpen && patDemo && (
+        <LabNuancesModal
+          gender={patDemo.gender}
+          preg={labPreg} setPreg={setLabPreg}
+          pregWeeks={labPregWeeks} setPregWeeks={setLabPregWeeks}
+          meno={labMeno} setMeno={setLabMeno}
+          notes={labNotesDraft} setNotes={setLabNotesDraft}
+          onClose={() => setNuanceOpen(false)}
+          onSave={async () => {
+            if (!appt.patient_id) { setNuanceOpen(false); return }
+            const pregWeeksNum = labPreg === 'yes' && labPregWeeks.trim()
+              ? Math.max(1, Math.min(42, parseInt(labPregWeeks, 10) || 0)) || null
+              : null
+            const patientUpdate: Record<string, unknown> = {
+              pregnancy_status: labPreg,
+              pregnancy_weeks:  pregWeeksNum,
+              lab_notes:        labNotesDraft.trim() || null,
+            }
+            if (patDemo.gender === 'female') {
+              patientUpdate.menopause_status = labMeno || null
+            }
+            await supabase.from('patients').update(patientUpdate).eq('id', appt.patient_id)
+            // Refresh local patDemo so transferToLab uses fresh values
+            setPatDemo(prev => prev ? {
+              ...prev,
+              pregnancy_status: labPreg,
+              pregnancy_weeks:  pregWeeksNum,
+              menopause_status: patDemo.gender === 'female' ? (labMeno || null) : prev.menopause_status,
+              lab_notes:        labNotesDraft.trim() || null,
+            } : prev)
+            setNuanceOpen(false)
           }}
         />
       )}
@@ -2961,6 +2940,105 @@ function LabServicesPicker({
             className="px-5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
           >
             {saving ? 'Сохранение…' : selections.length > 0 ? `Добавить (${selections.length})` : 'Готово'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── LabNuancesModal ──────────────────────────────────────────────────────────
+// Post-picker modal: captures physiological state (pregnancy/menopause/lab notes)
+// that drives reference-range selection for the lab order. Values are persisted
+// to the patient record and become the source of truth for the snapshot on
+// "Передать в лабораторию".
+function LabNuancesModal({
+  gender, preg, setPreg, pregWeeks, setPregWeeks, meno, setMeno, notes, setNotes,
+  onClose, onSave,
+}: {
+  gender: 'male' | 'female' | 'other' | null
+  preg: 'yes' | 'no' | 'unknown'; setPreg: (v: 'yes' | 'no' | 'unknown') => void
+  pregWeeks: string; setPregWeeks: (v: string) => void
+  meno: 'no' | 'peri' | 'post' | ''; setMeno: (v: 'no' | 'peri' | 'post' | '') => void
+  notes: string; setNotes: (v: string) => void
+  onClose: () => void
+  onSave: () => void | Promise<void>
+}) {
+  const [saving, setSaving] = useState(false)
+  const handleSave = async () => {
+    if (saving) return
+    setSaving(true)
+    try { await onSave() } finally { setSaving(false) }
+  }
+  const inp = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent transition'
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md z-10 overflow-hidden">
+        <div className="px-5 py-4 border-b border-amber-100 bg-amber-50 flex items-center gap-2">
+          <span className="text-lg">🧪</span>
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">Нюансы для лаборатории</h3>
+            <p className="text-[11px] text-amber-700 mt-0.5">Влияют на подбор референсных значений</p>
+          </div>
+        </div>
+        <div className="p-5 space-y-4">
+          {gender === 'female' ? (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Беременность</label>
+                  <select className={inp} value={preg}
+                    onChange={e => setPreg(e.target.value as 'yes' | 'no' | 'unknown')}>
+                    <option value="unknown">Не уточнено</option>
+                    <option value="no">Нет</option>
+                    <option value="yes">🤰 Да</option>
+                  </select>
+                </div>
+                {preg === 'yes' && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Срок (нед.)</label>
+                    <input type="number" min={1} max={42} className={inp}
+                      value={pregWeeks} onChange={e => setPregWeeks(e.target.value)}
+                      placeholder="например, 24" />
+                  </div>
+                )}
+              </div>
+              {preg !== 'yes' && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Менопауза</label>
+                  <select className={inp} value={meno}
+                    onChange={e => setMeno(e.target.value as 'no' | 'peri' | 'post' | '')}>
+                    <option value="">— не указано —</option>
+                    <option value="no">Нет</option>
+                    <option value="peri">Пре-/перименопауза</option>
+                    <option value="post">Постменопауза</option>
+                  </select>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+              Пол: {gender === 'male' ? '♂ мужской' : 'не указан'} — поля беременности/менопаузы не применимы.
+            </p>
+          )}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">
+              Лаб. примечание <span className="text-gray-400 font-normal">(препараты, хроника, аллергии)</span>
+            </label>
+            <textarea rows={3} className={inp + ' resize-none'}
+              value={notes} onChange={e => setNotes(e.target.value)}
+              placeholder="например: принимает L-тироксин, диабет 2 типа…" />
+          </div>
+        </div>
+        <div className="px-5 pb-5 flex gap-3">
+          <button onClick={onClose}
+            className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2.5 text-sm font-medium transition-colors">
+            Пропустить
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            {saving ? 'Сохранение…' : 'Сохранить'}
           </button>
         </div>
       </div>
