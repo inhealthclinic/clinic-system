@@ -14,7 +14,6 @@ WITH batch_prices AS (
     clinic_id,
     AVG(price_per_unit) FILTER (
       WHERE price_per_unit IS NOT NULL
-        AND COALESCE(is_active, true) = true
         AND quantity_remaining > 0
     ) AS avg_price
   FROM inventory_batches
