@@ -6,6 +6,29 @@
 -- Идемпотентно.
 -- ============================================================
 
+-- 0) Нормализация схемы: в inventory_batches должен быть столбец price_per_unit
+--    Если в проде стоит старое имя `unit_cost` (из 011) — переименовываем.
+--    Если ни того, ни другого — добавляем.
+DO $normalize$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'inventory_batches'
+      AND column_name = 'price_per_unit'
+  ) THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'inventory_batches'
+        AND column_name = 'unit_cost'
+    ) THEN
+      ALTER TABLE inventory_batches RENAME COLUMN unit_cost TO price_per_unit;
+    ELSE
+      ALTER TABLE inventory_batches ADD COLUMN price_per_unit DECIMAL(12,4);
+    END IF;
+  END IF;
+END
+$normalize$;
+
 -- 1) cost_snapshot на движениях (qty × price_per_unit партии на момент операции)
 ALTER TABLE inventory_movements
   ADD COLUMN IF NOT EXISTS cost_snapshot DECIMAL(12,4);
