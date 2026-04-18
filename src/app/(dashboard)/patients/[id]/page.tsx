@@ -901,6 +901,9 @@ export default function PatientCardPage() {
           >
             ✏️ Редактировать профиль
           </button>
+
+          {/* Портал пациента */}
+          <PortalShareBlock patient={patient} onChange={setPatient} />
         </div>
       )}
 
@@ -1540,6 +1543,132 @@ export default function PatientCardPage() {
           {/* ── Audit history ── */}
           <div className="mt-4">
             <PatientHistory patientId={patient.id} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── PortalShareBlock ────────────────────────────────────────────────────────
+// Генерация / отзыв / копирование публичной ссылки на портал пациента.
+// Пациент в портале подтверждает дату рождения, поэтому утечка токена
+// одна — не даёт доступа к данным, но её всё равно стоит ротировать
+// при подозрении на компрометацию.
+
+function PortalShareBlock({
+  patient,
+  onChange,
+}: {
+  patient: Patient
+  onChange: (p: Patient) => void
+}) {
+  const supabase = createClient()
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const token = patient.portal_token ?? null
+  const createdAt = patient.portal_token_created_at ?? null
+
+  const url =
+    token && typeof window !== 'undefined'
+      ? `${window.location.origin}/portal/${token}`
+      : ''
+
+  async function rotate() {
+    if (busy) return
+    setBusy(true)
+    const { data, error } = await supabase.rpc('fn_patient_portal_rotate', {
+      p_patient_id: patient.id,
+    })
+    setBusy(false)
+    if (error || !data) {
+      alert('Не удалось создать ссылку')
+      return
+    }
+    onChange({
+      ...patient,
+      portal_token: data as string,
+      portal_token_created_at: new Date().toISOString(),
+    })
+  }
+
+  async function revoke() {
+    if (busy) return
+    if (!confirm('Отозвать ссылку на портал? Пациент больше не сможет её открыть.')) return
+    setBusy(true)
+    const { error } = await supabase.rpc('fn_patient_portal_revoke', {
+      p_patient_id: patient.id,
+    })
+    setBusy(false)
+    if (error) { alert('Не удалось отозвать ссылку'); return }
+    onChange({ ...patient, portal_token: null, portal_token_created_at: null })
+  }
+
+  async function copy() {
+    if (!url) return
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // fallback
+      prompt('Скопируйте ссылку:', url)
+    }
+  }
+
+  return (
+    <div className="mt-6 border-t border-gray-100 pt-5">
+      <h3 className="text-sm font-semibold text-gray-900 mb-2">Портал пациента</h3>
+      <p className="text-xs text-gray-500 mb-3">
+        Персональная ссылка для доступа к результатам анализов. Пациент подтверждает
+        личность датой рождения.
+      </p>
+
+      {!token && (
+        <button
+          onClick={rotate}
+          disabled={busy}
+          className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md"
+        >
+          {busy ? 'Создаём…' : 'Создать ссылку'}
+        </button>
+      )}
+
+      {token && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={url}
+              className="flex-1 border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono bg-gray-50"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              onClick={copy}
+              className="px-3 py-1.5 text-sm border border-gray-200 hover:bg-gray-50 rounded-md"
+            >
+              {copied ? '✓ Скопировано' : 'Копировать'}
+            </button>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            {createdAt && (
+              <span>Создана: {new Date(createdAt).toLocaleString('ru-RU')}</span>
+            )}
+            <button
+              onClick={rotate}
+              disabled={busy}
+              className="text-blue-600 hover:text-blue-700 disabled:text-gray-400"
+            >
+              Обновить токен
+            </button>
+            <button
+              onClick={revoke}
+              disabled={busy}
+              className="text-red-600 hover:text-red-700 disabled:text-gray-400"
+            >
+              Отозвать
+            </button>
           </div>
         </div>
       )}
