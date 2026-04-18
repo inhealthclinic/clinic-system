@@ -1626,7 +1626,7 @@ const PAY_STATUS_STYLE: Record<string, { cls: string; label: string }> = {
 }
 
 const METHOD_LABELS: Record<string, string> = {
-  cash: 'Наличные', kaspi: 'Kaspi', halyk: 'Карта', credit: 'Рассрочка', balance: 'Баланс',
+  cash: 'Наличные', kaspi: 'Kaspi', halyk: 'Halyk', credit: 'Рассрочка', balance: 'Баланс',
 }
 
 function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
@@ -1804,7 +1804,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     : [
         { code: 'cash',   label: 'Наличные' },
         { code: 'kaspi',  label: 'Kaspi' },
-        { code: 'halyk',  label: 'Карта' },
+        { code: 'halyk',  label: 'Halyk' },
         { code: 'credit', label: 'Рассрочка' },
       ]
 
@@ -2496,11 +2496,16 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             <>
               <button
                 onClick={transferToLab}
-                disabled={transferringLab || visitId === 'loading'}
-                className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+                disabled={transferringLab || visitId === 'loading' || debt > 0}
+                title={debt > 0 ? `Сначала примите оплату (остаток ${fmtMoney(debt)})` : undefined}
+                className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
               >
                 <span className="text-base leading-none">🧪</span>
-                {transferringLab ? 'Передача...' : 'Передать в лабораторию'}
+                {transferringLab
+                  ? 'Передача...'
+                  : debt > 0
+                    ? `Оплатите, чтобы передать (${fmtMoney(debt)})`
+                    : 'Передать в лабораторию'}
               </button>
               {patDemo && (
                 <button
