@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -55,6 +55,72 @@ function calcFlag(
   if (refMin != null && value < refMin) return 'low'
   if (refMax != null && value > refMax) return 'high'
   return 'normal'
+}
+
+/* ─── Reference-range types & picker ─────────────────────── */
+interface RefRange {
+  id: string
+  service_id: string
+  label: string | null
+  sex: 'M' | 'F' | null
+  age_min: number | null
+  age_max: number | null
+  pregnant: boolean | null
+  min_value: number | null
+  max_value: number | null
+  text: string | null
+  unit: string | null
+}
+
+function ageFromBirth(birthDate: string | null | undefined): number | null {
+  if (!birthDate) return null
+  const now = new Date()
+  const b = new Date(birthDate)
+  let age = now.getFullYear() - b.getFullYear()
+  const m = now.getMonth() - b.getMonth()
+  if (m < 0 || (m === 0 && now.getDate() < b.getDate())) age--
+  return age
+}
+
+function mapSex(g: string | null | undefined): 'M' | 'F' | null {
+  if (g === 'male') return 'M'
+  if (g === 'female') return 'F'
+  return null
+}
+
+function describeRange(r: RefRange): string {
+  if (r.label) return r.label
+  const parts: string[] = []
+  if (r.sex === 'M') parts.push('♂')
+  else if (r.sex === 'F') parts.push('♀')
+  if (r.age_min != null || r.age_max != null) {
+    parts.push(`${r.age_min ?? 0}–${r.age_max ?? '∞'} л.`)
+  }
+  if (r.pregnant === true) parts.push('🤰')
+  return parts.join(' ') || 'группа'
+}
+
+function pickRange(
+  ranges: RefRange[],
+  patSex: 'M' | 'F' | null,
+  patAge: number | null,
+  isPregnant: boolean,
+): RefRange | null {
+  const eligible = ranges.filter(r => {
+    if (r.sex != null && patSex != null && r.sex !== patSex) return false
+    if (r.age_min != null && patAge != null && patAge < r.age_min) return false
+    if (r.age_max != null && patAge != null && patAge > r.age_max) return false
+    if (r.pregnant === true && !isPregnant) return false
+    if (r.pregnant === false && isPregnant) return false
+    return true
+  })
+  if (eligible.length === 0) return null
+  const score = (r: RefRange) =>
+    (r.sex ? 2 : 0) +
+    (r.pregnant != null ? 2 : 0) +
+    (r.age_min != null ? 1 : 0) +
+    (r.age_max != null ? 1 : 0)
+  return eligible.slice().sort((a, b) => score(b) - score(a))[0]
 }
 
 interface PatientHit { id: string; full_name: string; phones: string[] }
@@ -199,12 +265,22 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const [saveRes, setSaveRes]     = useState(false)
   const [takingSample, setTakingSample] = useState(false)
   const [results, setResults]     = useState<Record<string, string>>({})
-  // Service refs map: service_id -> { unit, ref_min, ref_max, ref_text }
-  const [svcRefs, setSvcRefs] = useState<Record<string, {
-    unit: string | null; ref_min: number | null; ref_max: number | null; ref_text: string | null
+
+  // Patient demographics (for ref-range picking)
+  const [patSex, setPatSex] = useState<'M' | 'F' | null>(null)
+  const [patAge, setPatAge] = useState<number | null>(null)
+  const [isPregnant, setIsPregnant] = useState(false)
+
+  // Per-service: default + all demographic ranges
+  const [svcData, setSvcData] = useState<Record<string, {
+    defaultUnit: string | null
+    defaultMin: number | null
+    defaultMax: number | null
+    defaultText: string | null
+    ranges: RefRange[]
   }>>({})
 
-  // Pre-fill existing results; load service references
+  // Pre-fill existing results; load patient + service refs + reference_ranges
   useEffect(() => {
     const init: Record<string, string> = {}
     order.items?.forEach(item => {
@@ -213,28 +289,85 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     })
     setResults(init)
 
+    // Load patient demographics
+    supabase.from('patients')
+      .select('gender, birth_date')
+      .eq('id', order.patient_id)
+      .single()
+      .then(({ data }) => {
+        if (data) {
+          setPatSex(mapSex((data as { gender: string }).gender))
+          setPatAge(ageFromBirth((data as { birth_date: string | null }).birth_date))
+        }
+      })
+
     const svcIds = (order.items ?? [])
       .map(i => i.service_id).filter((x): x is string => !!x)
     if (svcIds.length > 0) {
-      supabase.from('services')
-        .select('id, default_unit, reference_min, reference_max, reference_text')
-        .in('id', svcIds)
-        .then(({ data }) => {
-          const m: typeof svcRefs = {}
-          for (const r of (data ?? []) as Array<{
-            id: string; default_unit: string | null;
-            reference_min: number | null; reference_max: number | null;
-            reference_text: string | null;
-          }>) {
-            m[r.id] = {
-              unit: r.default_unit, ref_min: r.reference_min,
-              ref_max: r.reference_max, ref_text: r.reference_text,
-            }
+      Promise.all([
+        supabase.from('services')
+          .select('id, default_unit, reference_min, reference_max, reference_text')
+          .in('id', svcIds),
+        supabase.from('reference_ranges')
+          .select('*')
+          .in('service_id', svcIds),
+      ]).then(([svcRes, rngRes]) => {
+        const m: typeof svcData = {}
+        for (const r of (svcRes.data ?? []) as Array<{
+          id: string; default_unit: string | null;
+          reference_min: number | null; reference_max: number | null;
+          reference_text: string | null;
+        }>) {
+          m[r.id] = {
+            defaultUnit: r.default_unit,
+            defaultMin: r.reference_min,
+            defaultMax: r.reference_max,
+            defaultText: r.reference_text,
+            ranges: [],
           }
-          setSvcRefs(m)
-        })
+        }
+        for (const r of (rngRes.data ?? []) as RefRange[]) {
+          if (!m[r.service_id]) {
+            m[r.service_id] = { defaultUnit: null, defaultMin: null, defaultMax: null, defaultText: null, ranges: [] }
+          }
+          m[r.service_id].ranges.push(r)
+        }
+        setSvcData(m)
+      })
     }
-  }, [order.id])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [order.id, order.patient_id])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Derived svcRefs: picks best-matching range per service (with pregnancy toggle)
+  const svcRefs = useMemo(() => {
+    const m: Record<string, {
+      unit: string | null
+      ref_min: number | null
+      ref_max: number | null
+      ref_text: string | null
+      label: string | null  // null = default (no specific range matched)
+    }> = {}
+    for (const [sid, d] of Object.entries(svcData)) {
+      const picked = pickRange(d.ranges, patSex, patAge, isPregnant)
+      if (picked) {
+        m[sid] = {
+          unit: picked.unit ?? d.defaultUnit,
+          ref_min: picked.min_value,
+          ref_max: picked.max_value,
+          ref_text: picked.text ?? d.defaultText,
+          label: describeRange(picked),
+        }
+      } else {
+        m[sid] = {
+          unit: d.defaultUnit,
+          ref_min: d.defaultMin,
+          ref_max: d.defaultMax,
+          ref_text: d.defaultText,
+          label: null,
+        }
+      }
+    }
+    return m
+  }, [svcData, patSex, patAge, isPregnant])
 
   const advance = async () => {
     const next = NEXT_STATUS[order.status]
@@ -388,6 +521,28 @@ function OrderDrawer({ order, onClose, onUpdated }: {
             )}
           </div>
 
+          {/* Demographics summary + pregnant toggle */}
+          {hasResults && (patSex || patAge != null) && (
+            <div className="flex flex-wrap items-center gap-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs">
+              <span className="text-gray-600">
+                Для подбора нормы:
+                {patSex === 'F' ? ' ♀ женский' : patSex === 'M' ? ' ♂ мужской' : ''}
+                {patAge != null ? `, ${patAge} лет` : ''}
+              </span>
+              {patSex === 'F' && (
+                <label className="flex items-center gap-1.5 cursor-pointer ml-auto">
+                  <input
+                    type="checkbox"
+                    checked={isPregnant}
+                    onChange={e => setIsPregnant(e.target.checked)}
+                    className="accent-blue-600"
+                  />
+                  <span className="text-gray-700 font-medium">🤰 Беременна</span>
+                </label>
+              )}
+            </div>
+          )}
+
           {/* Items + Results entry */}
           {hasResults && (
             <div>
@@ -438,7 +593,14 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                           </span>
                         )}
                       </div>
-                      <p className="text-[10px] text-gray-400 mt-1">Норма: {refRange}</p>
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        Норма: {refRange}
+                        {refs?.label && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                            {refs.label}
+                          </span>
+                        )}
+                      </p>
                     </div>
                   )
                 })}
