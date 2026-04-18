@@ -301,8 +301,21 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const [demoEditOpen, setDemoEditOpen] = useState(false)
   const [demoPreg, setDemoPreg]         = useState<'yes' | 'no' | 'unknown'>(order.pregnancy_snapshot ?? 'unknown')
   const [demoPregWeeks, setDemoPregWeeks] = useState<string>(order.pregnancy_weeks_snapshot != null ? String(order.pregnancy_weeks_snapshot) : '')
+  const [demoMeno, setDemoMeno]         = useState<'no' | 'peri' | 'post' | ''>('')
   const [demoNotes, setDemoNotes]       = useState<string>(order.lab_notes_snapshot ?? '')
   const [demoSaving, setDemoSaving]     = useState(false)
+
+  // Load menopause_status from patient card when opening the editor
+  // (not stored in order snapshot because it's slow-changing).
+  useEffect(() => {
+    if (!demoEditOpen) return
+    supabase.from('patients')
+      .select('menopause_status')
+      .eq('id', order.patient_id).maybeSingle()
+      .then(({ data }) => {
+        setDemoMeno(((data as { menopause_status?: 'no' | 'peri' | 'post' | null })?.menopause_status) ?? '')
+      })
+  }, [demoEditOpen, order.patient_id])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Per-service: default + all demographic ranges
   const [svcData, setSvcData] = useState<Record<string, {
@@ -723,27 +736,42 @@ function OrderDrawer({ order, onClose, onUpdated }: {
             </div>
             <div className="p-5 space-y-4">
               {effectiveSex === 'F' ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Беременность</label>
-                    <select value={demoPreg}
-                      onChange={e => setDemoPreg(e.target.value as 'yes' | 'no' | 'unknown')}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400">
-                      <option value="unknown">Не уточнено</option>
-                      <option value="no">Нет</option>
-                      <option value="yes">🤰 Да</option>
-                    </select>
-                  </div>
-                  {demoPreg === 'yes' && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Срок (нед.)</label>
-                      <input type="number" min={1} max={42}
-                        value={demoPregWeeks} onChange={e => setDemoPregWeeks(e.target.value)}
-                        placeholder="например, 24"
-                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400" />
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Беременность</label>
+                      <select value={demoPreg}
+                        onChange={e => setDemoPreg(e.target.value as 'yes' | 'no' | 'unknown')}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400">
+                        <option value="unknown">Не уточнено</option>
+                        <option value="no">Нет</option>
+                        <option value="yes">🤰 Да</option>
+                      </select>
+                    </div>
+                    {demoPreg === 'yes' && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Срок (нед.)</label>
+                        <input type="number" min={1} max={42}
+                          value={demoPregWeeks} onChange={e => setDemoPregWeeks(e.target.value)}
+                          placeholder="например, 24"
+                          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400" />
+                      </div>
+                    )}
+                  </div>
+                  {demoPreg !== 'yes' && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Менопауза</label>
+                      <select value={demoMeno}
+                        onChange={e => setDemoMeno(e.target.value as 'no' | 'peri' | 'post' | '')}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400">
+                        <option value="">— не указано —</option>
+                        <option value="no">Нет</option>
+                        <option value="peri">Пре-/перименопауза</option>
+                        <option value="post">Постменопауза</option>
+                      </select>
                     </div>
                   )}
-                </div>
+                </>
               ) : (
                 <p className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
                   Пол: {effectiveSex === 'M' ? '♂ мужской' : 'не указан'} — беременность не применима.
@@ -778,12 +806,17 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                     pregnancy_weeks_snapshot: weeksNum,
                     lab_notes_snapshot:       notesClean,
                   }).eq('id', order.id)
-                  // Update patient record (source of truth for future orders)
-                  await supabase.from('patients').update({
+                  // Update patient record (source of truth for future orders).
+                  // menopause_status isn't in the order snapshot — only on patient.
+                  const patientUpdate: Record<string, unknown> = {
                     pregnancy_status: demoPreg,
                     pregnancy_weeks:  weeksNum,
                     lab_notes:        notesClean,
-                  }).eq('id', order.patient_id)
+                  }
+                  if (effectiveSex === 'F') {
+                    patientUpdate.menopause_status = demoMeno || null
+                  }
+                  await supabase.from('patients').update(patientUpdate).eq('id', order.patient_id)
                   setIsPregnant(demoPreg === 'yes')
                   setDemoSaving(false)
                   setDemoEditOpen(false)
