@@ -1663,6 +1663,12 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const [payType, setPayType] = useState<'payment' | 'prepayment'>('payment')
   const [savingPay, setSavingPay] = useState(false)
 
+  // Inline payment editor
+  const [editingPayId, setEditingPayId] = useState<string | null>(null)
+  const [editPayAmount, setEditPayAmount] = useState('')
+  const [editPayMethod, setEditPayMethod] = useState('cash')
+  const [busyPayId, setBusyPayId] = useState<string | null>(null)
+
   // Lab integration
   const [labOrderId, setLabOrderId] = useState<string | null>(null)
   const [transferringLab, setTransferringLab] = useState(false)
@@ -1955,6 +1961,49 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     }
     await recalc(vid)
     setSavingPay(false)
+  }
+
+  // ── Edit / Delete single payment ──────────────────────────────
+  const startEditPayment = (p: VisitPaymentRow) => {
+    setEditingPayId(p.id)
+    setEditPayAmount(String(p.amount))
+    setEditPayMethod(p.method)
+  }
+  const cancelEditPayment = () => {
+    setEditingPayId(null)
+    setEditPayAmount('')
+  }
+  const saveEditPayment = async (p: VisitPaymentRow) => {
+    const amount = parseFloat(editPayAmount)
+    if (!amount || amount <= 0) return
+    setBusyPayId(p.id)
+    const { error } = await supabase.from('payments')
+      .update({ amount, method: editPayMethod })
+      .eq('id', p.id)
+    if (error) {
+      alert('Не удалось сохранить: ' + error.message)
+      setBusyPayId(null)
+      return
+    }
+    setVisitPayments(prev => prev.map(x =>
+      x.id === p.id ? { ...x, amount, method: editPayMethod } : x
+    ))
+    if (visitId && visitId !== 'loading') await recalc(visitId)
+    setBusyPayId(null)
+    setEditingPayId(null)
+  }
+  const deletePayment = async (p: VisitPaymentRow) => {
+    if (!confirm(`Удалить оплату ${fmtMoney(Number(p.amount))} (${METHOD_LABELS[p.method] ?? p.method})?`)) return
+    setBusyPayId(p.id)
+    const { error } = await supabase.from('payments').delete().eq('id', p.id)
+    if (error) {
+      alert('Не удалось удалить: ' + error.message)
+      setBusyPayId(null)
+      return
+    }
+    setVisitPayments(prev => prev.filter(x => x.id !== p.id))
+    if (visitId && visitId !== 'loading') await recalc(visitId)
+    setBusyPayId(null)
   }
 
   // ── Existing handlers ─────────────────────────────────────────
@@ -2382,23 +2431,103 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             </div>
           )}
 
-          {/* ── Payment history ───────────────────────────────── */}
+          {/* ── Payment history (editable) ───────────────────── */}
           {visitPayments.length > 0 && (
             <div className="border-t border-gray-100 pt-3">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">История оплат</p>
-              <div className="space-y-1.5">
-                {visitPayments.map(p => (
-                  <div key={p.id} className="flex items-center justify-between">
-                    <div className="text-xs text-gray-500">
-                      {new Date(p.paid_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
-                      {' '}
-                      {new Date(p.paid_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
-                      <span className="mx-1 text-gray-300">·</span>
-                      {METHOD_LABELS[p.method] ?? p.method}
+              <div className="space-y-1">
+                {visitPayments.map(p => {
+                  const isEditing = editingPayId === p.id
+                  const isBusy    = busyPayId === p.id
+                  if (isEditing) {
+                    return (
+                      <div key={p.id} className="rounded-lg border border-blue-200 bg-blue-50/50 p-2 space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={editPayAmount}
+                            onChange={e => setEditPayAmount(e.target.value)}
+                            placeholder="Сумма"
+                            autoFocus
+                            className="w-24 border border-gray-200 rounded-md px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-blue-400"
+                          />
+                          <select
+                            value={editPayMethod}
+                            onChange={e => setEditPayMethod(e.target.value)}
+                            className="flex-1 border border-gray-200 rounded-md px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-blue-400"
+                          >
+                            {PAY_METHOD_OPTIONS.map(m => (
+                              <option key={m.code} value={m.code}>{m.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => saveEditPayment(p)}
+                            disabled={isBusy || !editPayAmount}
+                            className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md py-1 text-[11px] font-medium transition-colors"
+                          >
+                            {isBusy ? '…' : 'Сохранить'}
+                          </button>
+                          <button
+                            onClick={cancelEditPayment}
+                            disabled={isBusy}
+                            className="px-2.5 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-md py-1 text-[11px] font-medium"
+                          >
+                            Отмена
+                          </button>
+                          <button
+                            onClick={() => deletePayment(p)}
+                            disabled={isBusy}
+                            title="Удалить оплату"
+                            className="px-2.5 border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-md py-1 text-[11px] font-medium"
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  }
+                  return (
+                    <div key={p.id}
+                      className="group flex items-center justify-between px-2 py-1 rounded-md hover:bg-gray-50 transition-colors">
+                      <div className="text-xs text-gray-500 flex-1 min-w-0">
+                        {new Date(p.paid_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                        {' '}
+                        {new Date(p.paid_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                        <span className="mx-1 text-gray-300">·</span>
+                        {METHOD_LABELS[p.method] ?? p.method}
+                        {p.type === 'prepayment' && (
+                          <span className="ml-1 text-[10px] text-gray-400">(предоплата)</span>
+                        )}
+                      </div>
+                      <span className="text-xs font-semibold text-gray-800 mr-2">{fmtMoney(Number(p.amount))}</span>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => startEditPayment(p)}
+                          title="Редактировать оплату"
+                          className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
+                        >
+                          <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
+                            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                        <button
+                          onClick={() => deletePayment(p)}
+                          title="Удалить оплату"
+                          className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                        >
+                          <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
+                            <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                      </div>
                     </div>
-                    <span className="text-xs font-semibold text-gray-800">{fmtMoney(Number(p.amount))}</span>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}
