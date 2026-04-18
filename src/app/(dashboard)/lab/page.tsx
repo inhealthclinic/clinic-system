@@ -17,6 +17,10 @@ interface LabItem {
   reference_max?: number | null
   reference_text?: string | null
   flag?: 'normal' | 'low' | 'high' | 'critical' | null
+  result_entered_at?: string | null
+  result_entered_by?: string | null
+  verified_at?: string | null
+  verified_by?: string | null
 }
 interface LabOrder {
   id: string
@@ -406,6 +410,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const [saving, setSaving]       = useState(false)
   const [saveRes, setSaveRes]     = useState(false)
   const [takingSample, setTakingSample] = useState(false)
+  const [userMap, setUserMap] = useState<Record<string, string>>({})
   const [sampleModalOpen, setSampleModalOpen] = useState(false)
   const [samples, setSamples] = useState<Array<{
     id: string
@@ -567,6 +572,25 @@ function OrderDrawer({ order, onClose, onUpdated }: {
       }
     }
     setSaving(true)
+    const now = new Date().toISOString()
+    // При верификации — штампуем verified_at/by на все items,
+    // у которых есть введённый результат и нет уже проставленной верификации.
+    if (next.status === 'verified') {
+      const toVerify = (order.items ?? []).filter(i => {
+        if (i.verified_at) return false
+        const hasDb = i.result_value != null || (i.result_text && i.result_text.length > 0)
+        const raw = (results[i.id] ?? '').trim()
+        return hasDb || raw.length > 0
+      })
+      if (toVerify.length > 0) {
+        await Promise.all(toVerify.map(i =>
+          supabase.from('lab_order_items').update({
+            verified_at: now,
+            verified_by: profile?.id ?? null,
+          }).eq('id', i.id)
+        ))
+      }
+    }
     await supabase.from('lab_orders').update({ status: next.status }).eq('id', order.id)
     setSaving(false)
     onUpdated()
@@ -585,6 +609,26 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   }, [order.id, supabase])
 
   useEffect(() => { loadSamples() }, [loadSamples])
+
+  // Подгружаем имена тех, кто вводил/верифицировал результаты
+  useEffect(() => {
+    const ids = new Set<string>()
+    ;(order.items ?? []).forEach(i => {
+      if (i.result_entered_by) ids.add(i.result_entered_by)
+      if (i.verified_by)       ids.add(i.verified_by)
+    })
+    if (ids.size === 0) return
+    supabase.from('user_profiles')
+      .select('id, full_name')
+      .in('id', Array.from(ids))
+      .then(({ data }) => {
+        const m: Record<string, string> = {}
+        for (const u of (data ?? []) as Array<{ id: string; full_name: string | null }>) {
+          if (u.full_name) m[u.id] = u.full_name
+        }
+        setUserMap(m)
+      })
+  }, [order.items, supabase])
 
   const confirmTakeSample = async (sampleType: string, comment: string) => {
     setTakingSample(true)
@@ -618,13 +662,18 @@ function OrderDrawer({ order, onClose, onUpdated }: {
 
   const saveResults = async () => {
     setSaveRes(true)
+    const now = new Date().toISOString()
     await Promise.all(
       (order.items ?? []).map(item => {
         const raw = (results[item.id] ?? '').trim()
+        // Нельзя править уже верифицированный результат
+        if (item.verified_at) return Promise.resolve({ error: null })
         if (!raw) {
+          // Очистка черновика — снять штамп ввода тоже
           return supabase.from('lab_order_items').update({
             result_value: null, result_text: null, flag: null,
             unit_snapshot: null, reference_min: null, reference_max: null,
+            result_entered_at: null, result_entered_by: null,
           }).eq('id', item.id)
         }
         const num = Number(raw.replace(',', '.'))
@@ -637,15 +686,17 @@ function OrderDrawer({ order, onClose, onUpdated }: {
         const flag = isNum ? calcFlag(num, refMin, refMax) : null
 
         return supabase.from('lab_order_items').update({
-          result_value:   isNum ? num : null,
-          result_text:    isNum ? null : raw,
-          unit_snapshot:  unit,
-          reference_min:  refMin,
-          reference_max:  refMax,
-          reference_text: refText,
+          result_value:      isNum ? num : null,
+          result_text:       isNum ? null : raw,
+          unit_snapshot:     unit,
+          reference_min:     refMin,
+          reference_max:     refMax,
+          reference_text:    refText,
           flag,
-          completed_at:   new Date().toISOString(),
-          status:         'done',
+          completed_at:      now,
+          status:            'done',
+          result_entered_at: now,
+          result_entered_by: profile?.id ?? null,
         }).eq('id', item.id)
       })
     )
@@ -806,13 +857,38 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                     refs?.ref_min != null || refs?.ref_max != null
                       ? `${refs.ref_min ?? '—'} – ${refs.ref_max ?? '—'}`
                       : refs?.ref_text ?? '—'
+                  const itemVerified = !!item.verified_at
+                  const itemDraft    = !itemVerified && !!item.result_entered_at
+                  const itemRO       = locked || itemVerified
+                  const enteredBy    = item.result_entered_by ? userMap[item.result_entered_by] : null
+                  const verifiedBy   = item.verified_by       ? userMap[item.verified_by]       : null
+                  const fmtDT = (iso: string) =>
+                    new Date(iso).toLocaleString('ru-RU', {
+                      day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'
+                    })
                   return (
-                    <div key={item.id} className="bg-gray-50 rounded-lg px-3 py-2.5">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-sm text-gray-800 font-medium">{item.name}</span>
-                        {item.price != null && (
-                          <span className="text-xs text-gray-400">{item.price.toLocaleString('ru-RU')} ₸</span>
-                        )}
+                    <div key={item.id} className={`rounded-lg px-3 py-2.5 ${
+                      itemVerified ? 'bg-purple-50/60 border border-purple-100'
+                                    : itemDraft ? 'bg-blue-50/40 border border-blue-100'
+                                                : 'bg-gray-50'
+                    }`}>
+                      <div className="flex items-center justify-between mb-1.5 gap-2">
+                        <span className="text-sm text-gray-800 font-medium flex-1 min-w-0 truncate">{item.name}</span>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {itemVerified && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">
+                              ✓ верифицирован
+                            </span>
+                          )}
+                          {itemDraft && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                              черновик
+                            </span>
+                          )}
+                          {item.price != null && (
+                            <span className="text-xs text-gray-400">{item.price.toLocaleString('ru-RU')} ₸</span>
+                          )}
+                        </div>
                       </div>
                       <div className="flex items-center gap-2">
                         <input
@@ -820,8 +896,9 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                           value={raw}
                           onChange={e => setResults(prev => ({ ...prev, [item.id]: e.target.value }))}
                           placeholder="Результат"
-                          readOnly={locked}
-                          className={`flex-1 border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none ${locked ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}`}
+                          readOnly={itemRO}
+                          title={itemVerified ? 'Результат верифицирован — редактирование запрещено' : undefined}
+                          className={`flex-1 border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none ${itemRO ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}`}
                         />
                         {refs?.unit && (
                           <span className="text-xs text-gray-500 whitespace-nowrap">{refs.unit}</span>
@@ -840,6 +917,24 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                           </span>
                         )}
                       </p>
+                      {(itemDraft || itemVerified) && (
+                        <div className="mt-1.5 pt-1.5 border-t border-gray-200/60 text-[10px] text-gray-500 space-y-0.5">
+                          {item.result_entered_at && (
+                            <div>
+                              <span className="text-gray-400">Ввёл:</span>{' '}
+                              <span className="text-gray-700">{enteredBy ?? '—'}</span>
+                              <span className="text-gray-400"> · {fmtDT(item.result_entered_at)}</span>
+                            </div>
+                          )}
+                          {item.verified_at && (
+                            <div>
+                              <span className="text-purple-400">Верифицировал:</span>{' '}
+                              <span className="text-purple-700 font-medium">{verifiedBy ?? '—'}</span>
+                              <span className="text-purple-400"> · {fmtDT(item.verified_at)}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -1333,7 +1428,7 @@ export default function LabPage() {
     setLoading(true)
     let q = supabase
       .from('lab_orders')
-      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag), samples:lab_samples(id,sample_type,collected_at,status)')
+      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag,result_entered_at,result_entered_by,verified_at,verified_by), samples:lab_samples(id,sample_type,collected_at,status)')
       .order('ordered_at', { ascending: false })
       .limit(200)
     if (filter === 'active') q = q.in('status', ['ordered','agreed','paid','sample_taken','in_progress'])
