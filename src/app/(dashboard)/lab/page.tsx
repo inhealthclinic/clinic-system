@@ -36,6 +36,11 @@ interface LabOrder {
   pregnancy_snapshot?: 'yes' | 'no' | 'unknown' | null
   pregnancy_weeks_snapshot?: number | null
   lab_notes_snapshot?: string | null
+  menopause_snapshot?: 'no' | 'peri' | 'post' | 'unknown' | null
+  fasting_snapshot?: 'yes' | 'no' | 'unknown' | null
+  taking_medications_snapshot?: 'yes' | 'no' | 'unknown' | null
+  medications_note_snapshot?: string | null
+  cycle_day_snapshot?: number | null
   patient?: { id: string; full_name: string } | null
   doctor?: { id: string; first_name: string; last_name: string } | null
   items?: LabItem[]
@@ -246,6 +251,10 @@ function printLabReport(
     ${order.sex_snapshot ? `<div><b>Пол:</b> ${order.sex_snapshot === 'male' ? 'М' : order.sex_snapshot === 'female' ? 'Ж' : '—'}</div>` : ''}
     ${order.age_snapshot != null ? `<div><b>Возраст:</b> ${order.age_snapshot} лет</div>` : ''}
     ${order.pregnancy_snapshot === 'yes' ? `<div style="color:#be185d"><b>Беременность:</b> ${order.pregnancy_weeks_snapshot ? order.pregnancy_weeks_snapshot + ' нед.' : 'да'}</div>` : ''}
+    ${order.menopause_snapshot && order.menopause_snapshot !== 'no' && order.menopause_snapshot !== 'unknown' ? `<div><b>Менопауза:</b> ${order.menopause_snapshot === 'peri' ? 'пери' : 'пост'}</div>` : ''}
+    ${order.cycle_day_snapshot != null ? `<div><b>День цикла:</b> ${order.cycle_day_snapshot}</div>` : ''}
+    ${order.fasting_snapshot === 'yes' ? '<div><b>Натощак:</b> да</div>' : order.fasting_snapshot === 'no' ? '<div style="color:#b45309"><b>Натощак:</b> нет</div>' : ''}
+    ${order.taking_medications_snapshot === 'yes' ? `<div style="color:#b45309"><b>Приём лекарств:</b> ${order.medications_note_snapshot ? order.medications_note_snapshot : 'да'}</div>` : ''}
     <div><b>Дата:</b> ${dt}</div>
     ${order.doctor ? `<div><b>Врач:</b> ${order.doctor.last_name} ${order.doctor.first_name}</div>` : ''}
     ${order.order_number ? `<div><b>№:</b> ${order.order_number}</div>` : ''}
