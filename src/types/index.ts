@@ -42,6 +42,8 @@ export type Patient = {
   pregnancy_weeks: number | null
   menopause_status: 'no' | 'peri' | 'post' | null
   lab_notes: string | null
+  portal_token: string | null
+  portal_token_created_at: string | null
   deleted_at: string | null
   created_at: string
   updated_at: string
