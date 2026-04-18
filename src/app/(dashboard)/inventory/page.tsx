@@ -102,6 +102,13 @@ interface ServiceMarginRow {
   margin_pct: number | null
 }
 
+interface MonthlyCostRow {
+  clinic_id: string
+  month: string        // YYYY-MM-DD (first day of month)
+  orders_count: number
+  cost_total: number
+}
+
 type Tab = 'reagents' | 'consumables' | 'movements' | 'templates' | 'cost'
 type ItemType = Reagent | Consumable
 
@@ -1202,11 +1209,62 @@ function downloadCSV(filename: string, rows: (string | number | null | undefined
   URL.revokeObjectURL(url)
 }
 
+/* ─── Monthly cost bar chart ─────────────────────────────── */
+function CostMonthlyChart({ data }: { data: MonthlyCostRow[] }) {
+  if (data.length === 0) return null
+  const W = 600
+  const H = 120
+  const PAD_L = 40, PAD_R = 8, PAD_T = 10, PAD_B = 24
+  const plotW = W - PAD_L - PAD_R
+  const plotH = H - PAD_T - PAD_B
+  const max = Math.max(...data.map(d => d.cost_total), 1)
+  const barW = plotW / data.length
+  const fmt = (v: number) => v >= 1000
+    ? `${(v / 1000).toFixed(1)}k`
+    : v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+  const monthLabel = (m: string) => {
+    const d = new Date(m)
+    return d.toLocaleDateString('ru-RU', { month: 'short' })
+  }
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} className="block">
+      {/* Y-axis: 0 and max */}
+      <text x={PAD_L - 4} y={PAD_T + 4} textAnchor="end" fontSize="10" fill="#9ca3af">{fmt(max)}</text>
+      <text x={PAD_L - 4} y={PAD_T + plotH} textAnchor="end" fontSize="10" fill="#9ca3af">0</text>
+      <line x1={PAD_L} y1={PAD_T + plotH} x2={W - PAD_R} y2={PAD_T + plotH} stroke="#e5e7eb" />
+
+      {data.map((d, i) => {
+        const h = (d.cost_total / max) * plotH
+        const x = PAD_L + i * barW + barW * 0.15
+        const y = PAD_T + plotH - h
+        const w = barW * 0.7
+        return (
+          <g key={d.month}>
+            <rect x={x} y={y} width={w} height={h}
+              fill="#3b82f6" fillOpacity="0.85" rx="2">
+              <title>{`${monthLabel(d.month)}: ${fmt(d.cost_total)} сом (${d.orders_count} заказов)`}</title>
+            </rect>
+            <text x={x + w / 2} y={PAD_T + plotH + 14} textAnchor="middle" fontSize="10" fill="#6b7280">
+              {monthLabel(d.month)}
+            </text>
+            {d.cost_total > 0 && (
+              <text x={x + w / 2} y={y - 2} textAnchor="middle" fontSize="9" fill="#1f2937" fontWeight="600">
+                {fmt(d.cost_total)}
+              </text>
+            )}
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
 /* ─── Cost tab ───────────────────────────────────────────── */
 function CostTab({ clinicId }: { clinicId: string }) {
   const supabase = createClient()
   const [orders, setOrders]     = useState<LabOrderCostRow[]>([])
   const [margins, setMargins]   = useState<ServiceMarginRow[]>([])
+  const [monthly, setMonthly]   = useState<MonthlyCostRow[]>([])
   const [loading, setLoading]   = useState(true)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
@@ -1248,6 +1306,34 @@ function CostTab({ clinicId }: { clinicId: string }) {
       .order('cost_total', { ascending: false })
       .limit(100)
     setMargins((mData ?? []) as ServiceMarginRow[])
+
+    // 3) Месячный тренд за последние 12 месяцев
+    const since = new Date()
+    since.setMonth(since.getMonth() - 11)
+    since.setDate(1); since.setHours(0, 0, 0, 0)
+    const { data: monData } = await supabase.from('v_lab_costs_monthly')
+      .select('*')
+      .eq('clinic_id', clinicId)
+      .gte('month', since.toISOString().slice(0, 10))
+      .order('month')
+    // Заполнить пустые месяцы нулями
+    const filled: MonthlyCostRow[] = []
+    const byMonth: Record<string, MonthlyCostRow> = {}
+    for (const r of (monData ?? []) as MonthlyCostRow[]) {
+      byMonth[r.month.slice(0, 7)] = r
+    }
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(since); d.setMonth(since.getMonth() + i)
+      const key = d.toISOString().slice(0, 7)
+      const existing = byMonth[key]
+      filled.push(existing ?? {
+        clinic_id: clinicId,
+        month: d.toISOString().slice(0, 10),
+        orders_count: 0,
+        cost_total: 0,
+      })
+    }
+    setMonthly(filled)
 
     setLoading(false)
   }, [clinicId, dateFrom, dateTo, supabase])
@@ -1334,6 +1420,50 @@ function CostTab({ clinicId }: { clinicId: string }) {
           {kpis.unprofitable > 0 && (
             <p className="text-[11px] text-red-600 mt-0.5">⚠ убыточных: {kpis.unprofitable}</p>
           )}
+        </div>
+      </div>
+
+      {/* Chart + Top-5 unprofitable */}
+      <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-3 mb-4">
+        <div className="bg-white border border-gray-100 rounded-xl px-4 pt-3 pb-2">
+          <p className="text-[11px] text-gray-400 uppercase tracking-wide mb-2">
+            Себестоимость по месяцам (12 мес)
+          </p>
+          {loading ? (
+            <div className="h-[120px] flex items-center justify-center text-xs text-gray-400">Загрузка...</div>
+          ) : monthly.every(m => m.cost_total === 0) ? (
+            <div className="h-[120px] flex items-center justify-center text-xs text-gray-400">Данных нет</div>
+          ) : (
+            <CostMonthlyChart data={monthly} />
+          )}
+        </div>
+        <div className="bg-white border border-gray-100 rounded-xl px-4 py-3">
+          <p className="text-[11px] text-gray-400 uppercase tracking-wide mb-2">Топ убыточных услуг</p>
+          {(() => {
+            const losers = [...margins]
+              .filter(m => m.margin_pct != null && m.margin_pct < 20)
+              .sort((a, b) => (a.margin_pct ?? 0) - (b.margin_pct ?? 0))
+              .slice(0, 5)
+            if (losers.length === 0) {
+              return <p className="text-xs text-gray-400">Всё в плюсе 🎉</p>
+            }
+            return (
+              <div className="space-y-1.5">
+                {losers.map(m => {
+                  const pct = m.margin_pct ?? 0
+                  const cls = pct < 0 ? 'text-red-600' : pct < 10 ? 'text-orange-600' : 'text-yellow-600'
+                  return (
+                    <div key={m.service_id} className="flex items-center justify-between text-xs">
+                      <span className="text-gray-700 truncate flex-1 pr-2">{m.service_name}</span>
+                      <span className={`font-semibold ${cls} flex-shrink-0`}>
+                        {pct.toFixed(1)}%
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
         </div>
       </div>
 
