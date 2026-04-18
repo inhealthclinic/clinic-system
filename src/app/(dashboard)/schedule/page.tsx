@@ -2038,7 +2038,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   }
 
   const doctor = appt.doctor as { last_name: string; first_name: string; color: string } | undefined
-  const patient = appt.patient as { full_name: string; phones: string[] } | undefined
+  const patient = appt.patient as { id: string; full_name: string; phones: string[] } | undefined
   const st = STATUS_STYLE[appt.status] ?? STATUS_STYLE.pending
 
   const NEXT: Record<string, { status: string; label: string; cls: string }[]> = {
@@ -2180,6 +2180,18 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             {patient?.phones?.[0] && <p className="text-xs text-gray-400 mt-0.5">{patient.phones[0]}</p>}
           </div>
           <div className="flex items-center gap-1 mt-0.5">
+            {patient?.id && (
+              <a
+                href={`/patients/${patient.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Открыть карту пациента"
+                className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-emerald-600 px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 border border-gray-200 hover:border-emerald-200 transition-colors"
+              >
+                <svg width="12" height="12" fill="none" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="1.5"/></svg>
+                Карта пациента
+              </a>
+            )}
             <button onClick={() => setEditOpen(true)} title="Редактировать"
               className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-blue-600 px-2.5 py-1.5 rounded-lg hover:bg-blue-50 border border-gray-200 hover:border-blue-200 transition-colors">
               <svg width="12" height="12" fill="none" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
