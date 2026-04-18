@@ -71,6 +71,54 @@ function ServiceModal({
   const [error, setError]         = useState('')
   const [catOpen, setCatOpen]     = useState(false)
 
+  // Cost estimate from service_inventory_usage × batch prices
+  const [estimate, setEstimate] = useState<{
+    cost: number; missing: number; items: number
+  } | null>(null)
+
+  useEffect(() => {
+    if (!isEdit || !service || !form.is_lab) { setEstimate(null); return }
+    let cancelled = false
+    ;(async () => {
+      const { data } = await supabase.from('v_service_cost_estimate')
+        .select('estimated_cost,missing_price_count,template_items')
+        .eq('service_id', service.id)
+        .maybeSingle()
+      if (cancelled) return
+      if (data && data.template_items > 0) {
+        setEstimate({
+          cost: Number(data.estimated_cost) || 0,
+          missing: Number(data.missing_price_count) || 0,
+          items: Number(data.template_items) || 0,
+        })
+      } else {
+        setEstimate(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [isEdit, service, form.is_lab, supabase])
+
+  // Compute alert level based on price vs estimate
+  const priceNum = parseFloat(form.price) || 0
+  const alert: { level: 'loss'|'thin'|'ok'|'unknown'; text: string } | null = (() => {
+    if (!estimate) return null
+    if (estimate.cost === 0) {
+      return estimate.missing > 0
+        ? { level: 'unknown', text: `Нет цен на ${estimate.missing} из ${estimate.items} позиций шаблона — себестоимость не посчитана` }
+        : null
+    }
+    if (priceNum <= 0) return { level: 'loss', text: `Себестоимость ${estimate.cost.toFixed(2)}, цена не указана` }
+    if (priceNum < estimate.cost) {
+      const loss = estimate.cost - priceNum
+      return { level: 'loss', text: `⚠ Цена (${priceNum.toFixed(2)}) ниже себестоимости (${estimate.cost.toFixed(2)}): убыток ${loss.toFixed(2)} на каждой услуге` }
+    }
+    const margin = ((priceNum - estimate.cost) / priceNum) * 100
+    if (margin < 20) {
+      return { level: 'thin', text: `Маржа всего ${margin.toFixed(1)}%: цена ${priceNum.toFixed(2)}, себест-ть ${estimate.cost.toFixed(2)}` }
+    }
+    return { level: 'ok', text: `Маржа ${margin.toFixed(1)}% (себест-ть ${estimate.cost.toFixed(2)}${estimate.missing > 0 ? `, +${estimate.missing} поз. без цены` : ''})` }
+  })()
+
   const filteredCats = categories.filter(c =>
     c.toLowerCase().includes(form.category.toLowerCase()) && c !== form.category
   )
@@ -248,6 +296,17 @@ function ServiceModal({
               </span>
             </span>
           </label>
+
+          {alert && (
+            <div className={`text-xs rounded-lg px-3 py-2 border ${
+              alert.level === 'loss'    ? 'bg-red-50 border-red-200 text-red-700' :
+              alert.level === 'thin'    ? 'bg-orange-50 border-orange-200 text-orange-700' :
+              alert.level === 'unknown' ? 'bg-yellow-50 border-yellow-200 text-yellow-700' :
+                                          'bg-green-50 border-green-200 text-green-700'
+            }`}>
+              {alert.text}
+            </div>
+          )}
 
           {error && (
             <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
