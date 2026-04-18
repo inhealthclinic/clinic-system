@@ -2436,98 +2436,43 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
             <div className="border-t border-gray-100 pt-3">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">История оплат</p>
               <div className="space-y-1">
-                {visitPayments.map(p => {
-                  const isEditing = editingPayId === p.id
-                  const isBusy    = busyPayId === p.id
-                  if (isEditing) {
-                    return (
-                      <div key={p.id} className="rounded-lg border border-blue-200 bg-blue-50/50 p-2 space-y-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={editPayAmount}
-                            onChange={e => setEditPayAmount(e.target.value)}
-                            placeholder="Сумма"
-                            autoFocus
-                            className="w-24 border border-gray-200 rounded-md px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-blue-400"
-                          />
-                          <select
-                            value={editPayMethod}
-                            onChange={e => setEditPayMethod(e.target.value)}
-                            className="flex-1 border border-gray-200 rounded-md px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-blue-400"
-                          >
-                            {PAY_METHOD_OPTIONS.map(m => (
-                              <option key={m.code} value={m.code}>{m.label}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => saveEditPayment(p)}
-                            disabled={isBusy || !editPayAmount}
-                            className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md py-1 text-[11px] font-medium transition-colors"
-                          >
-                            {isBusy ? '…' : 'Сохранить'}
-                          </button>
-                          <button
-                            onClick={cancelEditPayment}
-                            disabled={isBusy}
-                            className="px-2.5 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-md py-1 text-[11px] font-medium"
-                          >
-                            Отмена
-                          </button>
-                          <button
-                            onClick={() => deletePayment(p)}
-                            disabled={isBusy}
-                            title="Удалить оплату"
-                            className="px-2.5 border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-md py-1 text-[11px] font-medium"
-                          >
-                            🗑
-                          </button>
-                        </div>
-                      </div>
-                    )
-                  }
-                  return (
-                    <div key={p.id}
-                      className="group flex items-center justify-between px-2 py-1 rounded-md hover:bg-gray-50 transition-colors">
-                      <div className="text-xs text-gray-500 flex-1 min-w-0">
-                        {new Date(p.paid_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
-                        {' '}
-                        {new Date(p.paid_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
-                        <span className="mx-1 text-gray-300">·</span>
-                        {METHOD_LABELS[p.method] ?? p.method}
-                        {p.type === 'prepayment' && (
-                          <span className="ml-1 text-[10px] text-gray-400">(предоплата)</span>
-                        )}
-                      </div>
-                      <span className="text-xs font-semibold text-gray-800 mr-2">{fmtMoney(Number(p.amount))}</span>
-                      <div className="flex items-center gap-0.5 flex-shrink-0">
-                        <button
-                          onClick={() => startEditPayment(p)}
-                          title="Редактировать оплату"
-                          className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 border border-blue-100 rounded-md"
-                        >
-                          <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
-                            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                          </svg>
-                        </button>
-                        <button
-                          onClick={() => deletePayment(p)}
-                          title="Удалить оплату"
-                          className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-100 rounded-md"
-                        >
-                          <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
-                            <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                          </svg>
-                        </button>
-                      </div>
+                {visitPayments.map(p => (
+                  <div key={p.id}
+                    className="flex items-center justify-between px-2 py-1 rounded-md hover:bg-gray-50 transition-colors">
+                    <div className="text-xs text-gray-500 flex-1 min-w-0">
+                      {new Date(p.paid_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                      {' '}
+                      {new Date(p.paid_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                      <span className="mx-1 text-gray-300">·</span>
+                      {METHOD_LABELS[p.method] ?? p.method}
+                      {p.type === 'prepayment' && (
+                        <span className="ml-1 text-[10px] text-gray-400">(предоплата)</span>
+                      )}
                     </div>
-                  )
-                })}
+                    <span className="text-xs font-semibold text-gray-800 mr-2">{fmtMoney(Number(p.amount))}</span>
+                    <div className="flex items-center gap-0.5 flex-shrink-0">
+                      <button
+                        onClick={() => startEditPayment(p)}
+                        title="Редактировать оплату"
+                        className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 border border-blue-100 rounded-md"
+                      >
+                        <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
+                          <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                          <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => deletePayment(p)}
+                        title="Удалить оплату"
+                        className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-100 rounded-md"
+                      >
+                        <svg width="12" height="12" fill="none" viewBox="0 0 24 24">
+                          <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -2630,6 +2575,90 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
         />
       )}
       {editOpen && <EditAppointmentModal appt={appt} clinicId={clinicId} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); onUpdate(); onClose() }}/>}
+      {editingPayId && (() => {
+        const p = visitPayments.find(x => x.id === editingPayId)
+        if (!p) return null
+        const isBusy = busyPayId === p.id
+        return (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              onClick={() => !isBusy && cancelEditPayment()} />
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md z-10 overflow-hidden">
+              <div className="px-5 py-4 border-b border-blue-100 bg-blue-50 flex items-center gap-2">
+                <span className="text-lg">💳</span>
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">Редактировать оплату</h3>
+                  <p className="text-[11px] text-blue-700 mt-0.5">
+                    {new Date(p.paid_at).toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' })}
+                  </p>
+                </div>
+              </div>
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Сумма (₸)</label>
+                  <input
+                    type="number" min={0} step="0.01" autoFocus
+                    value={editPayAmount}
+                    onChange={e => setEditPayAmount(e.target.value)}
+                    placeholder="Введите сумму"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Способ оплаты</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {PAY_METHOD_OPTIONS.map(m => (
+                      <button
+                        key={m.code}
+                        type="button"
+                        onClick={() => setEditPayMethod(m.code)}
+                        className={[
+                          'text-sm px-3 py-2 rounded-lg border transition-colors',
+                          editPayMethod === m.code
+                            ? 'bg-blue-600 border-blue-600 text-white font-medium'
+                            : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:text-blue-600',
+                        ].join(' ')}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="text-[11px] text-gray-400 bg-gray-50 rounded-lg px-3 py-2">
+                  💡 После сохранения автоматически пересчитается остаток визита
+                </div>
+              </div>
+              <div className="px-5 pb-5 flex gap-3">
+                <button
+                  onClick={() => deletePayment(p)}
+                  disabled={isBusy}
+                  title="Удалить эту оплату"
+                  className="px-3 border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg py-2.5 text-sm font-medium transition-colors flex items-center gap-1.5"
+                >
+                  <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+                    <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                  </svg>
+                  Удалить
+                </button>
+                <button
+                  onClick={cancelEditPayment}
+                  disabled={isBusy}
+                  className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-60 rounded-lg py-2.5 text-sm font-medium transition-colors"
+                >
+                  Отмена
+                </button>
+                <button
+                  onClick={() => saveEditPayment(p)}
+                  disabled={isBusy || !editPayAmount || parseFloat(editPayAmount) <= 0}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+                >
+                  {isBusy ? 'Сохранение…' : 'Сохранить'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
       {labPickerOpen && (
         <LabServicesPicker
           allServices={allServices}
