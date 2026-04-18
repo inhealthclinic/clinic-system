@@ -44,6 +44,30 @@ interface LabOrder {
   patient?: { id: string; full_name: string } | null
   doctor?: { id: string; first_name: string; last_name: string } | null
   items?: LabItem[]
+  samples?: Array<{ id: string; sample_type: string; collected_at: string; status: string }>
+}
+
+const SAMPLE_TYPES = ['blood','urine','stool','smear','saliva','other'] as const
+const SAMPLE_TYPE_RU: Record<string, string> = {
+  blood:  'Кровь',
+  urine:  'Моча',
+  stool:  'Кал',
+  smear:  'Мазок',
+  saliva: 'Слюна',
+  other:  'Другое',
+}
+const SAMPLE_TYPE_ICON: Record<string, string> = {
+  blood:  '🩸',
+  urine:  '🧴',
+  stool:  '💩',
+  smear:  '🧫',
+  saliva: '💧',
+  other:  '🧪',
+}
+const SAMPLE_STATUS_RU: Record<string, string> = {
+  pending:   'ожидает',
+  collected: 'взят',
+  rejected:  'отклонён',
 }
 
 const FLAG_CLR: Record<string, string> = {
@@ -283,6 +307,94 @@ function printLabReport(
   w.document.close()
 }
 
+/* ─── Sample collection modal ─────────────────────────────── */
+function SampleCollectionModal({
+  orderNumber, patientName, saving, onCancel, onConfirm,
+}: {
+  orderNumber: string | null
+  patientName: string | null
+  saving: boolean
+  onCancel: () => void
+  onConfirm: (sampleType: string, comment: string) => void
+}) {
+  const [sampleType, setSampleType] = useState<typeof SAMPLE_TYPES[number]>('blood')
+  const [comment, setComment]       = useState('')
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={() => !saving && onCancel()} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md z-10 overflow-hidden">
+        <div className="px-5 py-4 border-b border-teal-100 bg-teal-50 flex items-center gap-2">
+          <span className="text-lg">🩸</span>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-base font-semibold text-gray-900">Забор материала</h3>
+            <p className="text-[11px] text-teal-700 mt-0.5 truncate">
+              {orderNumber ?? 'Направление'}
+              {patientName ? ` · ${patientName}` : ''}
+            </p>
+          </div>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-2">
+              Тип материала
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {SAMPLE_TYPES.map(t => {
+                const active = sampleType === t
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setSampleType(t)}
+                    className={`px-2 py-2.5 rounded-lg text-xs font-medium border transition-colors ${
+                      active
+                        ? 'bg-teal-600 text-white border-teal-600'
+                        : 'bg-white text-gray-700 border-gray-200 hover:border-teal-300 hover:bg-teal-50'
+                    }`}
+                  >
+                    <div className="text-base leading-none mb-1">{SAMPLE_TYPE_ICON[t]}</div>
+                    {SAMPLE_TYPE_RU[t]}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">
+              Комментарий <span className="text-gray-400 font-normal">(необязательно)</span>
+            </label>
+            <textarea
+              value={comment}
+              onChange={e => setComment(e.target.value)}
+              rows={2}
+              placeholder="например: гемолиз, вторичная проба, натощак…"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none resize-none"
+            />
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-gray-100 flex gap-2">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={onCancel}
+            className="flex-1 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 rounded-lg py-2.5 text-sm font-medium transition-colors">
+            Отмена
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => onConfirm(sampleType, comment)}
+            className="flex-1 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            {saving ? 'Сохранение…' : 'Сохранить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ─── Order detail drawer ─────────────────────────────────── */
 function OrderDrawer({ order, onClose, onUpdated }: {
   order: LabOrder
@@ -294,6 +406,14 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const [saving, setSaving]       = useState(false)
   const [saveRes, setSaveRes]     = useState(false)
   const [takingSample, setTakingSample] = useState(false)
+  const [sampleModalOpen, setSampleModalOpen] = useState(false)
+  const [samples, setSamples] = useState<Array<{
+    id: string
+    sample_type: string
+    collected_at: string
+    status: string
+    comment: string | null
+  }>>([])
   const [results, setResults]     = useState<Record<string, string>>({})
 
   // Patient demographics from snapshot (or live fallback)
@@ -453,24 +573,47 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     onClose()
   }
 
-  const takeSample = async () => {
+  const loadSamples = useCallback(async () => {
+    const { data } = await supabase.from('lab_samples')
+      .select('id, sample_type, collected_at, status, comment')
+      .eq('lab_order_id', order.id)
+      .order('collected_at', { ascending: false })
+    setSamples((data ?? []) as Array<{
+      id: string; sample_type: string; collected_at: string;
+      status: string; comment: string | null;
+    }>)
+  }, [order.id, supabase])
+
+  useEffect(() => { loadSamples() }, [loadSamples])
+
+  const confirmTakeSample = async (sampleType: string, comment: string) => {
     setTakingSample(true)
     const now = new Date().toISOString()
     // Create sample record
-    await supabase.from('lab_samples').insert({
-      lab_order_id: order.id,
-      sample_type: 'blood',
-      collected_at: now,
-      collected_by: profile?.id ?? null,
-      status: 'collected',
+    const { error: insErr } = await supabase.from('lab_samples').insert({
+      lab_order_id:  order.id,
+      clinic_id:     profile?.clinic_id ?? null,
+      sample_type:   sampleType,
+      collected_at:  now,
+      collected_by:  profile?.id ?? null,
+      status:        'collected',
+      comment:       comment.trim() || null,
     })
-    // Move status forward
-    await supabase.from('lab_orders')
-      .update({ status: 'sample_taken', sample_taken_at: now })
-      .eq('id', order.id)
+    if (insErr) {
+      setTakingSample(false)
+      alert(`Не удалось сохранить образец: ${insErr.message}`)
+      return
+    }
+    // Move status forward only if order is still in pre-sample phase
+    if (!['sample_taken','in_progress','ready','verified','delivered'].includes(order.status)) {
+      await supabase.from('lab_orders')
+        .update({ status: 'sample_taken', sample_taken_at: now })
+        .eq('id', order.id)
+    }
     setTakingSample(false)
+    setSampleModalOpen(false)
+    await loadSamples()
     onUpdated()
-    onClose()
   }
 
   const saveResults = async () => {
@@ -703,15 +846,55 @@ function OrderDrawer({ order, onClose, onUpdated }: {
               </div>
             </div>
           )}
+          {/* Samples history */}
+          {samples.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+                Забор материала
+              </p>
+              <div className="space-y-1.5">
+                {samples.map(s => (
+                  <div key={s.id} className="bg-teal-50/60 border border-teal-100 rounded-lg px-3 py-2 text-xs flex items-start gap-2">
+                    <span className="text-base leading-none">{SAMPLE_TYPE_ICON[s.sample_type] ?? '🧪'}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-gray-900">
+                          {SAMPLE_TYPE_RU[s.sample_type] ?? s.sample_type}
+                        </span>
+                        <span className="text-gray-500">
+                          {new Date(s.collected_at).toLocaleString('ru-RU', {
+                            day: 'numeric', month: 'short',
+                            hour: '2-digit', minute: '2-digit'
+                          })}
+                        </span>
+                        {s.status !== 'collected' && (
+                          <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                            s.status === 'rejected' ? 'bg-red-100 text-red-700'
+                                                    : 'bg-gray-100 text-gray-600'
+                          }`}>
+                            {SAMPLE_STATUS_RU[s.status] ?? s.status}
+                          </span>
+                        )}
+                      </div>
+                      {s.comment && (
+                        <p className="text-gray-600 italic mt-0.5">{s.comment}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="p-5 border-t border-gray-100 space-y-2">
-          {/* Material taken — доступно пока не взят */}
-          {!['sample_taken','in_progress','ready','verified','delivered'].includes(order.status) && (
-            <button onClick={takeSample} disabled={takingSample}
+          {/* Material taken — доступно пока заказ не верифицирован/выдан.
+              Можно брать несколько проб разных типов. */}
+          {!['verified','delivered'].includes(order.status) && (
+            <button onClick={() => setSampleModalOpen(true)} disabled={takingSample}
               className="w-full py-2.5 rounded-lg text-sm font-medium bg-teal-600 hover:bg-teal-700 text-white disabled:opacity-60 transition-colors">
-              {takingSample ? 'Сохранение...' : '🩸 Материал взят'}
+              {samples.length > 0 ? '➕ Добавить пробу' : '🩸 Материал взят'}
             </button>
           )}
           {next && (
@@ -837,6 +1020,16 @@ function OrderDrawer({ order, onClose, onUpdated }: {
             </div>
           </div>
         </div>
+      )}
+
+      {sampleModalOpen && (
+        <SampleCollectionModal
+          orderNumber={order.order_number}
+          patientName={order.patient_name_snapshot ?? order.patient?.full_name ?? null}
+          saving={takingSample}
+          onCancel={() => setSampleModalOpen(false)}
+          onConfirm={confirmTakeSample}
+        />
       )}
     </div>
   )
@@ -1140,7 +1333,7 @@ export default function LabPage() {
     setLoading(true)
     let q = supabase
       .from('lab_orders')
-      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
+      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag), samples:lab_samples(id,sample_type,collected_at,status)')
       .order('ordered_at', { ascending: false })
       .limit(200)
     if (filter === 'active') q = q.in('status', ['ordered','agreed','paid','sample_taken','in_progress'])
@@ -1282,6 +1475,20 @@ export default function LabPage() {
                           ? o.items![0].name
                           : `${o.items![0].name} +${o.items!.length - 1}`)
                       : '—'}
+                    {(o.samples ?? []).length > 0 && (
+                      <div className="flex items-center gap-1 mt-1" title={
+                        (o.samples ?? []).map(s =>
+                          `${SAMPLE_TYPE_RU[s.sample_type] ?? s.sample_type} · ${new Date(s.collected_at).toLocaleString('ru-RU', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })}`
+                        ).join('\n')
+                      }>
+                        {Array.from(new Set((o.samples ?? [])
+                          .filter(s => s.status === 'collected')
+                          .map(s => s.sample_type))).map(t => (
+                          <span key={t} className="text-sm leading-none">{SAMPLE_TYPE_ICON[t] ?? '🧪'}</span>
+                        ))}
+                        <span className="text-[10px] text-teal-700 ml-0.5">{(o.samples ?? []).length}</span>
+                      </div>
+                    )}
                   </td>
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-1.5">
