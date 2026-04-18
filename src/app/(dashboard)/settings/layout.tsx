@@ -10,6 +10,7 @@ const SETTINGS_NAV = [
   { href: '/settings/users',         label: 'Сотрудники',      icon: '👥' },
   { href: '/settings/roles',         label: 'Роли и доступ',   icon: '🔐' },
   { href: '/settings/lab',           label: 'Анализы (шаблоны)', icon: '🧪' },
+  { href: '/settings/lab/references', label: 'Референсы анализов', icon: '📏' },
   { href: '/settings/crm',          label: 'CRM — воронки',   icon: '📊' },
   { href: '/settings/notifications', label: 'Уведомления',     icon: '🔔' },
   { href: '/settings/schedule',     label: 'Типы записей',    icon: '🎨' },
