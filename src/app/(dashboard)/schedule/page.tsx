@@ -2407,14 +2407,27 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
         {/* ── Open visit / Lab transfer ───────────────────────── */}
         <div className="px-5 py-3 border-t border-gray-100 flex-shrink-0 space-y-2">
           {hasLab && !labOrderId && (
-            <button
-              onClick={transferToLab}
-              disabled={transferringLab || visitId === 'loading'}
-              className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
-            >
-              <span className="text-base leading-none">🧪</span>
-              {transferringLab ? 'Передача...' : 'Передать в лабораторию'}
-            </button>
+            <>
+              <button
+                onClick={transferToLab}
+                disabled={transferringLab || visitId === 'loading'}
+                className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+              >
+                <span className="text-base leading-none">🧪</span>
+                {transferringLab ? 'Передача...' : 'Передать в лабораторию'}
+              </button>
+              {patDemo && (
+                <button
+                  onClick={() => setNuanceOpen(true)}
+                  className="w-full flex items-center justify-center gap-1.5 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg py-1.5 text-[11px] font-medium transition-colors"
+                >
+                  🧪 Нюансы для лаборатории
+                  {(patDemo.pregnancy_status === 'yes' || patDemo.lab_notes) && (
+                    <span className="text-[10px] text-amber-500">(заполнено)</span>
+                  )}
+                </button>
+              )}
+            </>
           )}
           {hasLab && labOrderId && (
             <button
