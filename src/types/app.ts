@@ -68,6 +68,8 @@ export interface Patient {
   notes?: string
   manager_id?: string
   doctor_id?: string
+  portal_token?: string | null
+  portal_token_created_at?: string | null
   created_at: string
 }
 
