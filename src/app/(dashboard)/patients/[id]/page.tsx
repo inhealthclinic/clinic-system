@@ -902,6 +902,9 @@ export default function PatientCardPage() {
             ✏️ Редактировать профиль
           </button>
 
+          {/* CRM-сделки */}
+          <PatientDealsBlock patientId={patient.id} />
+
           {/* Портал пациента */}
           <PortalShareBlock patient={patient} onChange={setPatient} />
         </div>
@@ -1672,6 +1675,79 @@ function PortalShareBlock({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── PatientDealsBlock — CRM-сделки пациента + сумма денег по каждой ─────────
+
+interface PatientDealRow {
+  deal_id: string
+  deal_name: string | null
+  deal_amount: number | null
+  deal_status: string
+  deal_created_at: string
+  pipeline_id: string | null
+  stage_id: string | null
+  appointments_count: number
+  visits_completed: number
+  visits_count: number
+  charges_total: number
+  payments_total: number
+}
+
+function PatientDealsBlock({ patientId }: { patientId: string }) {
+  const [rows, setRows] = useState<PatientDealRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [pipelineMap, setPipelineMap] = useState<Record<string, string>>({})
+  const [stageMap, setStageMap] = useState<Record<string, { name: string; color: string }>>({})
+
+  useEffect(() => {
+    const supabase = createClient()
+    ;(async () => {
+      const [journeyRes, pipesRes, stagesRes] = await Promise.all([
+        supabase.from('v_deal_journey').select('*').eq('patient_id', patientId).order('deal_created_at', { ascending: false }),
+        supabase.from('pipelines').select('id,name'),
+        supabase.from('pipeline_stages').select('id,name,color'),
+      ])
+      setRows((journeyRes.data ?? []) as PatientDealRow[])
+      setPipelineMap(Object.fromEntries(((pipesRes.data ?? []) as Array<{id:string;name:string}>).map(p => [p.id, p.name])))
+      setStageMap(Object.fromEntries(((stagesRes.data ?? []) as Array<{id:string;name:string;color:string}>).map(s => [s.id, { name: s.name, color: s.color }])))
+      setLoading(false)
+    })()
+  }, [patientId])
+
+  if (loading) return null
+  if (rows.length === 0) return null
+
+  return (
+    <div className="mt-6 bg-white rounded-xl border border-gray-100 p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-900">CRM-сделки</h3>
+        <Link href="/crm" className="text-xs text-blue-600 hover:underline">→ канбан</Link>
+      </div>
+      <div className="space-y-2">
+        {rows.map(r => {
+          const stage = r.stage_id ? stageMap[r.stage_id] : null
+          return (
+            <div key={r.deal_id} className="flex items-center gap-3 text-sm border border-gray-100 rounded-lg px-3 py-2">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: stage?.color ?? '#94a3b8' }} />
+              <div className="flex-1 min-w-0">
+                <div className="truncate">{r.deal_name || 'Без названия'}</div>
+                <div className="text-xs text-gray-500">
+                  {r.pipeline_id ? pipelineMap[r.pipeline_id] : '—'} · {stage?.name ?? r.deal_status}
+                </div>
+              </div>
+              <div className="text-xs text-gray-500 text-right shrink-0">
+                приёмов {r.appointments_count} · визитов {r.visits_completed}/{r.visits_count}
+              </div>
+              <div className="text-xs font-mono text-right shrink-0 w-28">
+                {Number(r.payments_total).toLocaleString('ru-RU')} / {Number(r.charges_total).toLocaleString('ru-RU')} ₸
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
