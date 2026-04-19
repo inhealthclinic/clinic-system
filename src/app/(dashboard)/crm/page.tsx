@@ -1395,11 +1395,6 @@ function DealModal({
                               WhatsApp
                             </span>
                           )}
-                          {composerMode === 'note' && (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded bg-amber-100 text-gray-800">
-                              🔒 только для команды — клиент не увидит
-                            </span>
-                          )}
                         </div>
 
                         {/* Task-specific extra fields — amoCRM-style */}
