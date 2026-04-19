@@ -338,15 +338,20 @@ UPDATE deals d
 -- Backfill истории: проставить to_stage_id где возможно
 UPDATE deal_stage_history h
    SET to_stage_id = s.id
-  FROM deals d
-  JOIN pipeline_stages s ON s.pipeline_id = d.pipeline_id AND s.code = h.to_stage
- WHERE h.deal_id = d.id AND h.to_stage_id IS NULL;
+  FROM deals d, pipeline_stages s
+ WHERE h.deal_id = d.id
+   AND s.pipeline_id = d.pipeline_id
+   AND s.code = h.to_stage
+   AND h.to_stage_id IS NULL;
 
 UPDATE deal_stage_history h
    SET from_stage_id = s.id
-  FROM deals d
-  JOIN pipeline_stages s ON s.pipeline_id = d.pipeline_id AND s.code = h.from_stage
- WHERE h.deal_id = d.id AND h.from_stage_id IS NULL AND h.from_stage IS NOT NULL;
+  FROM deals d, pipeline_stages s
+ WHERE h.deal_id = d.id
+   AND s.pipeline_id = d.pipeline_id
+   AND s.code = h.from_stage
+   AND h.from_stage_id IS NULL
+   AND h.from_stage IS NOT NULL;
 
 -- ─────────────────────────────────────────────────────────────
 -- 6. Новый триггер на deals: ведёт и TEXT, и FK, считает время на этапе
