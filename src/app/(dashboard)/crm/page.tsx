@@ -606,231 +606,326 @@ function DealModal({
     return stages.find(s => s.id === id)?.name ?? id
   }
 
+  const currentStage = stages.find(s => s.id === form.stage_id)
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
-          <h2 className="text-lg font-medium text-gray-900">
-            {isNew ? 'Новая сделка' : (form.name || form.patient?.full_name || 'Сделка')}
-          </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
+      <div
+        className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* ─── Header ─── */}
+        <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between">
+          <div className="min-w-0">
+            <div className="text-xs text-gray-400 uppercase tracking-wider">Сделка</div>
+            <div className="flex items-center gap-3 mt-0.5">
+              <input
+                type="text"
+                value={form.name ?? ''}
+                onChange={e => setForm({ ...form, name: e.target.value })}
+                placeholder={form.patient?.full_name || 'Новая сделка'}
+                className="text-lg font-semibold text-gray-900 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none min-w-[300px]"
+              />
+              {!isNew && (
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  form.status === 'won' ? 'bg-green-100 text-green-700' :
+                  form.status === 'lost' ? 'bg-red-100 text-red-700' :
+                  form.status === 'closed' ? 'bg-gray-200 text-gray-600' :
+                  'bg-blue-100 text-blue-700'
+                }`}>{form.status}</span>
+              )}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
-        <div className="p-5 space-y-4 text-sm">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
-              <label className="block text-xs text-gray-500 mb-1">Название</label>
-              <input
-                type="text" value={form.name ?? ''}
-                onChange={e => setForm({ ...form, name: e.target.value })}
-                className="w-full border border-gray-300 rounded-md px-2 py-1.5"
-                placeholder="напр. Иванов И.И. — чек-ап"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Воронка</label>
-              <select
-                value={form.pipeline_id ?? ''}
-                onChange={e => {
-                  const pid = e.target.value
-                  const firstStage = stages.find(s => s.pipeline_id === pid)
-                  setForm({ ...form, pipeline_id: pid, stage_id: firstStage?.id ?? null })
-                }}
-                className="w-full border border-gray-300 rounded-md px-2 py-1.5"
-              >
-                {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Этап</label>
-              <select
-                value={form.stage_id ?? ''}
-                onChange={e => setForm({ ...form, stage_id: e.target.value })}
-                className="w-full border border-gray-300 rounded-md px-2 py-1.5"
-              >
-                {pipelineStages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Ответственный</label>
-              <select
-                value={form.responsible_user_id ?? ''}
-                onChange={e => setForm({ ...form, responsible_user_id: e.target.value || null })}
-                className="w-full border border-gray-300 rounded-md px-2 py-1.5"
-              >
-                <option value="">— не назначен —</option>
-                {users.map(u => (
-                  <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Источник</label>
-              <select
-                value={form.source_id ?? ''}
-                onChange={e => setForm({ ...form, source_id: e.target.value || null })}
-                className="w-full border border-gray-300 rounded-md px-2 py-1.5"
-              >
-                <option value="">— не задан —</option>
-                {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Сумма (₸)</label>
-              <input
-                type="number" step="any" value={form.amount ?? ''}
-                onChange={e => setForm({ ...form, amount: e.target.value === '' ? null : Number(e.target.value) })}
-                className="w-full border border-gray-300 rounded-md px-2 py-1.5 font-mono"
-              />
-            </div>
-
-            <div className="col-span-2">
-              <label className="block text-xs text-gray-500 mb-1">Пациент</label>
-              {form.patient ? (
-                <div className="flex items-center justify-between border border-gray-200 rounded-md px-2 py-1.5">
-                  <div>
-                    <div>{form.patient.full_name}</div>
-                    <div className="text-xs text-gray-500">{form.patient.phones?.[0]}</div>
-                  </div>
-                  <button onClick={() => setForm({ ...form, patient_id: null, patient: null })}
-                    className="text-xs text-red-600 hover:text-red-700">Открепить</button>
-                </div>
-              ) : (
-                <>
-                  <input
-                    type="text" value={patientSearch}
-                    onChange={e => setPatientSearch(e.target.value)}
-                    placeholder="Поиск по имени или телефону…"
-                    className="w-full border border-gray-300 rounded-md px-2 py-1.5"
-                  />
-                  {patientResults.length > 0 && (
-                    <div className="mt-1 border border-gray-200 rounded-md max-h-40 overflow-y-auto">
-                      {patientResults.map(p => (
-                        <button key={p.id} onClick={() => {
-                          setForm({ ...form, patient_id: p.id, patient: p })
-                          setPatientSearch(''); setPatientResults([])
-                        }} className="w-full text-left px-2 py-1.5 hover:bg-blue-50">
-                          <div>{p.full_name}</div>
-                          <div className="text-xs text-gray-500">{p.phones?.[0]}</div>
-                        </button>
-                      ))}
-                    </div>
+        {/* ─── Stage progress strip (amoCRM-style) ─── */}
+        <div className="bg-white border-b border-gray-200 px-6 py-3">
+          <div className="flex items-center gap-1 overflow-x-auto pb-1">
+            {pipelineStages.map((s, idx) => {
+              const active = form.stage_id === s.id
+              const isWonLost = s.stage_role === 'won' || s.stage_role === 'lost' || s.stage_role === 'closed'
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => setForm({ ...form, stage_id: s.id })}
+                  title={s.name}
+                  className={`relative px-3 py-2 text-xs whitespace-nowrap transition-colors ${
+                    idx === 0 ? 'rounded-l' : ''
+                  } ${idx === pipelineStages.length - 1 ? 'rounded-r' : ''} ${
+                    isWonLost ? 'border-l-2 border-white ml-1' : ''
+                  }`}
+                  style={{
+                    background: active ? s.color : '#f1f5f9',
+                    color: active ? '#fff' : '#475569',
+                    fontWeight: active ? 600 : 400,
+                    minWidth: 100,
+                  }}
+                >
+                  {s.name}
+                  {active && (
+                    <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent"
+                          style={{ borderTopColor: s.color }} />
                   )}
-                </>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* ─── Body: 2 columns ─── */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* LEFT: properties */}
+          <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto">
+            <div className="p-5 space-y-4 text-sm">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Воронка</label>
+                <select
+                  value={form.pipeline_id ?? ''}
+                  onChange={e => {
+                    const pid = e.target.value
+                    const firstStage = stages.find(s => s.pipeline_id === pid)
+                    setForm({ ...form, pipeline_id: pid, stage_id: firstStage?.id ?? null })
+                  }}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                >
+                  {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Ответственный</label>
+                <select
+                  value={form.responsible_user_id ?? ''}
+                  onChange={e => setForm({ ...form, responsible_user_id: e.target.value || null })}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                >
+                  <option value="">— не назначен —</option>
+                  {users.map(u => (
+                    <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Источник</label>
+                <select
+                  value={form.source_id ?? ''}
+                  onChange={e => setForm({ ...form, source_id: e.target.value || null })}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                >
+                  <option value="">— не задан —</option>
+                  {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Бюджет (₸)</label>
+                <input
+                  type="number" step="any" value={form.amount ?? ''}
+                  onChange={e => setForm({ ...form, amount: e.target.value === '' ? null : Number(e.target.value) })}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 font-mono hover:border-gray-300"
+                  placeholder="0"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-gray-100">
+                <label className="block text-xs text-gray-500 mb-1.5">Пациент</label>
+                {form.patient ? (
+                  <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50">
+                    <div className="font-medium text-gray-900">{form.patient.full_name}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">{form.patient.phones?.[0] || '— нет телефона —'}</div>
+                    <div className="flex gap-3 mt-2 text-xs">
+                      <Link href={`/patients/${form.patient.id}`} className="text-blue-600 hover:underline">
+                        → карточка
+                      </Link>
+                      <button
+                        onClick={() => setForm({ ...form, patient_id: null, patient: null })}
+                        className="text-red-600 hover:underline"
+                      >
+                        Открепить
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      type="text" value={patientSearch}
+                      onChange={e => setPatientSearch(e.target.value)}
+                      placeholder="Поиск по имени или телефону…"
+                      className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                    />
+                    {patientResults.length > 0 && (
+                      <div className="mt-1 border border-gray-200 rounded max-h-48 overflow-y-auto bg-white shadow-sm">
+                        {patientResults.map(p => (
+                          <button key={p.id} onClick={() => {
+                            setForm({ ...form, patient_id: p.id, patient: p })
+                            setPatientSearch(''); setPatientResults([])
+                          }} className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm">
+                            <div>{p.full_name}</div>
+                            <div className="text-xs text-gray-500">{p.phones?.[0]}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {!isNew && (
+                <div className="pt-3 border-t border-gray-100 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">Этап</span>
+                    <span className="flex items-center gap-1.5">
+                      {currentStage && (
+                        <span className="w-2 h-2 rounded-full" style={{ background: currentStage.color }} />
+                      )}
+                      <span className="font-medium text-gray-900">{stageName(form.stage_id)}</span>
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">В этапе</span>
+                    <span className="font-medium text-gray-900">{fmtAge(form.stage_entered_at)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">Создано</span>
+                    <span className="font-medium text-gray-900">
+                      {new Date(form.created_at).toLocaleDateString('ru-RU')}
+                    </span>
+                  </div>
+                </div>
               )}
             </div>
           </div>
 
-          {/* KPI block */}
-          {!isNew && (
-            <div className="grid grid-cols-3 gap-2 bg-gray-50 border border-gray-200 rounded-md p-3">
-              <div>
-                <div className="text-xs text-gray-500">Этап</div>
-                <div className="text-sm font-medium">{stageName(form.stage_id)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">В этапе</div>
-                <div className="text-sm font-medium">{fmtAge(form.stage_entered_at)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">Статус</div>
-                <div className="text-sm font-medium">{form.status}</div>
-              </div>
-            </div>
-          )}
-
-          {/* Journey: money + visits */}
-          {!isNew && journey && (
-            <div className="grid grid-cols-3 gap-2 bg-emerald-50 border border-emerald-200 rounded-md p-3">
-              <div>
-                <div className="text-xs text-emerald-800">Приёмы</div>
-                <div className="text-sm font-medium">
-                  {journey.appointments_count} · визитов {journey.visits_completed}/{journey.visits_count}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-emerald-800">Начислено</div>
-                <div className="text-sm font-medium font-mono">
-                  {Number(journey.charges_total).toLocaleString('ru-RU')} ₸
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-emerald-800">Оплачено</div>
-                <div className="text-sm font-medium font-mono">
-                  {Number(journey.payments_total).toLocaleString('ru-RU')} ₸
-                  {Number(journey.refunds_total) > 0 && (
-                    <span className="text-red-600 ml-1">
-                      (возврат {Number(journey.refunds_total).toLocaleString('ru-RU')})
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Linked appointments */}
-          {!isNew && appointments.length > 0 && (
-            <div>
-              <div className="text-xs font-medium text-gray-700 mb-1">Привязанные приёмы</div>
-              <div className="border border-gray-200 rounded-md divide-y divide-gray-100 text-xs">
-                {appointments.map(a => (
-                  <div key={a.id} className="px-3 py-2 flex items-center gap-2">
-                    <span className="text-gray-500">{a.date} {a.time_start?.slice(0,5)}</span>
-                    <span className="flex-1 text-gray-700">
-                      {a.doctor ? `${a.doctor.first_name} ${a.doctor.last_name ?? ''}` : '—'}
-                      {a.service ? ` · ${a.service.name}` : ''}
-                    </span>
-                    <span className="text-gray-400">{a.status}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* History */}
-          {!isNew && (
-            <div>
-              <div className="text-xs font-medium text-gray-700 mb-1">История этапов</div>
-              {!historyLoaded && <div className="text-xs text-gray-400">Загрузка…</div>}
-              {historyLoaded && history.length === 0 && <div className="text-xs text-gray-400">Переходов ещё не было</div>}
-              {historyLoaded && history.length > 0 && (
-                <div className="border border-gray-200 rounded-md divide-y divide-gray-100 text-xs">
-                  {history.map(h => (
-                    <div key={h.id} className="px-3 py-2 flex items-center gap-2">
-                      <span className="text-gray-500">{new Date(h.created_at).toLocaleString('ru-RU')}</span>
-                      <span className="flex-1 text-gray-700">
-                        {(h.from_stage_id && stageName(h.from_stage_id)) || h.from_stage || '—'}
-                        {' → '}
-                        <span className="font-medium">{(h.to_stage_id && stageName(h.to_stage_id)) || h.to_stage}</span>
+          {/* RIGHT: feed */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="p-5 space-y-4">
+              {/* Journey KPI */}
+              {!isNew && journey && (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                    <div className="text-xs text-gray-500 uppercase tracking-wider">Приёмы</div>
+                    <div className="text-xl font-semibold mt-1">
+                      {journey.appointments_count}
+                      <span className="text-xs text-gray-400 font-normal ml-2">
+                        визитов {journey.visits_completed}/{journey.visits_count}
                       </span>
-                      <span className="text-gray-400">{fmtDuration(h.time_in_stage_seconds)}</span>
                     </div>
-                  ))}
+                  </div>
+                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                    <div className="text-xs text-gray-500 uppercase tracking-wider">Начислено</div>
+                    <div className="text-xl font-semibold mt-1 font-mono">
+                      {Number(journey.charges_total).toLocaleString('ru-RU')} <span className="text-sm text-gray-400">₸</span>
+                    </div>
+                  </div>
+                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                    <div className="text-xs text-gray-500 uppercase tracking-wider">Оплачено</div>
+                    <div className="text-xl font-semibold mt-1 font-mono text-green-700">
+                      {Number(journey.payments_total).toLocaleString('ru-RU')} <span className="text-sm text-gray-400">₸</span>
+                    </div>
+                    {Number(journey.refunds_total) > 0 && (
+                      <div className="text-xs text-red-600 mt-0.5">
+                        возврат {Number(journey.refunds_total).toLocaleString('ru-RU')} ₸
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Linked appointments */}
+              {!isNew && appointments.length > 0 && (
+                <div className="bg-white border border-gray-200 rounded-lg">
+                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
+                    Привязанные приёмы
+                  </div>
+                  <div className="divide-y divide-gray-100">
+                    {appointments.map(a => (
+                      <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 text-sm">
+                        <div className="text-gray-500 w-32 shrink-0">
+                          {a.date} · {a.time_start?.slice(0,5)}
+                        </div>
+                        <div className="flex-1 text-gray-700">
+                          {a.doctor ? `${a.doctor.first_name} ${a.doctor.last_name ?? ''}` : '—'}
+                          {a.service && <span className="text-gray-500"> · {a.service.name}</span>}
+                        </div>
+                        <span className="text-xs text-gray-400 shrink-0">{a.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Timeline */}
+              {!isNew && (
+                <div className="bg-white border border-gray-200 rounded-lg">
+                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
+                    Хронология
+                  </div>
+                  <div className="p-4">
+                    {!historyLoaded && <div className="text-sm text-gray-400">Загрузка…</div>}
+                    {historyLoaded && history.length === 0 && (
+                      <div className="text-sm text-gray-400">Событий пока нет</div>
+                    )}
+                    {historyLoaded && history.length > 0 && (
+                      <ol className="relative border-l-2 border-gray-100 space-y-4 ml-2">
+                        {history.map(h => {
+                          const fromCol = h.from_stage_id ? stages.find(s => s.id === h.from_stage_id)?.color : null
+                          const toCol   = h.to_stage_id   ? stages.find(s => s.id === h.to_stage_id)?.color   : null
+                          return (
+                            <li key={h.id} className="ml-4 relative">
+                              <span className="absolute -left-[1.4rem] top-1 w-3 h-3 rounded-full border-2 border-white"
+                                    style={{ background: toCol ?? '#94a3b8' }} />
+                              <div className="text-xs text-gray-500">
+                                {new Date(h.created_at).toLocaleString('ru-RU')}
+                              </div>
+                              <div className="text-sm text-gray-800 flex items-center flex-wrap gap-1.5 mt-0.5">
+                                <span className="inline-flex items-center gap-1">
+                                  <span className="w-2 h-2 rounded-full" style={{ background: fromCol ?? '#cbd5e1' }} />
+                                  <span className="text-gray-500">
+                                    {(h.from_stage_id && stageName(h.from_stage_id)) || h.from_stage || '—'}
+                                  </span>
+                                </span>
+                                <span className="text-gray-400">→</span>
+                                <span className="inline-flex items-center gap-1">
+                                  <span className="w-2 h-2 rounded-full" style={{ background: toCol ?? '#94a3b8' }} />
+                                  <span className="font-medium">
+                                    {(h.to_stage_id && stageName(h.to_stage_id)) || h.to_stage}
+                                  </span>
+                                </span>
+                                {h.time_in_stage_seconds != null && (
+                                  <span className="text-xs text-gray-400 ml-1">
+                                    · {fmtDuration(h.time_in_stage_seconds)}
+                                  </span>
+                                )}
+                              </div>
+                            </li>
+                          )
+                        })}
+                      </ol>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
-          )}
+          </div>
         </div>
 
-        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between">
+        {/* ─── Footer ─── */}
+        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-between">
           <div>
             {!isNew && (
               <button onClick={removeDeal} className="text-sm text-red-600 hover:text-red-700">
-                Удалить
+                Удалить сделку
               </button>
             )}
           </div>
           <div className="flex gap-2">
-            <button onClick={onClose} className="px-3 py-1.5 text-sm border border-gray-300 rounded-md">
+            <button onClick={onClose} className="px-4 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">
               Отмена
             </button>
             <button onClick={save} disabled={saving}
-              className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
+              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
               {saving ? 'Сохраняем…' : 'Сохранить'}
             </button>
           </div>
