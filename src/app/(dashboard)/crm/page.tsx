@@ -661,6 +661,8 @@ function DealModal({
   const [sendingPrepay, setSendingPrepay] = useState(false)
   // Статус WhatsApp-интеграции (Green API). null = ещё не проверяли.
   const [waConnected, setWaConnected] = useState<boolean | null>(null)
+  // amoCRM-стиль: меню «…» в шапке карточки (удаление и т.п.).
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false)
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -1048,6 +1050,33 @@ function DealModal({
             </div>
           )}
 
+          {/* «…» меню — в стиле amoCRM. Удаление и прочие редкие действия. */}
+          {!isNew && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowHeaderMenu(v => !v)}
+                onBlur={() => setTimeout(() => setShowHeaderMenu(false), 150)}
+                className="text-gray-400 hover:text-gray-600 text-xl leading-none px-2 h-8 flex items-center"
+                title="Действия"
+                aria-label="Действия"
+              >
+                ⋯
+              </button>
+              {showHeaderMenu && (
+                <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-200 rounded-md shadow-lg z-10 py-1">
+                  <button
+                    type="button"
+                    onMouseDown={e => { e.preventDefault(); setShowHeaderMenu(false); removeDeal() }}
+                    className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                  >
+                    🗑 Удалить сделку
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
@@ -1339,7 +1368,7 @@ function DealModal({
                   </div>
 
                   {activeTab === 'chat' && (
-                    <div className="flex flex-col" style={{ height: '60vh' }}>
+                    <div className="flex flex-col" style={{ height: 'calc(100vh - 240px)', minHeight: '520px' }}>
                       {/* Messages list */}
                       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
                         {(() => {
@@ -1711,14 +1740,7 @@ function DealModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-between">
-          <div>
-            {!isNew && (
-              <button onClick={removeDeal} className="text-sm text-red-600 hover:text-red-700">
-                Удалить сделку
-              </button>
-            )}
-          </div>
+        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-end">
           <div className="flex gap-2">
             <button onClick={onClose} className="px-4 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">
               Отмена
