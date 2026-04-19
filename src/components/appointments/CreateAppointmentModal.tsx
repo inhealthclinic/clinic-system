@@ -18,6 +18,15 @@ import {
 
 type DoctorRow = Pick<Doctor, 'id' | 'first_name' | 'last_name' | 'color' | 'consultation_duration'>
 type PatientMode = 'search' | 'new'
+type PaymentMethodCode = 'cash' | 'kaspi' | 'halyk' | 'credit' | 'balance'
+type PayMethodRow = { id: string; name: string; method_code: PaymentMethodCode }
+
+const FALLBACK_PAY_METHODS: PayMethodRow[] = [
+  { id: 'cash',  name: 'Наличные', method_code: 'cash' },
+  { id: 'kaspi', name: 'Kaspi',    method_code: 'kaspi' },
+  { id: 'halyk', name: 'Halyk',    method_code: 'halyk' },
+  { id: 'credit',name: 'Карта',    method_code: 'credit' },
+]
 
 export interface DefaultPatient {
   id: string
@@ -103,6 +112,13 @@ export function CreateAppointmentModal({
   const [workDayOff, setWorkDayOff]   = useState(false)
   const [slotInterval, setSlotInterval] = useState(15)
 
+  /* ── prepayment ── */
+  const [payMethods, setPayMethods] = useState<PayMethodRow[]>(FALLBACK_PAY_METHODS)
+  const [prepayEnabled, setPrepayEnabled] = useState(false)
+  const [prepayAmount,  setPrepayAmount]  = useState('')
+  const [prepayMethod,  setPrepayMethod]  = useState<PaymentMethodCode>('cash')
+  const [prepayNotes,   setPrepayNotes]   = useState('')
+
   const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition bg-white'
   const labelCls = 'block text-xs font-medium text-gray-600 mb-1.5'
 
@@ -123,6 +139,24 @@ export function CreateAppointmentModal({
         if (list[0] && !defaultDoctorId) setForm(f => ({ ...f, doctor_id: list[0].id }))
       })
   }, [])
+
+  /* ── load clinic payment methods ── */
+  useEffect(() => {
+    if (!clinicId) return
+    supabase
+      .from('payment_methods')
+      .select('id, name, method_code')
+      .eq('clinic_id', clinicId)
+      .eq('is_active', true)
+      .order('sort_order')
+      .then(({ data }) => {
+        const rows = (data ?? []) as PayMethodRow[]
+        if (rows.length > 0) {
+          setPayMethods(rows)
+          setPrepayMethod(rows[0].method_code)
+        }
+      })
+  }, [clinicId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── load clinic working hours ── */
   useEffect(() => {
@@ -328,10 +362,32 @@ export function CreateAppointmentModal({
     }
     if (err || !appt) { setError(err?.message ?? 'Ошибка'); setSaving(false); return }
 
-    await supabase.from('visits').insert({
+    const { data: visit } = await supabase.from('visits').insert({
       clinic_id: clinicId, patient_id: patientId,
       doctor_id: form.doctor_id, appointment_id: appt.id, status: 'open',
-    })
+    }).select('id').single()
+
+    // Предоплата (если включена).
+    const prepayNum = prepayEnabled ? Number(prepayAmount.replace(',', '.')) : 0
+    let prepaymentInserted = false
+    if (prepayEnabled && prepayNum > 0) {
+      const { error: payErr } = await supabase.from('payments').insert({
+        clinic_id:  clinicId,
+        patient_id: patientId,
+        visit_id:   visit?.id ?? null,
+        amount:     prepayNum,
+        method:     prepayMethod,
+        type:       'prepayment',
+        status:     'completed',
+        notes:      prepayNotes.trim() || null,
+      })
+      if (payErr) {
+        setError(`Запись создана, но предоплата не прошла: ${payErr.message}`)
+        setSaving(false)
+        return
+      }
+      prepaymentInserted = true
+    }
 
     // Лог события в хронологию сделки.
     if (dealId) {
@@ -356,6 +412,23 @@ export function CreateAppointmentModal({
           patient_name: selectedPatient?.full_name ?? null,
         },
       })
+      if (prepaymentInserted) {
+        const methodLabel =
+          payMethods.find(m => m.method_code === prepayMethod)?.name ?? prepayMethod
+        await supabase.from('deal_events').insert({
+          clinic_id: clinicId,
+          deal_id: dealId,
+          kind: 'prepayment_received',
+          ref_table: 'appointments',
+          ref_id: appt.id,
+          payload: {
+            amount: prepayNum,
+            method: prepayMethod,
+            method_label: methodLabel,
+            preview: `Предоплата ${prepayNum.toLocaleString('ru-RU')} ₸ · ${methodLabel}`,
+          },
+        })
+      }
     }
 
     onCreated(appt.id); onClose()
@@ -667,6 +740,73 @@ export function CreateAppointmentModal({
             </div>
           </div>
 
+          {/* ── 4b. PREPAYMENT ── */}
+          <div className="border border-gray-200 rounded-xl p-3 bg-slate-50/60">
+            <label className="flex items-center justify-between cursor-pointer select-none">
+              <span className="text-sm font-medium text-gray-700">Взять предоплату</span>
+              <span
+                onClick={() => setPrepayEnabled(v => !v)}
+                className={['w-10 h-5 rounded-full transition-colors relative flex-shrink-0',
+                  prepayEnabled ? 'bg-blue-600' : 'bg-gray-300'].join(' ')}
+              >
+                <span className={['absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform',
+                  prepayEnabled ? 'translate-x-5' : 'translate-x-0.5'].join(' ')} />
+              </span>
+            </label>
+            {prepayEnabled && (
+              <div className="mt-3 space-y-2">
+                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                  <div>
+                    <label className={labelCls}>Сумма, ₸ <span className="text-red-400">*</span></label>
+                    <input
+                      type="number" inputMode="decimal" min="0" step="100"
+                      className={inputCls}
+                      placeholder="0"
+                      value={prepayAmount}
+                      onChange={e => setPrepayAmount(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex gap-1 pb-0.5">
+                    {[5000, 10000, 20000].map(v => (
+                      <button key={v} type="button"
+                        onClick={() => setPrepayAmount(String(v))}
+                        className="text-xs px-2 py-1 rounded-md border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600">
+                        {v.toLocaleString('ru-RU')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className={labelCls}>Способ оплаты</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {payMethods.map(pm => (
+                      <button key={pm.id} type="button"
+                        onClick={() => setPrepayMethod(pm.method_code)}
+                        className={[
+                          'px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+                          prepayMethod === pm.method_code
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400 hover:text-blue-600',
+                        ].join(' ')}>
+                        {pm.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className={labelCls}>Комментарий к оплате</label>
+                  <input type="text" className={inputCls}
+                    placeholder="необязательно"
+                    value={prepayNotes}
+                    onChange={e => setPrepayNotes(e.target.value)} />
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Сумма зачислится на депозит пациента и будет списана при оплате визита.
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* ── 5. NOTES + WALK-IN ── */}
           <div>
             <label className={labelCls}>Причина обращения</label>
@@ -697,10 +837,18 @@ export function CreateAppointmentModal({
           </button>
           <button
             type="button"
-            disabled={saving || !form.doctor_id || doctorsLoading || (patientMode === 'new' ? !newPat.full_name.trim() : !selectedPatient)}
+            disabled={
+              saving || !form.doctor_id || doctorsLoading ||
+              (patientMode === 'new' ? !newPat.full_name.trim() : !selectedPatient) ||
+              (prepayEnabled && !(Number(prepayAmount.replace(',', '.')) > 0))
+            }
             onClick={(e) => handleSubmit(e as unknown as React.FormEvent)}
             className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
-            {saving ? 'Сохранение...' : 'Создать запись'}
+            {saving
+              ? 'Сохранение...'
+              : prepayEnabled && Number(prepayAmount.replace(',', '.')) > 0
+                ? `Создать + ${Number(prepayAmount.replace(',', '.')).toLocaleString('ru-RU')} ₸`
+                : 'Создать запись'}
           </button>
         </div>
       </div>
