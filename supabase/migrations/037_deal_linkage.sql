@@ -140,7 +140,38 @@ UPDATE charges c
    AND v.deal_id IS NOT NULL;
 
 -- 6. KPI view: v_deal_journey — визиты/деньги/долг по каждой сделке
-CREATE OR REPLACE VIEW v_deal_journey AS
+DROP VIEW IF EXISTS v_deal_journey;
+CREATE VIEW v_deal_journey AS
+WITH
+  appt_agg AS (
+    SELECT deal_id, COUNT(*) AS appointments_count
+      FROM appointments
+     WHERE deal_id IS NOT NULL
+     GROUP BY deal_id
+  ),
+  visit_agg AS (
+    SELECT deal_id,
+           COUNT(*)                                       AS visits_count,
+           COUNT(*) FILTER (WHERE status = 'completed')   AS visits_completed
+      FROM visits
+     WHERE deal_id IS NOT NULL
+     GROUP BY deal_id
+  ),
+  charge_agg AS (
+    SELECT deal_id, SUM(amount) AS charges_total
+      FROM charges
+     WHERE deal_id IS NOT NULL
+     GROUP BY deal_id
+  ),
+  payment_agg AS (
+    SELECT c.deal_id,
+           SUM(p.amount) FILTER (WHERE p.type IN ('payment','prepayment')) AS payments_total,
+           SUM(p.amount) FILTER (WHERE p.type = 'refund')                  AS refunds_total
+      FROM payments p
+      JOIN charges c ON c.id = p.charge_id
+     WHERE c.deal_id IS NOT NULL
+     GROUP BY c.deal_id
+  )
 SELECT
   d.id                                             AS deal_id,
   d.clinic_id,
@@ -151,17 +182,17 @@ SELECT
   d.amount                                         AS deal_amount,
   d.status                                         AS deal_status,
   d.created_at                                     AS deal_created_at,
-  (SELECT COUNT(*) FROM appointments a WHERE a.deal_id = d.id)                           AS appointments_count,
-  (SELECT COUNT(*) FROM visits v       WHERE v.deal_id = d.id)                           AS visits_count,
-  (SELECT COUNT(*) FROM visits v       WHERE v.deal_id = d.id AND v.status='completed')  AS visits_completed,
-  COALESCE((SELECT SUM(amount) FROM charges c WHERE c.deal_id = d.id), 0)::DECIMAL(12,2) AS charges_total,
-  COALESCE((SELECT SUM(p.amount) FROM payments p
-              JOIN charges c ON c.id = p.charge_id
-             WHERE c.deal_id = d.id AND p.type IN ('payment','prepayment')), 0)::DECIMAL(12,2) AS payments_total,
-  COALESCE((SELECT SUM(p.amount) FROM payments p
-              JOIN charges c ON c.id = p.charge_id
-             WHERE c.deal_id = d.id AND p.type = 'refund'), 0)::DECIMAL(12,2) AS refunds_total
+  COALESCE(a.appointments_count, 0)                AS appointments_count,
+  COALESCE(v.visits_count, 0)                      AS visits_count,
+  COALESCE(v.visits_completed, 0)                  AS visits_completed,
+  COALESCE(c.charges_total, 0)::DECIMAL(12,2)      AS charges_total,
+  COALESCE(p.payments_total, 0)::DECIMAL(12,2)     AS payments_total,
+  COALESCE(p.refunds_total, 0)::DECIMAL(12,2)      AS refunds_total
 FROM deals d
+LEFT JOIN appt_agg    a ON a.deal_id = d.id
+LEFT JOIN visit_agg   v ON v.deal_id = d.id
+LEFT JOIN charge_agg  c ON c.deal_id = d.id
+LEFT JOIN payment_agg p ON p.deal_id = d.id
 WHERE d.deleted_at IS NULL;
 
 GRANT SELECT ON v_deal_journey TO authenticated;
