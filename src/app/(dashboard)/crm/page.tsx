@@ -1397,26 +1397,56 @@ function DealModal({
                           )}
                         </div>
 
-                        {/* Task-specific extra fields */}
+                        {/* Task-specific extra fields — amoCRM-style */}
                         {composerMode === 'task' && (
-                          <div className="flex gap-2 px-3 pt-2">
-                            <input
-                              type="datetime-local"
-                              value={composerTaskDue}
-                              onChange={e => setComposerTaskDue(e.target.value)}
-                              className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
-                              placeholder="Дедлайн"
-                            />
-                            <select
-                              value={composerTaskAssignee}
-                              onChange={e => setComposerTaskAssignee(e.target.value)}
-                              className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs bg-white"
-                            >
-                              <option value="">— мне —</option>
-                              {users.map(u => (
-                                <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
-                              ))}
-                            </select>
+                          <div className="px-3 pt-2 space-y-2 bg-violet-50/40 border-t border-violet-100">
+                            {/* Quick presets */}
+                            <div className="flex flex-wrap gap-1">
+                              {TASK_DUE_PRESETS.map(p => {
+                                const val = p.compute()
+                                const active = composerTaskDue === val
+                                return (
+                                  <button
+                                    key={p.label}
+                                    type="button"
+                                    onClick={() => setComposerTaskDue(val)}
+                                    className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+                                      active
+                                        ? 'bg-violet-600 text-white border-violet-600'
+                                        : 'bg-white border-violet-200 text-violet-700 hover:bg-violet-100'
+                                    }`}
+                                  >
+                                    {p.label}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                            {/* на дата/время · для исполнитель */}
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="text-gray-500">на</span>
+                              <input
+                                type="datetime-local"
+                                value={composerTaskDue}
+                                onChange={e => setComposerTaskDue(e.target.value)}
+                                className="border border-gray-200 rounded px-2 py-1 bg-white"
+                              />
+                              <span className="text-gray-500 ml-1">для</span>
+                              <select
+                                value={composerTaskAssignee}
+                                onChange={e => setComposerTaskAssignee(e.target.value)}
+                                className="border border-gray-200 rounded px-2 py-1 bg-white min-w-[140px]"
+                              >
+                                <option value="">мне ({profile?.first_name ?? '—'})</option>
+                                {users.filter(u => u.id !== profile?.id).map(u => (
+                                  <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
+                                ))}
+                              </select>
+                              {composerTaskDue && (
+                                <span className="ml-auto text-[10px] text-violet-600">
+                                  ⏰ {formatTaskDueHint(composerTaskDue)}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
 
@@ -1449,7 +1479,7 @@ function DealModal({
                           >
                             {composerMode === 'chat' ? 'Отправить' :
                              composerMode === 'note' ? 'Сохранить' :
-                             'Создать'}
+                             'Поставить'}
                           </button>
                         </div>
 
@@ -1650,6 +1680,40 @@ function DealModal({
 }
 
 // ─── small helpers ────────────────────────────────────────────────────────────
+
+// Format YYYY-MM-DDTHH:mm for <input type="datetime-local">
+function toLocalDateTime(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+const TASK_DUE_PRESETS: { label: string; compute: () => string }[] = [
+  { label: 'Через 15 мин',  compute: () => { const d = new Date(); d.setMinutes(d.getMinutes()+15); d.setSeconds(0,0); return toLocalDateTime(d) } },
+  { label: 'Через 30 мин',  compute: () => { const d = new Date(); d.setMinutes(d.getMinutes()+30); d.setSeconds(0,0); return toLocalDateTime(d) } },
+  { label: 'Через час',     compute: () => { const d = new Date(); d.setHours(d.getHours()+1);     d.setSeconds(0,0); return toLocalDateTime(d) } },
+  { label: 'Сегодня 18:00', compute: () => { const d = new Date(); d.setHours(18,0,0,0);           return toLocalDateTime(d) } },
+  { label: 'Завтра 09:00',  compute: () => { const d = new Date(); d.setDate(d.getDate()+1); d.setHours(9,0,0,0); return toLocalDateTime(d) } },
+  { label: 'В пятницу',     compute: () => { const d = new Date(); const dow = d.getDay(); const add = ((5 - dow) + 7) % 7 || 7; d.setDate(d.getDate()+add); d.setHours(18,0,0,0); return toLocalDateTime(d) } },
+  { label: 'Через неделю',  compute: () => { const d = new Date(); d.setDate(d.getDate()+7);   d.setHours(9,0,0,0); return toLocalDateTime(d) } },
+  { label: 'Через месяц',   compute: () => { const d = new Date(); d.setMonth(d.getMonth()+1); d.setHours(9,0,0,0); return toLocalDateTime(d) } },
+]
+
+function formatTaskDueHint(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const now = new Date()
+  const diffMs = d.getTime() - now.getTime()
+  const abs = Math.abs(diffMs)
+  const min = Math.round(abs / 60000)
+  const hr  = Math.round(abs / 3600000)
+  const dy  = Math.round(abs / 86400000)
+  const suffix = diffMs < 0 ? ' назад' : ''
+  const pre    = diffMs < 0 ? '' : 'через '
+  if (min < 60)  return `${pre}${min} мин${suffix}`
+  if (hr  < 24)  return `${pre}${hr} ч${suffix}`
+  if (dy  < 7)   return `${pre}${dy} дн${suffix}`
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
 
 const COMPOSER_MODES: { value: 'chat'|'note'|'task'; label: string; icon: string }[] = [
   { value: 'chat', label: 'Чат',        icon: '💬' },
