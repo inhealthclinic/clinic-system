@@ -85,10 +85,15 @@ async function findDealByPhone(phone: string): Promise<DealRef | null> {
     return { id: pick.id, clinic_id: pick.clinic_id, name: pick.name }
   }
 
+  // patients.phones — text[]. PostgREST containment `cs.{value}` требует
+  // точного совпадения элемента, поэтому прогоняем несколько вариантов
+  // нормализации номера.
+  const variants = Array.from(new Set([phone, `+${phone}`, tail, `+${tail}`]))
+  const orExpr = variants.map((v) => `phones.cs.{${v}}`).join(',')
   const { data: pats } = await db
     .from('patients')
     .select('id, clinic_id')
-    .ilike('phone', `%${tail}%`)
+    .or(orExpr)
     .limit(5)
 
   if (pats && pats.length > 0) {
