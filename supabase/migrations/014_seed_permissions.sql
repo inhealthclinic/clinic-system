@@ -14,7 +14,7 @@ BEGIN
   -- Создаём системные роли
   INSERT INTO roles(clinic_id, name, slug, is_system, color, max_discount_percent)
   VALUES
-    (p_clinic_id, 'Владелец',       'owner',    true, '#7C3AED', NULL),
+    (p_clinic_id, 'Админ',          'owner',    true, '#7C3AED', NULL),
     (p_clinic_id, 'Администратор',  'admin',    true, '#2563EB', 20),
     (p_clinic_id, 'Врач',           'doctor',   true, '#059669', 0),
     (p_clinic_id, 'Медсестра',      'nurse',    true, '#0891B2', 0),

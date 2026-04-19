@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { UserProfile } from '@/types'
 
 const ROLES = [
-  { slug: 'owner',   label: 'Владелец' },
+  { slug: 'owner',   label: 'Админ' },
   { slug: 'admin',   label: 'Администратор' },
   { slug: 'doctor',  label: 'Врач' },
   { slug: 'nurse',   label: 'Медсестра' },
