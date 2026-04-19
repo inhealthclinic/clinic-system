@@ -100,12 +100,34 @@ export interface IncomingMessageWebhook {
   typeWebhook: 'incomingMessageReceived'
   idMessage: string
   timestamp: number
-  senderData: { chatId: string; sender: string; senderName?: string }
+  senderData: {
+    chatId: string
+    sender: string
+    /** Имя, которое собеседник сам указал в своём WhatsApp-профиле */
+    senderName?: string
+    /** Имя из адресной книги привязанного устройства (если номер сохранён) */
+    senderContactName?: string
+  }
   messageData: {
     typeMessage: string
     textMessageData?: { textMessage: string }
     extendedTextMessageData?: { text: string }
   }
+}
+
+/**
+ * Вытащить «хорошее» имя из senderData: приоритет — имя из адресной книги
+ * (его сам задал оператор), затем profile-имя из WhatsApp. Фильтруем явный
+ * мусор: пустые строки, '—', голые цифры (номер телефона без имени).
+ */
+export function extractSenderName(
+  sd: IncomingMessageWebhook['senderData']
+): string | null {
+  const raw = (sd.senderContactName ?? sd.senderName ?? '').trim()
+  if (!raw) return null
+  // "77051234567" / "+7 705 123 45 67" — это телефон, а не имя
+  if (/^[+\d\s()-]+$/.test(raw)) return null
+  return raw
 }
 
 export interface OutgoingStatusWebhook {
