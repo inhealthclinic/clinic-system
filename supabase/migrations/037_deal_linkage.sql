@@ -158,9 +158,10 @@ WITH
      GROUP BY deal_id
   ),
   charge_agg AS (
-    SELECT deal_id, SUM(amount) AS charges_total
+    SELECT deal_id, SUM(total) AS charges_total
       FROM charges
      WHERE deal_id IS NOT NULL
+       AND status <> 'cancelled'
      GROUP BY deal_id
   ),
   payment_agg AS (
