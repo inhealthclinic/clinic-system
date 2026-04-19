@@ -551,6 +551,8 @@ interface MessageRow {
   external_sender: string | null
   read_at: string | null
   created_at: string
+  status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed' | null
+  error_text?: string | null
   author?: { first_name: string; last_name: string | null } | null
 }
 
@@ -807,15 +809,14 @@ function DealModal({
   async function sendMessage() {
     const body = msgDraft.trim()
     if (!body || isNew) return
-    const { error } = await supabase.from('deal_messages').insert({
-      deal_id: form.id,
-      clinic_id: form.clinic_id,
-      direction: 'out',
-      channel: msgChannel,
-      author_id: profile?.id ?? null,
-      body,
+    // API-роут: инсёртит + дергает Green-API и проставляет статус
+    const res = await fetch(`/api/deals/${form.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body, channel: msgChannel }),
     })
-    if (error) { alert(error.message); return }
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
     setMsgDraft('')
     loadRelated()
   }
@@ -829,17 +830,14 @@ function DealModal({
       return
     }
     if (composerMode === 'note') {
-      // Примечание — это внутреннее сообщение в чате (channel='internal').
-      // Видно только команде, клиенту НЕ уходит (WhatsApp dispatch триггерится только channel='whatsapp').
-      const { error } = await supabase.from('deal_messages').insert({
-        deal_id: form.id,
-        clinic_id: form.clinic_id,
-        direction: 'out',
-        channel: 'internal',
-        author_id: profile?.id ?? null,
-        body,
+      // Примечание — внутреннее сообщение (channel='internal'), клиенту не уходит.
+      const res = await fetch(`/api/deals/${form.id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, channel: 'internal' }),
       })
-      if (error) { alert(error.message); return }
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); return }
       setMsgDraft('')
       loadRelated()
       return
@@ -1364,8 +1362,17 @@ function DealModal({
                                     )}
                                   </div>
                                   <div className="whitespace-pre-wrap break-words">{m.body}</div>
-                                  <div className={`text-[10px] mt-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
-                                    {new Date(m.created_at).toLocaleString('ru-RU')}
+                                  <div className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
+                                    <span>{new Date(m.created_at).toLocaleString('ru-RU')}</span>
+                                    {m.direction === 'out' && (
+                                      <span title={m.error_text ?? m.status ?? ''}>
+                                        {m.status === 'pending'   ? '⏱'   :
+                                         m.status === 'sent'      ? '✓'   :
+                                         m.status === 'delivered' ? '✓✓'  :
+                                         m.status === 'read'      ? '✓✓'  :
+                                         m.status === 'failed'    ? '⚠'   : ''}
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                               </div>
