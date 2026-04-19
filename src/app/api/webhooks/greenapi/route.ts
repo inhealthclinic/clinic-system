@@ -146,6 +146,32 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
   // Иначе ставим номер (чтобы в списке сделок сразу было видно, с кем чат).
   const dealName = waName ?? `+${phone}`
 
+  // Авто-источник: находим запись «WhatsApp» в справочнике lead_sources.
+  // Сид из миграции 036 гарантирует наличие, но если кто-то удалил — создадим.
+  let waSourceId: string | null = null
+  {
+    const { data: existing } = await db
+      .from('lead_sources')
+      .select('id')
+      .eq('clinic_id', clinicId)
+      .ilike('name', 'whatsapp')
+      .maybeSingle()
+    if (existing?.id) {
+      waSourceId = existing.id
+    } else {
+      const { data: created, error: createErr } = await db
+        .from('lead_sources')
+        .insert({ clinic_id: clinicId, name: 'WhatsApp', sort_order: 20, is_active: true })
+        .select('id')
+        .single()
+      if (createErr) {
+        console.warn('[greenapi] lead_sources WhatsApp seed failed:', createErr.message)
+      } else {
+        waSourceId = created.id
+      }
+    }
+  }
+
   // Legacy NOT NULL columns: funnel + stage (текстовые enum-ы, живут рядом с
   // новыми pipeline_id/stage_id). Без них insert падает 23502.
   const payload: Record<string, unknown> = {
@@ -157,6 +183,7 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
     name: dealName,
     contact_phone: phone,
     status: 'open',
+    ...(waSourceId ? { source_id: waSourceId } : {}),
   }
 
   let { data: deal, error } = await db.from('deals').insert(payload).select('id, clinic_id, name').single()
