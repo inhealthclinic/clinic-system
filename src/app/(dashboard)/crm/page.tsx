@@ -593,6 +593,16 @@ const EVENT_LABEL: Record<string, string> = {
   message_out:        'Исходящее',
 }
 
+// ── Шаблон сообщения «Получить предоплату» ───────────────────────────────
+// Меняй текст/ссылку/сумму тут — больше нигде править не нужно.
+const PREPAY_REQUEST_MESSAGE = `Жазылуды растау үшін алдын ала төлем қажет — 2 500 тг.
+
+Төлем сілтемесі:
+https://pay.kaspi.kz/pay/2xmddltf
+
+Назар аударыңыз:
+Бас тартқан жағдайда алдын ала төлем қайтарылмайды.`
+
 const EVENT_COLOR: Record<string, string> = {
   deal_created:       '#64748b',
   stage_changed:      '#3b82f6',
@@ -647,6 +657,8 @@ function DealModal({
   const [composerTaskAssignee, setComposerTaskAssignee] = useState('')
   // «Записать на приём» — модалка из /schedule, переиспользованная.
   const [showBookingModal, setShowBookingModal] = useState(false)
+  // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
+  const [sendingPrepay, setSendingPrepay] = useState(false)
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -822,6 +834,25 @@ function DealModal({
     if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
     setMsgDraft('')
     loadRelated()
+  }
+
+  async function sendPrepayRequest() {
+    if (isNew || sendingPrepay) return
+    const ok = confirm('Отправить клиенту ссылку на предоплату в WhatsApp?')
+    if (!ok) return
+    setSendingPrepay(true)
+    try {
+      const res = await fetch(`/api/deals/${form.id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: PREPAY_REQUEST_MESSAGE, channel: 'whatsapp' }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
+      loadRelated()
+    } finally {
+      setSendingPrepay(false)
+    }
   }
 
   async function submitComposer() {
@@ -1411,6 +1442,21 @@ function DealModal({
                                 <path d="M16 2v4M8 2v4M3 9h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
                               </svg>
                               Записать на приём
+                            </button>
+                          )}
+                          {/* «Получить предоплату» — отправка Kaspi-ссылки в WhatsApp */}
+                          {!isNew && (
+                            <button
+                              type="button"
+                              onClick={sendPrepayRequest}
+                              disabled={sendingPrepay}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                              title="Отправить клиенту в WhatsApp ссылку на предоплату (Kaspi)"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                <path d="M12 1v22M5 8h10a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                              {sendingPrepay ? 'Отправляем…' : 'Получить предоплату'}
                             </button>
                           )}
                         </div>
