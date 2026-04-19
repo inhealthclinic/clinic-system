@@ -44,7 +44,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // 1. Получаем сделку + телефон
   const { data: deal, error: dealErr } = await supabase
     .from('deals')
-    .select('id, clinic_id, contact_phone, patient:patients(phone)')
+    .select('id, clinic_id, contact_phone, patient:patients(phones)')
     .eq('id', dealId)
     .single()
 
@@ -84,11 +84,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ message: inserted }, { status: 201 })
   }
 
-  // 4. WhatsApp — определяем телефон
-  // deal.patient может быть объектом или массивом в зависимости от relation
-  const patientPhone = Array.isArray(deal.patient)
-    ? (deal.patient[0] as { phone?: string } | undefined)?.phone
-    : (deal.patient as { phone?: string } | null)?.phone
+  // 4. WhatsApp — определяем телефон.
+  // patients.phones — text[], берём первый элемент массива.
+  // deal.patient может быть объектом или массивом в зависимости от relation.
+  const patientRel = Array.isArray(deal.patient)
+    ? (deal.patient[0] as { phones?: string[] } | undefined)
+    : (deal.patient as { phones?: string[] } | null)
+  const patientPhone = patientRel?.phones?.[0]
   const rawPhone = deal.contact_phone || patientPhone || ''
   const phone = normalizePhone(rawPhone)
 
