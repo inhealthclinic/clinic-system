@@ -638,7 +638,10 @@ function DealModal({
   const [messages, setMessages] = useState<MessageRow[]>([])
   const [search, setSearch] = useState('')
   const [msgDraft, setMsgDraft] = useState('')
-  const [msgChannel, setMsgChannel] = useState<'internal'|'whatsapp'|'sms'|'telegram'|'call_note'|'email'>('internal')
+  const [msgChannel, setMsgChannel] = useState<'internal'|'whatsapp'|'sms'|'telegram'|'call_note'|'email'>('whatsapp')
+  const [composerMode, setComposerMode] = useState<'chat'|'note'|'task'>('chat')
+  const [composerTaskDue, setComposerTaskDue] = useState('')
+  const [composerTaskAssignee, setComposerTaskAssignee] = useState('')
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -815,6 +818,42 @@ function DealModal({
     if (error) { alert(error.message); return }
     setMsgDraft('')
     loadRelated()
+  }
+
+  async function submitComposer() {
+    const body = msgDraft.trim()
+    if (!body || isNew) return
+
+    if (composerMode === 'chat') {
+      await sendMessage()
+      return
+    }
+    if (composerMode === 'note') {
+      const { error } = await supabase.from('deal_comments').insert({
+        deal_id: form.id,
+        clinic_id: form.clinic_id,
+        body,
+        author_id: profile?.id ?? null,
+      })
+      if (error) { alert(error.message); return }
+      setMsgDraft('')
+      loadRelated()
+      return
+    }
+    if (composerMode === 'task') {
+      const { error } = await supabase.from('deal_tasks').insert({
+        deal_id: form.id,
+        clinic_id: form.clinic_id,
+        title: body,
+        due_at: composerTaskDue ? new Date(composerTaskDue).toISOString() : null,
+        assignee_id: composerTaskAssignee || profile?.id || null,
+        created_by: profile?.id ?? null,
+      })
+      if (error) { alert(error.message); return }
+      setMsgDraft(''); setComposerTaskDue(''); setComposerTaskAssignee('')
+      loadRelated()
+      return
+    }
   }
 
   async function addTask() {
@@ -1311,49 +1350,107 @@ function DealModal({
                         })()}
                       </div>
 
-                      {/* Composer */}
-                      <div className="border-t border-gray-100 bg-white p-3">
-                        <div className="flex items-center gap-2 mb-2">
-                          <label className="text-xs text-gray-500">Канал:</label>
-                          <select
-                            value={msgChannel}
-                            onChange={e => setMsgChannel(e.target.value as MessageRow['channel'])}
-                            className="text-xs border border-gray-200 rounded px-2 py-1"
-                          >
-                            <option value="internal">Внутренний</option>
-                            <option value="whatsapp">WhatsApp</option>
-                            <option value="sms">SMS</option>
-                            <option value="telegram">Telegram</option>
-                            <option value="call_note">Заметка по звонку</option>
-                            <option value="email">Email</option>
-                          </select>
-                          {msgChannel !== 'internal' && msgChannel !== 'call_note' && (
-                            <span className="text-[10px] text-amber-600 ml-auto">
-                              ⚠ канал не подключён — запись будет локальной
-                            </span>
+                      {/* Composer (amoCRM-style: Чат / Примечание / Задача) */}
+                      <div className="border-t border-gray-100 bg-white">
+                        {/* Mode tabs */}
+                        <div className="flex items-center gap-1 px-3 pt-2">
+                          {[
+                            { key: 'chat',  label: 'Чат' },
+                            { key: 'note',  label: 'Примечание' },
+                            { key: 'task',  label: 'Задача' },
+                          ].map(m => (
+                            <button
+                              key={m.key}
+                              onClick={() => setComposerMode(m.key as 'chat'|'note'|'task')}
+                              className={`px-3 py-1.5 text-xs rounded-t-md border-b-2 transition-colors ${
+                                composerMode === m.key
+                                  ? 'border-blue-600 text-blue-700 font-medium bg-blue-50/60'
+                                  : 'border-transparent text-gray-500 hover:text-gray-800'
+                              }`}
+                            >
+                              {m.label}
+                            </button>
+                          ))}
+                          {composerMode === 'chat' && (
+                            <div className="ml-auto flex items-center gap-1.5">
+                              <span className="text-[10px] text-gray-400">канал:</span>
+                              <select
+                                value={msgChannel}
+                                onChange={e => setMsgChannel(e.target.value as MessageRow['channel'])}
+                                className="text-xs border border-gray-200 rounded px-1.5 py-0.5 bg-white"
+                              >
+                                <option value="whatsapp">WhatsApp</option>
+                                <option value="sms">SMS</option>
+                                <option value="telegram">Telegram</option>
+                                <option value="email">Email</option>
+                                <option value="call_note">Заметка по звонку</option>
+                                <option value="internal">Внутренний</option>
+                              </select>
+                            </div>
                           )}
                         </div>
-                        <div className="flex gap-2">
+
+                        {/* Task-specific extra fields */}
+                        {composerMode === 'task' && (
+                          <div className="flex gap-2 px-3 pt-2">
+                            <input
+                              type="datetime-local"
+                              value={composerTaskDue}
+                              onChange={e => setComposerTaskDue(e.target.value)}
+                              className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs"
+                              placeholder="Дедлайн"
+                            />
+                            <select
+                              value={composerTaskAssignee}
+                              onChange={e => setComposerTaskAssignee(e.target.value)}
+                              className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                            >
+                              <option value="">— мне —</option>
+                              {users.map(u => (
+                                <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Input + send */}
+                        <div className="flex gap-2 p-3">
                           <textarea
                             value={msgDraft}
                             onChange={e => setMsgDraft(e.target.value)}
                             onKeyDown={e => {
                               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                                e.preventDefault(); sendMessage()
+                                e.preventDefault(); submitComposer()
                               }
                             }}
-                            placeholder="Сообщение…  (⌘+Enter — отправить)"
-                            rows={2}
+                            placeholder={
+                              composerMode === 'chat' ? 'Сообщение клиенту…  (⌘+Enter — отправить)' :
+                              composerMode === 'note' ? 'Внутреннее примечание — видно только команде' :
+                              'Название задачи…'
+                            }
+                            rows={composerMode === 'task' ? 1 : 2}
                             className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
                           />
                           <button
-                            onClick={sendMessage}
+                            onClick={submitComposer}
                             disabled={!msgDraft.trim()}
-                            className="self-end px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
+                            className={`self-end px-4 py-1.5 text-sm text-white rounded disabled:bg-gray-300 ${
+                              composerMode === 'chat' ? 'bg-blue-600 hover:bg-blue-700' :
+                              composerMode === 'note' ? 'bg-amber-600 hover:bg-amber-700' :
+                              'bg-emerald-600 hover:bg-emerald-700'
+                            }`}
                           >
-                            Отправить
+                            {composerMode === 'chat' ? 'Отправить' :
+                             composerMode === 'note' ? 'Сохранить' :
+                             'Создать'}
                           </button>
                         </div>
+
+                        {composerMode === 'chat' && msgChannel !== 'internal' && msgChannel !== 'call_note' && (
+                          <div className="px-3 pb-2 text-[10px] text-amber-600">
+                            ⚠ канал {CHANNEL_LABEL[msgChannel]} ещё не подключён — сообщение сохранится локально, клиенту не уйдёт
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
