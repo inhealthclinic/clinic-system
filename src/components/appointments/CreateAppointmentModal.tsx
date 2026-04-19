@@ -364,7 +364,10 @@ export function CreateAppointmentModal({
   const patientLocked = Boolean(defaultPatient) // режим «из сделки»
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={e => e.stopPropagation()}
+    >
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md z-10 max-h-[96vh] flex flex-col">
 
