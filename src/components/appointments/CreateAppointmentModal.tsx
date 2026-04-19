@@ -28,6 +28,9 @@ const FALLBACK_PAY_METHODS: PayMethodRow[] = [
   { id: 'credit',name: 'Карта',    method_code: 'credit' },
 ]
 
+// Быстрые кнопки суммы предоплаты. Меняй здесь — значения в ₸.
+const PREPAY_PRESETS = [2000, 2500] as const
+
 export interface DefaultPatient {
   id: string
   full_name: string
@@ -767,7 +770,7 @@ export function CreateAppointmentModal({
                     />
                   </div>
                   <div className="flex gap-1 pb-0.5">
-                    {[5000, 10000, 20000].map(v => (
+                    {PREPAY_PRESETS.map(v => (
                       <button key={v} type="button"
                         onClick={() => setPrepayAmount(String(v))}
                         className="text-xs px-2 py-1 rounded-md border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600">
