@@ -659,6 +659,8 @@ function DealModal({
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
   const [sendingPrepay, setSendingPrepay] = useState(false)
+  // Статус WhatsApp-интеграции (Green API). null = ещё не проверяли.
+  const [waConnected, setWaConnected] = useState<boolean | null>(null)
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -744,6 +746,19 @@ function DealModal({
   }, [deal.id, isNew, supabase])
 
   useEffect(() => { loadRelated() }, [loadRelated])
+
+  // Разово спрашиваем статус WA у сервера, чтобы показывать или прятать
+  // плашку «WhatsApp ещё не подключён» в композере.
+  useEffect(() => {
+    let alive = true
+    fetch('/api/whatsapp/status', { cache: 'no-store' })
+      .then(r => r.json())
+      .then((j: { connected?: boolean }) => {
+        if (alive) setWaConnected(Boolean(j?.connected))
+      })
+      .catch(() => { if (alive) setWaConnected(false) })
+    return () => { alive = false }
+  }, [])
 
   useEffect(() => {
     if (!patientSearch || patientSearch.length < 2) { setPatientResults([]); return }
@@ -1543,7 +1558,7 @@ function DealModal({
                           </button>
                         </div>
 
-                        {composerMode === 'chat' && (
+                        {composerMode === 'chat' && waConnected === false && (
                           <div className="px-3 pb-2 text-[10px] text-gray-500">
                             ⚠ WhatsApp ещё не подключён — сообщение сохранится локально, клиенту не уйдёт
                           </div>
