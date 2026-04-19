@@ -1094,26 +1094,6 @@ function DealModal({
                 </select>
               </Field>
 
-              <Field label="Бюджет (₸)">
-                <input
-                  type="number" step="any" value={form.amount ?? ''}
-                  onChange={e => setForm({ ...form, amount: e.target.value === '' ? null : Number(e.target.value) })}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 font-mono hover:border-gray-300"
-                  placeholder="0"
-                />
-              </Field>
-
-              <Field label="Тип записи">
-                <select
-                  value={form.appointment_type ?? ''}
-                  onChange={e => setForm({ ...form, appointment_type: e.target.value || null })}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
-                >
-                  <option value="">— не задан —</option>
-                  {apptTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
-                </select>
-              </Field>
-
               <Field label="Врач">
                 <select
                   value={form.preferred_doctor_id ?? ''}
