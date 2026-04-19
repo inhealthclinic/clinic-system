@@ -1699,6 +1699,11 @@ function DealModal({
             full_name: form.patient.full_name,
             phone: form.patient.phones?.[0] ?? form.contact_phone ?? null,
           } : null}
+          // Если пациент ещё не привязан — подтягиваем имя/телефон из карточки сделки.
+          suggestedNewPatient={!form.patient ? {
+            full_name: form.name ?? null,
+            phone: form.contact_phone ?? null,
+          } : null}
           dealId={form.id}
           onClose={() => setShowBookingModal(false)}
           onCreated={() => { setShowBookingModal(false); loadRelated() }}
