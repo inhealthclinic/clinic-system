@@ -638,7 +638,7 @@ function DealModal({
   const [messages, setMessages] = useState<MessageRow[]>([])
   const [search, setSearch] = useState('')
   const [msgDraft, setMsgDraft] = useState('')
-  const [msgChannel, setMsgChannel] = useState<'internal'|'whatsapp'|'sms'|'telegram'|'call_note'|'email'>('whatsapp')
+  const msgChannel: MessageRow['channel'] = 'whatsapp'
   const [composerMode, setComposerMode] = useState<'chat'|'note'|'task'>('chat')
   const [composerTaskDue, setComposerTaskDue] = useState('')
   const [composerTaskAssignee, setComposerTaskAssignee] = useState('')
@@ -1359,21 +1359,10 @@ function DealModal({
                             onChange={setComposerMode}
                           />
                           {composerMode === 'chat' && (
-                            <div className="ml-auto flex items-center gap-1.5">
-                              <span className="text-[10px] text-gray-400">канал:</span>
-                              <select
-                                value={msgChannel}
-                                onChange={e => setMsgChannel(e.target.value as MessageRow['channel'])}
-                                className="text-xs border border-gray-200 rounded px-1.5 py-0.5 bg-white"
-                              >
-                                <option value="whatsapp">WhatsApp</option>
-                                <option value="sms">SMS</option>
-                                <option value="telegram">Telegram</option>
-                                <option value="email">Email</option>
-                                <option value="call_note">Заметка по звонку</option>
-                                <option value="internal">Внутренний</option>
-                              </select>
-                            </div>
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-emerald-200 bg-emerald-50 text-emerald-700">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38a9.9 9.9 0 0 0 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2zm0 18.15h-.01a8.23 8.23 0 0 1-4.2-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.23 8.23 0 0 1-1.26-4.38c0-4.54 3.7-8.24 8.25-8.24 2.2 0 4.27.86 5.83 2.41a8.2 8.2 0 0 1 2.42 5.84c0 4.54-3.7 8.24-8.24 8.24z"/></svg>
+                              WhatsApp
+                            </span>
                           )}
                         </div>
 
@@ -1433,9 +1422,9 @@ function DealModal({
                           </button>
                         </div>
 
-                        {composerMode === 'chat' && msgChannel !== 'internal' && msgChannel !== 'call_note' && (
+                        {composerMode === 'chat' && (
                           <div className="px-3 pb-2 text-[10px] text-amber-600">
-                            ⚠ канал {CHANNEL_LABEL[msgChannel]} ещё не подключён — сообщение сохранится локально, клиенту не уйдёт
+                            ⚠ WhatsApp ещё не подключён — сообщение сохранится локально, клиенту не уйдёт
                           </div>
                         )}
                       </div>
