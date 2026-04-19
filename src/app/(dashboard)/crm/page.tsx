@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -644,6 +645,8 @@ function DealModal({
   const [composerMode, setComposerMode] = useState<'chat'|'note'|'task'>('chat')
   const [composerTaskDue, setComposerTaskDue] = useState('')
   const [composerTaskAssignee, setComposerTaskAssignee] = useState('')
+  // «Записать на приём» — модалка из /schedule, переиспользованная.
+  const [showBookingModal, setShowBookingModal] = useState(false)
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -1395,6 +1398,21 @@ function DealModal({
                               WhatsApp
                             </span>
                           )}
+                          {/* «Записать на приём» — рядом с WhatsApp */}
+                          {!isNew && (
+                            <button
+                              type="button"
+                              onClick={() => setShowBookingModal(true)}
+                              className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                              title="Создать запись в расписании для этой сделки"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                                <path d="M16 2v4M8 2v4M3 9h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                              </svg>
+                              Записать на приём
+                            </button>
+                          )}
                         </div>
 
                         {/* Task-specific extra fields — amoCRM-style */}
@@ -1671,6 +1689,21 @@ function DealModal({
           </div>
         </div>
       </div>
+
+      {showBookingModal && form.clinic_id && (
+        <CreateAppointmentModal
+          clinicId={form.clinic_id}
+          defaultDate={new Date().toISOString().slice(0, 10)}
+          defaultPatient={form.patient ? {
+            id: form.patient.id,
+            full_name: form.patient.full_name,
+            phone: form.patient.phones?.[0] ?? form.contact_phone ?? null,
+          } : null}
+          dealId={form.id}
+          onClose={() => setShowBookingModal(false)}
+          onCreated={() => { setShowBookingModal(false); loadRelated() }}
+        />
+      )}
     </div>
   )
 }
