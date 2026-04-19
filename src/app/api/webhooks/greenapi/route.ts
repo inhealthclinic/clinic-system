@@ -87,7 +87,8 @@ async function createInboundDeal(phone: string, senderName?: string): Promise<De
   const { data: stage, error: stageErr } = await db
     .from('pipeline_stages')
     .select('id, pipeline_id, pipeline:pipelines(clinic_id)')
-    .order('position', { ascending: true })
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true })
     .limit(1)
     .maybeSingle()
 
