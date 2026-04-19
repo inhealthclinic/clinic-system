@@ -1403,7 +1403,7 @@ function DealModal({
                             <button
                               type="button"
                               onClick={() => setShowBookingModal(true)}
-                              className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
                               title="Создать запись в расписании для этой сделки"
                             >
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
