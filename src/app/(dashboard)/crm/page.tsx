@@ -6,7 +6,7 @@
  * Вся история переходов пишется триггером record_deal_stage_change.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -1352,25 +1352,12 @@ function DealModal({
 
                       {/* Composer (amoCRM-style: Чат / Примечание / Задача) */}
                       <div className="border-t border-gray-100 bg-white">
-                        {/* Mode tabs */}
-                        <div className="flex items-center gap-1 px-3 pt-2">
-                          {[
-                            { key: 'chat',  label: 'Чат' },
-                            { key: 'note',  label: 'Примечание' },
-                            { key: 'task',  label: 'Задача' },
-                          ].map(m => (
-                            <button
-                              key={m.key}
-                              onClick={() => setComposerMode(m.key as 'chat'|'note'|'task')}
-                              className={`px-3 py-1.5 text-xs rounded-t-md border-b-2 transition-colors ${
-                                composerMode === m.key
-                                  ? 'border-blue-600 text-blue-700 font-medium bg-blue-50/60'
-                                  : 'border-transparent text-gray-500 hover:text-gray-800'
-                              }`}
-                            >
-                              {m.label}
-                            </button>
-                          ))}
+                        {/* Mode dropdown */}
+                        <div className="flex items-center gap-2 px-3 pt-2">
+                          <ComposerModeDropdown
+                            value={composerMode}
+                            onChange={setComposerMode}
+                          />
                           {composerMode === 'chat' && (
                             <div className="ml-auto flex items-center gap-1.5">
                               <span className="text-[10px] text-gray-400">канал:</span>
@@ -1643,6 +1630,79 @@ function DealModal({
 }
 
 // ─── small helpers ────────────────────────────────────────────────────────────
+
+const COMPOSER_MODES: { value: 'chat'|'note'|'task'; label: string; icon: string }[] = [
+  { value: 'chat', label: 'Чат',        icon: '💬' },
+  { value: 'note', label: 'Примечание', icon: '📝' },
+  { value: 'task', label: 'Задача',     icon: '✅' },
+]
+
+function ComposerModeDropdown({
+  value,
+  onChange,
+}: {
+  value: 'chat'|'note'|'task'
+  onChange: (m: 'chat'|'note'|'task') => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDocClick(e: MouseEvent) {
+      if (!ref.current) return
+      if (!ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onEsc(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  const current = COMPOSER_MODES.find(m => m.value === value) ?? COMPOSER_MODES[0]
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
+      >
+        <span>{current.icon}</span>
+        <span>{current.label}</span>
+        <svg width="10" height="10" viewBox="0 0 10 10" className={`transition-transform ${open ? 'rotate-180' : ''}`}>
+          <path d="M2 4l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-20 min-w-[160px] rounded border border-gray-200 bg-white shadow-lg py-1">
+          {COMPOSER_MODES.map(m => (
+            <button
+              key={m.value}
+              type="button"
+              onClick={() => { onChange(m.value); setOpen(false) }}
+              className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-gray-50 ${
+                m.value === value ? 'text-blue-600 font-medium' : 'text-gray-700'
+              }`}
+            >
+              <span>{m.icon}</span>
+              <span className="flex-1">{m.label}</span>
+              {m.value === value && (
+                <svg width="12" height="12" viewBox="0 0 12 12">
+                  <path d="M2 6l3 3 5-6" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
   return (
