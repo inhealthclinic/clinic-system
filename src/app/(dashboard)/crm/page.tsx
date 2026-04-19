@@ -829,11 +829,15 @@ function DealModal({
       return
     }
     if (composerMode === 'note') {
-      const { error } = await supabase.from('deal_comments').insert({
+      // Примечание — это внутреннее сообщение в чате (channel='internal').
+      // Видно только команде, клиенту НЕ уходит (WhatsApp dispatch триггерится только channel='whatsapp').
+      const { error } = await supabase.from('deal_messages').insert({
         deal_id: form.id,
         clinic_id: form.clinic_id,
-        body,
+        direction: 'out',
+        channel: 'internal',
         author_id: profile?.id ?? null,
+        body,
       })
       if (error) { alert(error.message); return }
       setMsgDraft('')
@@ -1322,31 +1326,53 @@ function DealModal({
                               </div>
                             )
                           }
-                          return filtered.map(m => (
-                            <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                              <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
-                                m.direction === 'out'
-                                  ? 'bg-blue-600 text-white'
-                                  : 'bg-white border border-gray-200 text-gray-900'
-                              }`}>
-                                <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider opacity-80">
-                                  <span className="w-1.5 h-1.5 rounded-full inline-block"
-                                        style={{ background: CHANNEL_COLOR[m.channel] }} />
-                                  <span>{CHANNEL_LABEL[m.channel]}</span>
-                                  {m.author && (
-                                    <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
-                                  )}
-                                  {m.external_sender && (
-                                    <span>· {m.external_sender}</span>
-                                  )}
+                          return filtered.map(m => {
+                            // Примечание — внутреннее, центрированное, жёлтое
+                            if (m.channel === 'internal') {
+                              return (
+                                <div key={m.id} className="flex justify-center">
+                                  <div className="max-w-[85%] rounded-md px-3 py-2 text-sm bg-amber-50 border border-amber-200 text-amber-900 shadow-sm">
+                                    <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider text-amber-700">
+                                      <span>📝 Примечание · только для команды</span>
+                                      {m.author && (
+                                        <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
+                                      )}
+                                    </div>
+                                    <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                    <div className="text-[10px] mt-1 text-amber-600">
+                                      {new Date(m.created_at).toLocaleString('ru-RU')}
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="whitespace-pre-wrap break-words">{m.body}</div>
-                                <div className={`text-[10px] mt-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-400'}`}>
-                                  {new Date(m.created_at).toLocaleString('ru-RU')}
+                              )
+                            }
+                            // Обычное сообщение — входящее / исходящее
+                            return (
+                              <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
+                                  m.direction === 'out'
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-white border border-gray-200 text-gray-900'
+                                }`}>
+                                  <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider opacity-80">
+                                    <span className="w-1.5 h-1.5 rounded-full inline-block"
+                                          style={{ background: CHANNEL_COLOR[m.channel] }} />
+                                    <span>{CHANNEL_LABEL[m.channel]}</span>
+                                    {m.author && (
+                                      <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
+                                    )}
+                                    {m.external_sender && (
+                                      <span>· {m.external_sender}</span>
+                                    )}
+                                  </div>
+                                  <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                  <div className={`text-[10px] mt-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-400'}`}>
+                                    {new Date(m.created_at).toLocaleString('ru-RU')}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          ))
+                            )
+                          })
                         })()}
                       </div>
 
@@ -1362,6 +1388,11 @@ function DealModal({
                             <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-emerald-200 bg-emerald-50 text-emerald-700">
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38a9.9 9.9 0 0 0 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2zm0 18.15h-.01a8.23 8.23 0 0 1-4.2-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.23 8.23 0 0 1-1.26-4.38c0-4.54 3.7-8.24 8.25-8.24 2.2 0 4.27.86 5.83 2.41a8.2 8.2 0 0 1 2.42 5.84c0 4.54-3.7 8.24-8.24 8.24z"/></svg>
                               WhatsApp
+                            </span>
+                          )}
+                          {composerMode === 'note' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-amber-200 bg-amber-50 text-amber-700">
+                              🔒 только для команды — клиент не увидит
                             </span>
                           )}
                         </div>
