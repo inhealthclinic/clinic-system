@@ -47,16 +47,28 @@ interface DealRow {
   responsible_user_id: string | null
   source_id: string | null
   amount: number | null
+  // NEW (мигр. 038):
+  preferred_doctor_id: string | null
+  appointment_type: string | null
+  loss_reason_id: string | null
+  contact_phone: string | null
+  contact_city: string | null
+  notes: string | null
+  tags: string[]
+  //
   stage_entered_at: string
   created_at: string
   updated_at: string
-  patient?: { id: string; full_name: string; phones: string[] } | null
+  patient?: { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null } | null
   responsible?: { id: string; first_name: string; last_name: string | null } | null
+  doctor?: { id: string; first_name: string; last_name: string | null } | null
 }
 
 interface LossReason { id: string; name: string; is_active: boolean }
 interface LeadSource { id: string; name: string; is_active: boolean }
 interface UserLite { id: string; first_name: string; last_name: string | null }
+interface DoctorLite { id: string; first_name: string; last_name: string | null }
+interface ApptType { key: string; label: string; color: string }
 
 interface StageCount {
   pipeline_id: string
@@ -112,6 +124,8 @@ export default function CRMKanbanPage() {
   const [reasons, setReasons] = useState<LossReason[]>([])
   const [sources, setSources] = useState<LeadSource[]>([])
   const [users, setUsers] = useState<UserLite[]>([])
+  const [doctors, setDoctors] = useState<DoctorLite[]>([])
+  const [apptTypes, setApptTypes] = useState<ApptType[]>([])
   const [loading, setLoading] = useState(true)
 
   const [activePipelineId, setActivePipelineId] = useState<string>('')
@@ -129,17 +143,22 @@ export default function CRMKanbanPage() {
   const load = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
-    const [p, d, r, ls, up] = await Promise.all([
+    const [p, d, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('deals').select(`
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
-        responsible_user_id, source_id, amount, stage_entered_at, created_at, updated_at,
-        patient:patients(id, full_name, phones),
-        responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name)
+        responsible_user_id, source_id, amount,
+        preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
+        stage_entered_at, created_at, updated_at,
+        patient:patients(id, full_name, phones, birth_date, city),
+        responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
+        doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
       `).eq('clinic_id', clinicId).is('deleted_at', null).order('stage_entered_at', { ascending: false }).limit(1000),
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
+      supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
+      supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
     const ps = (p.data ?? []) as Pipeline[]
     setPipelines(ps)
@@ -147,6 +166,9 @@ export default function CRMKanbanPage() {
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
     setUsers((up.data ?? []) as UserLite[])
+    setDoctors((doc.data ?? []) as DoctorLite[])
+    const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
+    setApptTypes(Array.isArray(at) ? at : [])
 
     const stageIdsByPipeline = ps.map(x => x.id)
     if (stageIdsByPipeline.length > 0) {
@@ -279,6 +301,8 @@ export default function CRMKanbanPage() {
               pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
               stage: activeStages[0]?.code ?? null, funnel: activePipeline?.code ?? 'leads',
               status: 'open', responsible_user_id: null, source_id: null, amount: null,
+              preferred_doctor_id: null, appointment_type: null, loss_reason_id: null,
+              contact_phone: null, contact_city: null, notes: null, tags: [],
               stage_entered_at: new Date().toISOString(),
               created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
             } as DealRow)}
@@ -366,6 +390,9 @@ export default function CRMKanbanPage() {
           stages={stages}
           sources={sources}
           users={users}
+          doctors={doctors}
+          reasons={reasons}
+          apptTypes={apptTypes}
           onClose={() => setSelectedDeal(null)}
           onSaved={() => { setSelectedDeal(null); load() }}
         />
@@ -476,26 +503,88 @@ function LossReasonModal({
 
 // ─── DealModal ────────────────────────────────────────────────────────────────
 
-interface HistoryRow {
+interface TimelineEvent {
   id: string
   deal_id: string
-  from_stage: string | null
-  to_stage: string
-  from_stage_id: string | null
-  to_stage_id: string | null
-  time_in_stage_seconds: number | null
-  changed_by: string | null
+  kind: string
+  actor_id: string | null
+  actor_name: string | null
+  ref_table: string | null
+  ref_id: string | null
+  payload: Record<string, unknown>
   created_at: string
 }
 
+interface TaskRow {
+  id: string
+  deal_id: string
+  clinic_id: string
+  title: string
+  description: string | null
+  assignee_id: string | null
+  due_at: string | null
+  status: 'open' | 'done' | 'cancelled'
+  created_at: string
+  completed_at: string | null
+  assignee?: { first_name: string; last_name: string | null } | null
+}
+
+interface CommentRow {
+  id: string
+  deal_id: string
+  clinic_id: string
+  body: string
+  author_id: string | null
+  created_at: string
+  author?: { first_name: string; last_name: string | null } | null
+}
+
+const EVENT_LABEL: Record<string, string> = {
+  deal_created:       'Сделка создана',
+  stage_changed:      'Этап',
+  responsible_changed:'Ответственный',
+  comment_added:      'Комментарий',
+  task_created:       'Задача',
+  task_done:          'Задача выполнена',
+  appointment_linked: 'Приём',
+  appointment_status: 'Статус приёма',
+  charge_added:       'Начисление',
+  payment_added:      'Оплата',
+  lab_order_created:  'Лаб. заказ',
+  field_changed:      'Поле',
+  deal_won:           'Сделка выиграна',
+  deal_lost:          'Сделка потеряна',
+}
+
+const EVENT_COLOR: Record<string, string> = {
+  deal_created:       '#64748b',
+  stage_changed:      '#3b82f6',
+  responsible_changed:'#8b5cf6',
+  comment_added:      '#0ea5e9',
+  task_created:       '#f59e0b',
+  task_done:          '#10b981',
+  appointment_linked: '#06b6d4',
+  appointment_status: '#06b6d4',
+  charge_added:       '#f97316',
+  payment_added:      '#16a34a',
+  lab_order_created:  '#a855f7',
+  field_changed:      '#94a3b8',
+  deal_won:           '#16a34a',
+  deal_lost:          '#dc2626',
+}
+
 function DealModal({
-  deal, pipelines, stages, sources, users, onClose, onSaved,
+  deal, pipelines, stages, sources, users, doctors, reasons, apptTypes,
+  onClose, onSaved,
 }: {
   deal: DealRow
   pipelines: Pipeline[]
   stages: Stage[]
   sources: LeadSource[]
   users: UserLite[]
+  doctors: DoctorLite[]
+  reasons: LossReason[]
+  apptTypes: ApptType[]
   onClose: () => void
   onSaved: () => void
 }) {
@@ -505,8 +594,11 @@ function DealModal({
   const isNew = !deal.id
   const [form, setForm] = useState<DealRow>(deal)
   const [saving, setSaving] = useState(false)
-  const [history, setHistory] = useState<HistoryRow[]>([])
-  const [historyLoaded, setHistoryLoaded] = useState(false)
+  const [activeTab, setActiveTab] = useState<'timeline' | 'tasks'>('timeline')
+
+  const [events, setEvents] = useState<TimelineEvent[]>([])
+  const [tasks, setTasks] = useState<TaskRow[]>([])
+  const [comments, setComments] = useState<CommentRow[]>([])
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -520,22 +612,38 @@ function DealModal({
     doctor?: { first_name: string; last_name: string | null } | null
     service?: { name: string } | null
   }>>([])
+  const [labOrders, setLabOrders] = useState<Array<{
+    id: string; created_at: string; status: string
+  }>>([])
 
-  // patient search (minimal)
+  // patient search
   const [patientSearch, setPatientSearch] = useState('')
-  const [patientResults, setPatientResults] = useState<Array<{ id: string; full_name: string; phones: string[] }>>([])
+  const [patientResults, setPatientResults] = useState<Array<{ id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }>>([])
 
-  useEffect(() => {
+  // comment / task drafts
+  const [commentDraft, setCommentDraft] = useState('')
+  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [newTaskDue, setNewTaskDue] = useState('')
+  const [newTaskAssignee, setNewTaskAssignee] = useState('')
+
+  const loadRelated = useCallback(() => {
     if (isNew || !deal.id) return
-    supabase.from('deal_stage_history')
+    supabase.from('v_deal_timeline')
       .select('*')
       .eq('deal_id', deal.id)
       .order('created_at', { ascending: false })
-      .limit(50)
-      .then(({ data }) => {
-        setHistory((data ?? []) as HistoryRow[])
-        setHistoryLoaded(true)
-      })
+      .limit(200)
+      .then(({ data }) => setEvents((data ?? []) as TimelineEvent[]))
+    supabase.from('deal_tasks')
+      .select('*, assignee:user_profiles!deal_tasks_assignee_id_fkey(first_name,last_name)')
+      .eq('deal_id', deal.id)
+      .order('created_at', { ascending: false })
+      .then(({ data }) => setTasks((data ?? []) as unknown as TaskRow[]))
+    supabase.from('deal_comments')
+      .select('*, author:user_profiles!deal_comments_author_id_fkey(first_name,last_name)')
+      .eq('deal_id', deal.id)
+      .order('created_at', { ascending: false })
+      .then(({ data }) => setComments((data ?? []) as unknown as CommentRow[]))
     supabase.from('v_deal_journey')
       .select('appointments_count,visits_count,visits_completed,charges_total,payments_total,refunds_total')
       .eq('deal_id', deal.id)
@@ -551,16 +659,30 @@ function DealModal({
         doctor?: { first_name: string; last_name: string | null } | null
         service?: { name: string } | null
       }>))
+    // lab orders via visits joined with deal_id
+    supabase.from('visits')
+      .select('id, lab_orders:lab_orders(id,created_at,status)')
+      .eq('deal_id', deal.id)
+      .then(({ data }) => {
+        const flat: Array<{ id: string; created_at: string; status: string }> = []
+        for (const v of (data ?? []) as Array<{ lab_orders: Array<{ id: string; created_at: string; status: string }> | null }>) {
+          for (const o of (v.lab_orders ?? [])) flat.push(o)
+        }
+        flat.sort((a,b) => (b.created_at > a.created_at ? 1 : -1))
+        setLabOrders(flat.slice(0, 20))
+      })
   }, [deal.id, isNew, supabase])
+
+  useEffect(() => { loadRelated() }, [loadRelated])
 
   useEffect(() => {
     if (!patientSearch || patientSearch.length < 2) { setPatientResults([]); return }
     const t = setTimeout(async () => {
-      const { data } = await supabase.from('patients').select('id,full_name,phones')
+      const { data } = await supabase.from('patients').select('id,full_name,phones,birth_date,city')
         .eq('clinic_id', profile?.clinic_id ?? '')
         .or(`full_name.ilike.%${patientSearch}%,phones.cs.{${patientSearch}}`)
         .limit(10)
-      setPatientResults((data ?? []) as Array<{ id: string; full_name: string; phones: string[] }>)
+      setPatientResults((data ?? []) as Array<{ id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }>)
     }, 250)
     return () => clearTimeout(t)
   }, [patientSearch, supabase, profile?.clinic_id])
@@ -569,8 +691,16 @@ function DealModal({
     .filter(s => s.pipeline_id === form.pipeline_id)
     .sort((a,b) => a.sort_order - b.sort_order)
 
+  const currentStage = stages.find(s => s.id === form.stage_id)
+  const isLostStage = currentStage?.stage_role === 'lost'
+
   async function save() {
     if (!form.pipeline_id || !form.stage_id) { alert('Выберите воронку и этап'); return }
+    // If stage is 'lost' and no reason — prompt
+    if (isLostStage && !form.loss_reason_id) {
+      alert('Укажите причину отказа — этап помечен как «потеря».')
+      return
+    }
     setSaving(true)
     const payload = {
       clinic_id: form.clinic_id,
@@ -578,12 +708,18 @@ function DealModal({
       patient_id: form.patient_id,
       pipeline_id: form.pipeline_id,
       stage_id: form.stage_id,
-      // legacy:
       funnel: pipelines.find(p => p.id === form.pipeline_id)?.code ?? form.funnel ?? 'leads',
       stage:  stages.find(s => s.id === form.stage_id)?.code ?? form.stage ?? 'new',
       responsible_user_id: form.responsible_user_id,
       source_id: form.source_id,
       amount: form.amount,
+      preferred_doctor_id: form.preferred_doctor_id,
+      appointment_type: form.appointment_type,
+      loss_reason_id: form.loss_reason_id,
+      contact_phone: form.contact_phone?.trim() || null,
+      contact_city: form.contact_city?.trim() || null,
+      notes: form.notes?.trim() || null,
+      tags: form.tags ?? [],
     }
     const { error } = isNew
       ? await supabase.from('deals').insert(payload)
@@ -601,12 +737,96 @@ function DealModal({
     onSaved()
   }
 
-  function stageName(id: string | null | undefined): string {
-    if (!id) return '—'
-    return stages.find(s => s.id === id)?.name ?? id
+  async function addComment() {
+    const body = commentDraft.trim()
+    if (!body || isNew) return
+    const { error } = await supabase.from('deal_comments').insert({
+      deal_id: form.id,
+      clinic_id: form.clinic_id,
+      body,
+      author_id: profile?.id ?? null,
+    })
+    if (error) { alert(error.message); return }
+    setCommentDraft('')
+    loadRelated()
   }
 
-  const currentStage = stages.find(s => s.id === form.stage_id)
+  async function addTask() {
+    const title = newTaskTitle.trim()
+    if (!title || isNew) return
+    const { error } = await supabase.from('deal_tasks').insert({
+      deal_id: form.id,
+      clinic_id: form.clinic_id,
+      title,
+      due_at: newTaskDue ? new Date(newTaskDue).toISOString() : null,
+      assignee_id: newTaskAssignee || null,
+      created_by: profile?.id ?? null,
+    })
+    if (error) { alert(error.message); return }
+    setNewTaskTitle(''); setNewTaskDue(''); setNewTaskAssignee('')
+    loadRelated()
+  }
+
+  async function toggleTask(t: TaskRow) {
+    const next: TaskRow['status'] = t.status === 'done' ? 'open' : 'done'
+    const { error } = await supabase.from('deal_tasks').update({
+      status: next,
+      completed_at: next === 'done' ? new Date().toISOString() : null,
+      completed_by: next === 'done' ? profile?.id ?? null : null,
+    }).eq('id', t.id)
+    if (error) { alert(error.message); return }
+    loadRelated()
+  }
+
+  async function deleteTask(t: TaskRow) {
+    if (!confirm(`Удалить задачу «${t.title}»?`)) return
+    const { error } = await supabase.from('deal_tasks').delete().eq('id', t.id)
+    if (error) { alert(error.message); return }
+    loadRelated()
+  }
+
+  function onStageClick(stageId: string) {
+    const target = stages.find(s => s.id === stageId)
+    if (!target) return
+    // moving into lost — ensure reason exists
+    if (target.stage_role === 'lost' && !form.loss_reason_id && reasons.length > 0) {
+      setForm({ ...form, stage_id: stageId, loss_reason_id: reasons[0].id })
+      return
+    }
+    setForm({ ...form, stage_id: stageId })
+  }
+
+  function renderEventBody(e: TimelineEvent): string {
+    const p = e.payload || {}
+    switch (e.kind) {
+      case 'stage_changed':
+        return `${p.from ?? '—'} → ${p.to ?? '—'}`
+      case 'comment_added':
+        return String(p.preview ?? '')
+      case 'task_created':
+        return String(p.title ?? '')
+      case 'task_done':
+        return String(p.title ?? '')
+      case 'appointment_linked':
+        return `${p.date ?? ''} ${p.time_start ?? ''} · ${p.status ?? ''}`
+      case 'appointment_status':
+        return `${p.from ?? ''} → ${p.to ?? ''}`
+      case 'charge_added':
+        return `${Number(p.total ?? 0).toLocaleString('ru-RU')} ₸ · ${p.status ?? ''}`
+      case 'payment_added':
+        return `${Number(p.amount ?? 0).toLocaleString('ru-RU')} ₸ · ${p.type ?? ''} / ${p.method ?? ''}`
+      case 'lab_order_created':
+        return String(p.status ?? '')
+      case 'field_changed':
+        return `${p.field}: ${JSON.stringify(p.from)} → ${JSON.stringify(p.to)}`
+      case 'deal_created':
+        return String(p.name ?? '')
+      default:
+        return ''
+    }
+  }
+
+  const openTasksCount = tasks.filter(t => t.status === 'open').length
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
@@ -614,7 +834,7 @@ function DealModal({
         className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
-        {/* ─── Header ─── */}
+        {/* Header */}
         <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between">
           <div className="min-w-0">
             <div className="text-xs text-gray-400 uppercase tracking-wider">Сделка</div>
@@ -639,7 +859,7 @@ function DealModal({
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
-        {/* ─── Stage progress strip (amoCRM-style) ─── */}
+        {/* Stage progress strip */}
         <div className="bg-white border-b border-gray-200 px-6 py-3">
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {pipelineStages.map((s, idx) => {
@@ -648,7 +868,7 @@ function DealModal({
               return (
                 <button
                   key={s.id}
-                  onClick={() => setForm({ ...form, stage_id: s.id })}
+                  onClick={() => onStageClick(s.id)}
                   title={s.name}
                   className={`relative px-3 py-2 text-xs whitespace-nowrap transition-colors ${
                     idx === 0 ? 'rounded-l' : ''
@@ -673,13 +893,12 @@ function DealModal({
           </div>
         </div>
 
-        {/* ─── Body: 2 columns ─── */}
+        {/* Body: 2 columns */}
         <div className="flex-1 flex overflow-hidden">
           {/* LEFT: properties */}
           <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto">
             <div className="p-5 space-y-4 text-sm">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Воронка</label>
+              <Field label="Воронка">
                 <select
                   value={form.pipeline_id ?? ''}
                   onChange={e => {
@@ -691,10 +910,9 @@ function DealModal({
                 >
                   {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-              </div>
+              </Field>
 
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Ответственный</label>
+              <Field label="Ответственный">
                 <select
                   value={form.responsible_user_id ?? ''}
                   onChange={e => setForm({ ...form, responsible_user_id: e.target.value || null })}
@@ -705,10 +923,9 @@ function DealModal({
                     <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
                   ))}
                 </select>
-              </div>
+              </Field>
 
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Источник</label>
+              <Field label="Источник">
                 <select
                   value={form.source_id ?? ''}
                   onChange={e => setForm({ ...form, source_id: e.target.value || null })}
@@ -717,24 +934,84 @@ function DealModal({
                   <option value="">— не задан —</option>
                   {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
-              </div>
+              </Field>
 
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Бюджет (₸)</label>
+              <Field label="Бюджет (₸)">
                 <input
                   type="number" step="any" value={form.amount ?? ''}
                   onChange={e => setForm({ ...form, amount: e.target.value === '' ? null : Number(e.target.value) })}
                   className="w-full border border-gray-200 rounded px-2 py-1.5 font-mono hover:border-gray-300"
                   placeholder="0"
                 />
-              </div>
+              </Field>
 
+              <Field label="Тип записи">
+                <select
+                  value={form.appointment_type ?? ''}
+                  onChange={e => setForm({ ...form, appointment_type: e.target.value || null })}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                >
+                  <option value="">— не задан —</option>
+                  {apptTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+                </select>
+              </Field>
+
+              <Field label="Врач">
+                <select
+                  value={form.preferred_doctor_id ?? ''}
+                  onChange={e => setForm({ ...form, preferred_doctor_id: e.target.value || null })}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                >
+                  <option value="">— не назначен —</option>
+                  {doctors.map(d => (
+                    <option key={d.id} value={d.id}>{d.first_name} {d.last_name ?? ''}</option>
+                  ))}
+                </select>
+              </Field>
+
+              {isLostStage && (
+                <Field label="Причина отказа" required>
+                  <select
+                    value={form.loss_reason_id ?? ''}
+                    onChange={e => setForm({ ...form, loss_reason_id: e.target.value || null })}
+                    className="w-full border border-red-300 rounded px-2 py-1.5 bg-white"
+                  >
+                    <option value="">— выберите —</option>
+                    {reasons.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                </Field>
+              )}
+
+              <Field label="Комментарий">
+                <textarea
+                  value={form.notes ?? ''}
+                  onChange={e => setForm({ ...form, notes: e.target.value })}
+                  rows={3}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                  placeholder="Внутренние заметки менеджера…"
+                />
+              </Field>
+
+              <Field label="Теги">
+                <TagEditor
+                  tags={form.tags ?? []}
+                  onChange={(tags) => setForm({ ...form, tags })}
+                />
+              </Field>
+
+              {/* Patient block */}
               <div className="pt-3 border-t border-gray-100">
                 <label className="block text-xs text-gray-500 mb-1.5">Пациент</label>
                 {form.patient ? (
                   <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50">
                     <div className="font-medium text-gray-900">{form.patient.full_name}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">{form.patient.phones?.[0] || '— нет телефона —'}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">{form.patient.phones?.[0] || form.contact_phone || '— нет телефона —'}</div>
+                    {(form.patient.birth_date || form.patient.city) && (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {form.patient.birth_date && <>ДР: {form.patient.birth_date}</>}
+                        {form.patient.city && <span className="ml-2">· {form.patient.city}</span>}
+                      </div>
+                    )}
                     <div className="flex gap-3 mt-2 text-xs">
                       <Link href={`/patients/${form.patient.id}`} className="text-blue-600 hover:underline">
                         → карточка
@@ -768,6 +1045,19 @@ function DealModal({
                         ))}
                       </div>
                     )}
+                    {/* Fallback contact fields when no patient linked */}
+                    <div className="mt-2 space-y-1.5">
+                      <input type="tel" value={form.contact_phone ?? ''}
+                        onChange={e => setForm({ ...form, contact_phone: e.target.value })}
+                        placeholder="Телефон контакта"
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                      />
+                      <input type="text" value={form.contact_city ?? ''}
+                        onChange={e => setForm({ ...form, contact_city: e.target.value })}
+                        placeholder="Город"
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                      />
+                    </div>
                   </>
                 )}
               </div>
@@ -780,7 +1070,7 @@ function DealModal({
                       {currentStage && (
                         <span className="w-2 h-2 rounded-full" style={{ background: currentStage.color }} />
                       )}
-                      <span className="font-medium text-gray-900">{stageName(form.stage_id)}</span>
+                      <span className="font-medium text-gray-900">{currentStage?.name ?? '—'}</span>
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-xs">
@@ -837,7 +1127,7 @@ function DealModal({
               {!isNew && appointments.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-lg">
                   <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
-                    Привязанные приёмы
+                    Приёмы ({appointments.length})
                   </div>
                   <div className="divide-y divide-gray-100">
                     {appointments.map(a => (
@@ -856,62 +1146,199 @@ function DealModal({
                 </div>
               )}
 
-              {/* Timeline */}
-              {!isNew && (
+              {/* Lab orders */}
+              {!isNew && labOrders.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-lg">
                   <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
-                    Хронология
+                    Лабораторные заказы ({labOrders.length})
                   </div>
-                  <div className="p-4">
-                    {!historyLoaded && <div className="text-sm text-gray-400">Загрузка…</div>}
-                    {historyLoaded && history.length === 0 && (
-                      <div className="text-sm text-gray-400">Событий пока нет</div>
-                    )}
-                    {historyLoaded && history.length > 0 && (
-                      <ol className="relative border-l-2 border-gray-100 space-y-4 ml-2">
-                        {history.map(h => {
-                          const fromCol = h.from_stage_id ? stages.find(s => s.id === h.from_stage_id)?.color : null
-                          const toCol   = h.to_stage_id   ? stages.find(s => s.id === h.to_stage_id)?.color   : null
+                  <div className="divide-y divide-gray-100">
+                    {labOrders.map(o => (
+                      <div key={o.id} className="px-4 py-2 flex items-center gap-3 text-sm">
+                        <Link href={`/lab/${o.id}`} className="text-blue-600 hover:underline">
+                          #{o.id.slice(0, 8)}
+                        </Link>
+                        <span className="text-gray-500">{new Date(o.created_at).toLocaleDateString('ru-RU')}</span>
+                        <span className="ml-auto text-xs text-gray-400">{o.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Tabs: timeline / tasks */}
+              {!isNew && (
+                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="flex border-b border-gray-100">
+                    <button
+                      onClick={() => setActiveTab('timeline')}
+                      className={`px-4 py-2.5 text-sm font-medium ${
+                        activeTab === 'timeline' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-800'
+                      }`}
+                    >
+                      Хронология
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('tasks')}
+                      className={`px-4 py-2.5 text-sm font-medium ${
+                        activeTab === 'tasks' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-800'
+                      }`}
+                    >
+                      Задачи {openTasksCount > 0 && <span className="ml-1 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">{openTasksCount}</span>}
+                    </button>
+                  </div>
+
+                  {activeTab === 'timeline' && (
+                    <div className="p-4 space-y-3">
+                      {/* Comment composer */}
+                      <div className="flex gap-2">
+                        <textarea
+                          value={commentDraft}
+                          onChange={e => setCommentDraft(e.target.value)}
+                          placeholder="Добавить комментарий…"
+                          rows={2}
+                          className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none hover:border-gray-300 focus:border-blue-400 outline-none"
+                        />
+                        <button
+                          onClick={addComment}
+                          disabled={!commentDraft.trim()}
+                          className="self-start px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
+                        >
+                          Отправить
+                        </button>
+                      </div>
+
+                      {/* Timeline list */}
+                      {events.length === 0 && (
+                        <div className="text-sm text-gray-400 py-4 text-center">Событий пока нет</div>
+                      )}
+                      {events.length > 0 && (
+                        <ol className="relative border-l-2 border-gray-100 space-y-3 ml-2 pt-1">
+                          {events.map(e => {
+                            const color = EVENT_COLOR[e.kind] ?? '#94a3b8'
+                            const label = EVENT_LABEL[e.kind] ?? e.kind
+                            const body = renderEventBody(e)
+                            return (
+                              <li key={e.id} className="ml-4 relative">
+                                <span className="absolute -left-[1.4rem] top-1 w-3 h-3 rounded-full border-2 border-white"
+                                      style={{ background: color }} />
+                                <div className="flex items-baseline gap-2 text-xs text-gray-500">
+                                  <span>{new Date(e.created_at).toLocaleString('ru-RU')}</span>
+                                  {e.actor_name && <span>· {e.actor_name}</span>}
+                                </div>
+                                <div className="mt-0.5 text-sm">
+                                  <span className="font-medium text-gray-800">{label}</span>
+                                  {body && <span className="text-gray-600"> — {body}</span>}
+                                </div>
+                              </li>
+                            )
+                          })}
+                        </ol>
+                      )}
+                    </div>
+                  )}
+
+                  {activeTab === 'tasks' && (
+                    <div className="p-4 space-y-3">
+                      {/* New task composer */}
+                      <div className="space-y-2 bg-gray-50 rounded p-2.5">
+                        <input
+                          type="text" value={newTaskTitle}
+                          onChange={e => setNewTaskTitle(e.target.value)}
+                          placeholder="Новая задача…"
+                          className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                        />
+                        <div className="flex gap-2">
+                          <input
+                            type="datetime-local" value={newTaskDue}
+                            onChange={e => setNewTaskDue(e.target.value)}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-sm"
+                          />
+                          <select
+                            value={newTaskAssignee}
+                            onChange={e => setNewTaskAssignee(e.target.value)}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1 text-sm bg-white"
+                          >
+                            <option value="">— ответственный —</option>
+                            {users.map(u => (
+                              <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={addTask}
+                            disabled={!newTaskTitle.trim()}
+                            className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Task list */}
+                      {tasks.length === 0 && (
+                        <div className="text-sm text-gray-400 py-4 text-center">Задач пока нет</div>
+                      )}
+                      <ul className="divide-y divide-gray-100">
+                        {tasks.map(t => {
+                          const overdue = t.status === 'open' && t.due_at && new Date(t.due_at) < new Date()
                           return (
-                            <li key={h.id} className="ml-4 relative">
-                              <span className="absolute -left-[1.4rem] top-1 w-3 h-3 rounded-full border-2 border-white"
-                                    style={{ background: toCol ?? '#94a3b8' }} />
-                              <div className="text-xs text-gray-500">
-                                {new Date(h.created_at).toLocaleString('ru-RU')}
+                            <li key={t.id} className="py-2 flex items-start gap-2">
+                              <input
+                                type="checkbox"
+                                checked={t.status === 'done'}
+                                onChange={() => toggleTask(t)}
+                                className="mt-1"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className={`text-sm ${t.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-900'}`}>
+                                  {t.title}
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+                                  {t.due_at && (
+                                    <span className={overdue ? 'text-red-600 font-medium' : ''}>
+                                      {new Date(t.due_at).toLocaleString('ru-RU')}
+                                    </span>
+                                  )}
+                                  {t.assignee && <span>· {t.assignee.first_name} {t.assignee.last_name ?? ''}</span>}
+                                </div>
                               </div>
-                              <div className="text-sm text-gray-800 flex items-center flex-wrap gap-1.5 mt-0.5">
-                                <span className="inline-flex items-center gap-1">
-                                  <span className="w-2 h-2 rounded-full" style={{ background: fromCol ?? '#cbd5e1' }} />
-                                  <span className="text-gray-500">
-                                    {(h.from_stage_id && stageName(h.from_stage_id)) || h.from_stage || '—'}
-                                  </span>
-                                </span>
-                                <span className="text-gray-400">→</span>
-                                <span className="inline-flex items-center gap-1">
-                                  <span className="w-2 h-2 rounded-full" style={{ background: toCol ?? '#94a3b8' }} />
-                                  <span className="font-medium">
-                                    {(h.to_stage_id && stageName(h.to_stage_id)) || h.to_stage}
-                                  </span>
-                                </span>
-                                {h.time_in_stage_seconds != null && (
-                                  <span className="text-xs text-gray-400 ml-1">
-                                    · {fmtDuration(h.time_in_stage_seconds)}
-                                  </span>
-                                )}
-                              </div>
+                              <button
+                                onClick={() => deleteTask(t)}
+                                className="text-xs text-gray-400 hover:text-red-600"
+                              >×</button>
                             </li>
                           )
                         })}
-                      </ol>
-                    )}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Comments list (standalone block — for quick scan) */}
+              {!isNew && comments.length > 0 && activeTab === 'tasks' && (
+                <div className="bg-white border border-gray-200 rounded-lg">
+                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
+                    Комментарии
                   </div>
+                  <ul className="divide-y divide-gray-100">
+                    {comments.map(c => (
+                      <li key={c.id} className="px-4 py-2 text-sm">
+                        <div className="text-xs text-gray-500">
+                          {c.author ? `${c.author.first_name} ${c.author.last_name ?? ''}` : '—'}
+                          <span className="ml-2">{new Date(c.created_at).toLocaleString('ru-RU')}</span>
+                        </div>
+                        <div className="text-gray-800 whitespace-pre-wrap mt-0.5">{c.body}</div>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
             </div>
           </div>
         </div>
 
-        {/* ─── Footer ─── */}
+        {/* Footer */}
         <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-between">
           <div>
             {!isNew && (
@@ -931,6 +1358,48 @@ function DealModal({
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── small helpers ────────────────────────────────────────────────────────────
+
+function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-500 mb-1">
+        {label}{required && <span className="text-red-500 ml-0.5">*</span>}
+      </label>
+      {children}
+    </div>
+  )
+}
+
+function TagEditor({ tags, onChange }: { tags: string[]; onChange: (next: string[]) => void }) {
+  const [draft, setDraft] = useState('')
+  function add() {
+    const v = draft.trim()
+    if (!v) return
+    if (tags.includes(v)) { setDraft(''); return }
+    onChange([...tags, v])
+    setDraft('')
+  }
+  return (
+    <div className="flex flex-wrap gap-1 border border-gray-200 rounded px-1.5 py-1 min-h-[34px]">
+      {tags.map(t => (
+        <span key={t} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded">
+          {t}
+          <button onClick={() => onChange(tags.filter(x => x !== t))} className="hover:text-blue-900">×</button>
+        </span>
+      ))}
+      <input
+        type="text" value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add() } }}
+        onBlur={add}
+        placeholder={tags.length === 0 ? 'добавить…' : ''}
+        className="flex-1 min-w-[60px] text-xs outline-none bg-transparent"
+      />
     </div>
   )
 }
