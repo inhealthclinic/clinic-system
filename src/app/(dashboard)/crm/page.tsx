@@ -1866,7 +1866,9 @@ function ComposerModeDropdown({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full mt-1 z-20 min-w-[160px] rounded border border-gray-200 bg-white shadow-lg py-1">
+        // Дроп открываем вверх — кнопка сидит в самом низу чат-карточки,
+        // у которой overflow-hidden. Вниз меню срезалось бы по «Задаче».
+        <div className="absolute left-0 bottom-full mb-1 z-20 min-w-[160px] rounded border border-gray-200 bg-white shadow-lg py-1">
           {COMPOSER_MODES.map(m => (
             <button
               key={m.value}
