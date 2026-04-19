@@ -1327,36 +1327,34 @@ function DealModal({
                             )
                           }
                           return filtered.map(m => {
-                            // Примечание — внутреннее, центрированное, жёлтое
+                            // Примечание — внутреннее, центрированное, мягкое жёлтое
                             if (m.channel === 'internal') {
                               return (
                                 <div key={m.id} className="flex justify-center">
-                                  <div className="max-w-[85%] rounded-md px-3 py-2 text-sm bg-amber-50 border border-amber-200 text-amber-900 shadow-sm">
-                                    <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider text-amber-700">
+                                  <div className="max-w-[85%] rounded-md px-3 py-2 text-sm bg-amber-100 text-gray-900">
+                                    <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider text-gray-600">
                                       <span>📝 Примечание · только для команды</span>
                                       {m.author && (
                                         <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
                                       )}
                                     </div>
                                     <div className="whitespace-pre-wrap break-words">{m.body}</div>
-                                    <div className="text-[10px] mt-1 text-amber-600">
+                                    <div className="text-[10px] mt-1 text-gray-500">
                                       {new Date(m.created_at).toLocaleString('ru-RU')}
                                     </div>
                                   </div>
                                 </div>
                               )
                             }
-                            // Обычное сообщение — входящее / исходящее
+                            // Обычное сообщение — входящее (серое) / исходящее (синее)
                             return (
                               <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
                                   m.direction === 'out'
                                     ? 'bg-blue-600 text-white'
-                                    : 'bg-white border border-gray-200 text-gray-900'
+                                    : 'bg-slate-100 text-gray-900'
                                 }`}>
-                                  <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider opacity-80">
-                                    <span className="w-1.5 h-1.5 rounded-full inline-block"
-                                          style={{ background: CHANNEL_COLOR[m.channel] }} />
+                                  <div className={`flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
                                     <span>{CHANNEL_LABEL[m.channel]}</span>
                                     {m.author && (
                                       <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
@@ -1366,7 +1364,7 @@ function DealModal({
                                     )}
                                   </div>
                                   <div className="whitespace-pre-wrap break-words">{m.body}</div>
-                                  <div className={`text-[10px] mt-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-400'}`}>
+                                  <div className={`text-[10px] mt-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
                                     {new Date(m.created_at).toLocaleString('ru-RU')}
                                   </div>
                                 </div>
@@ -1385,13 +1383,13 @@ function DealModal({
                             onChange={setComposerMode}
                           />
                           {composerMode === 'chat' && (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-emerald-200 bg-emerald-50 text-emerald-700">
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded bg-slate-100 text-gray-700">
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38a9.9 9.9 0 0 0 4.74 1.21h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2zm0 18.15h-.01a8.23 8.23 0 0 1-4.2-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.23 8.23 0 0 1-1.26-4.38c0-4.54 3.7-8.24 8.25-8.24 2.2 0 4.27.86 5.83 2.41a8.2 8.2 0 0 1 2.42 5.84c0 4.54-3.7 8.24-8.24 8.24z"/></svg>
                               WhatsApp
                             </span>
                           )}
                           {composerMode === 'note' && (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-amber-200 bg-amber-50 text-amber-700">
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded bg-amber-100 text-gray-800">
                               🔒 только для команды — клиент не увидит
                             </span>
                           )}
@@ -1399,7 +1397,7 @@ function DealModal({
 
                         {/* Task-specific extra fields — amoCRM-style */}
                         {composerMode === 'task' && (
-                          <div className="px-3 pt-2 space-y-2 bg-violet-50/40 border-t border-violet-100">
+                          <div className="px-3 pt-2 space-y-2 bg-slate-50 border-t border-slate-200">
                             {/* Quick presets */}
                             <div className="flex flex-wrap gap-1">
                               {TASK_DUE_PRESETS.map(p => {
@@ -1412,8 +1410,8 @@ function DealModal({
                                     onClick={() => setComposerTaskDue(val)}
                                     className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
                                       active
-                                        ? 'bg-violet-600 text-white border-violet-600'
-                                        : 'bg-white border-violet-200 text-violet-700 hover:bg-violet-100'
+                                        ? 'bg-blue-600 text-white border-blue-600'
+                                        : 'bg-slate-100 border-slate-200 text-gray-700 hover:bg-slate-200'
                                     }`}
                                   >
                                     {p.label}
@@ -1428,13 +1426,13 @@ function DealModal({
                                 type="datetime-local"
                                 value={composerTaskDue}
                                 onChange={e => setComposerTaskDue(e.target.value)}
-                                className="border border-gray-200 rounded px-2 py-1 bg-white"
+                                className="border border-slate-200 rounded px-2 py-1 bg-white"
                               />
                               <span className="text-gray-500 ml-1">для</span>
                               <select
                                 value={composerTaskAssignee}
                                 onChange={e => setComposerTaskAssignee(e.target.value)}
-                                className="border border-gray-200 rounded px-2 py-1 bg-white min-w-[140px]"
+                                className="border border-slate-200 rounded px-2 py-1 bg-white min-w-[140px]"
                               >
                                 <option value="">мне ({profile?.first_name ?? '—'})</option>
                                 {users.filter(u => u.id !== profile?.id).map(u => (
@@ -1442,7 +1440,7 @@ function DealModal({
                                 ))}
                               </select>
                               {composerTaskDue && (
-                                <span className="ml-auto text-[10px] text-violet-600">
+                                <span className="ml-auto text-[10px] text-gray-500">
                                   ⏰ {formatTaskDueHint(composerTaskDue)}
                                 </span>
                               )}
@@ -1471,11 +1469,7 @@ function DealModal({
                           <button
                             onClick={submitComposer}
                             disabled={!msgDraft.trim()}
-                            className={`self-end px-4 py-1.5 text-sm text-white rounded disabled:bg-gray-300 ${
-                              composerMode === 'chat' ? 'bg-blue-600 hover:bg-blue-700' :
-                              composerMode === 'note' ? 'bg-amber-600 hover:bg-amber-700' :
-                              'bg-emerald-600 hover:bg-emerald-700'
-                            }`}
+                            className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
                           >
                             {composerMode === 'chat' ? 'Отправить' :
                              composerMode === 'note' ? 'Сохранить' :
@@ -1484,7 +1478,7 @@ function DealModal({
                         </div>
 
                         {composerMode === 'chat' && (
-                          <div className="px-3 pb-2 text-[10px] text-amber-600">
+                          <div className="px-3 pb-2 text-[10px] text-gray-500">
                             ⚠ WhatsApp ещё не подключён — сообщение сохранится локально, клиенту не уйдёт
                           </div>
                         )}
