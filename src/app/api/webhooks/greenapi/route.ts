@@ -83,33 +83,50 @@ async function findDealByPhone(phone: string): Promise<DealRef | null> {
 async function createInboundDeal(phone: string, senderName?: string): Promise<DealRef | null> {
   const db = admin()
 
-  // Берём ЛЮБУЮ клинику + её первую воронку/стадию.
-  // В проде лучше per-instance: один Green-API → одна клиника.
-  const { data: stage } = await db
+  const { data: stage, error: stageErr } = await db
     .from('pipeline_stages')
     .select('id, clinic_id, pipeline_id')
     .order('position', { ascending: true })
     .limit(1)
     .maybeSingle()
 
-  if (!stage) return null
+  if (stageErr) {
+    console.error('[greenapi] pipeline_stages query failed:', stageErr.message)
+    return null
+  }
+  if (!stage) {
+    console.error('[greenapi] no pipeline_stages row — нужно создать воронку')
+    return null
+  }
 
-  const { data: deal, error } = await db
-    .from('deals')
-    .insert({
+  // Полный payload. Если какой-то колонки нет (source / contact_phone) —
+  // упадём и покажем в логах; дальше упростим.
+  const payload: Record<string, unknown> = {
+    clinic_id: stage.clinic_id,
+    pipeline_id: stage.pipeline_id,
+    stage_id: stage.id,
+    name: `WhatsApp: ${senderName ?? phone}`,
+    contact_phone: phone,
+    status: 'open',
+  }
+
+  let { data: deal, error } = await db.from('deals').insert(payload).select('id, clinic_id').single()
+
+  // Если упало — пробуем без source/contact_phone (на случай старой схемы)
+  if (error && /contact_phone|source|column/.test(error.message)) {
+    console.warn('[greenapi] deals insert failed on extra cols, retry minimal:', error.message)
+    const minimal = {
       clinic_id: stage.clinic_id,
       pipeline_id: stage.pipeline_id,
       stage_id: stage.id,
       name: `WhatsApp: ${senderName ?? phone}`,
-      contact_phone: phone,
-      source: 'whatsapp',
       status: 'open',
-    })
-    .select('id, clinic_id')
-    .single()
+    }
+    ;({ data: deal, error } = await db.from('deals').insert(minimal).select('id, clinic_id').single())
+  }
 
-  if (error) {
-    console.error('[greenapi webhook] createInboundDeal failed:', error.message)
+  if (error || !deal) {
+    console.error('[greenapi] createInboundDeal failed:', error?.message)
     return null
   }
   return { id: deal.id, clinic_id: deal.clinic_id }
@@ -119,30 +136,50 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   const db = admin()
   const phone = chatIdToPhone(wh.senderData.chatId)
   const text = extractIncomingText(wh)
+  console.log('[greenapi] incoming from', phone, '— text:', text?.slice(0, 80))
   if (!text) return
 
   let deal = await findDealByPhone(phone)
   if (!deal) {
+    console.log('[greenapi] no matching deal, creating inbound lead')
     deal = await createInboundDeal(phone, wh.senderData.senderName)
-    if (!deal) return
+    if (!deal) {
+      console.error('[greenapi] createInboundDeal returned null — no pipeline_stages?')
+      return
+    }
+    console.log('[greenapi] created deal', deal.id, 'clinic', deal.clinic_id)
+  } else {
+    console.log('[greenapi] matched existing deal', deal.id)
   }
 
-  await db
-    .from('deal_messages')
-    .insert({
-      deal_id: deal.id,
-      clinic_id: deal.clinic_id,
-      direction: 'in',
-      channel: 'whatsapp',
-      body: text,
-      external_id: wh.idMessage,
-      external_sender: wh.senderData.senderName ?? phone,
-      status: 'delivered',
-      created_at: new Date(wh.timestamp * 1000).toISOString(),
-    })
-    // ON CONFLICT на (channel, external_id) гарантирован уникальным индексом из 039
-    // Supabase v2: upsert c ignoreDuplicates
-  // ↑ Если словим duplicate — ok, просто логируем
+  // Пробуем полную вставку со статусом, если колонки ещё нет (миграция 040 не
+  // применена) — откатываемся на минимальный набор полей.
+  const basePayload = {
+    deal_id: deal.id,
+    clinic_id: deal.clinic_id,
+    direction: 'in' as const,
+    channel: 'whatsapp' as const,
+    body: text,
+    external_id: wh.idMessage,
+    external_sender: wh.senderData.senderName ?? phone,
+    created_at: new Date(wh.timestamp * 1000).toISOString(),
+  }
+
+  let { error } = await db.from('deal_messages').insert({ ...basePayload, status: 'delivered' })
+  if (error && /status|column/.test(error.message)) {
+    console.warn('[greenapi] status column missing, retrying without it:', error.message)
+    ;({ error } = await db.from('deal_messages').insert(basePayload))
+  }
+  if (error) {
+    if (/duplicate/.test(error.message)) {
+      console.log('[greenapi] duplicate message ignored:', wh.idMessage)
+    } else {
+      console.error('[greenapi] insert deal_messages failed:', error.message)
+      throw new Error(error.message)
+    }
+  } else {
+    console.log('[greenapi] message saved, deal', deal.id)
+  }
 }
 
 async function handleOutgoingStatus(wh: OutgoingStatusWebhook) {
