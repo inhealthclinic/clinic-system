@@ -11,6 +11,15 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
+import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
+import {
+  type DealFieldConfig,
+  DEFAULT_FIELD_CONFIGS,
+  fieldDisplayLabel,
+  isFieldRequired,
+  mergeWithDefaults,
+  validateRequiredFields,
+} from '@/lib/dealFields'
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +65,8 @@ interface DealRow {
   contact_city: string | null
   notes: string | null
   tags: string[]
+  // Кастомные поля (мигр. 057): { [field_key]: value }
+  custom_fields: Record<string, unknown> | null
   //
   stage_entered_at: string
   created_at: string
@@ -150,6 +161,7 @@ export default function CRMKanbanPage() {
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
         responsible_user_id, source_id, amount,
         preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
+        custom_fields,
         stage_entered_at, created_at, updated_at,
         patient:patients(id, full_name, phones, birth_date, city),
         responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
@@ -304,6 +316,7 @@ export default function CRMKanbanPage() {
               status: 'open', responsible_user_id: null, source_id: null, amount: null,
               preferred_doctor_id: null, appointment_type: null, loss_reason_id: null,
               contact_phone: null, contact_city: null, notes: null, tags: [],
+              custom_fields: {},
               stage_entered_at: new Date().toISOString(),
               created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
             } as DealRow)}
@@ -641,9 +654,18 @@ function DealModal({
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
-  const [form, setForm] = useState<DealRow>(deal)
+  const [form, setForm] = useState<DealRow>({
+    ...deal,
+    // Старые сделки могут прийти без custom_fields — нормализуем.
+    custom_fields: deal.custom_fields ?? {},
+  })
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'chat' | 'timeline' | 'tasks'>('chat')
+
+  // Конфигурация полей левой колонки (мигр. 057). До загрузки — дефолт,
+  // чтобы карточка не «прыгала» при открытии.
+  const [fieldConfigs, setFieldConfigs] = useState<DealFieldConfig[]>(DEFAULT_FIELD_CONFIGS)
+  const [showFieldsSettings, setShowFieldsSettings] = useState(false)
 
   const [events, setEvents] = useState<TimelineEvent[]>([])
   const [tasks, setTasks] = useState<TaskRow[]>([])
@@ -749,6 +771,23 @@ function DealModal({
 
   useEffect(() => { loadRelated() }, [loadRelated])
 
+  // Загрузка конфигов полей по клинике сделки.
+  useEffect(() => {
+    const cid = form.clinic_id
+    if (!cid) return
+    let alive = true
+    supabase
+      .from('deal_field_configs')
+      .select('*')
+      .eq('clinic_id', cid)
+      .order('sort_order')
+      .then(({ data }) => {
+        if (!alive) return
+        setFieldConfigs(mergeWithDefaults((data ?? []) as DealFieldConfig[]))
+      })
+    return () => { alive = false }
+  }, [form.clinic_id, supabase])
+
   // Разово спрашиваем статус WA у сервера, чтобы показывать или прятать
   // плашку «WhatsApp ещё не подключён» в композере.
   useEffect(() => {
@@ -788,6 +827,29 @@ function DealModal({
       alert('Укажите причину отказа — этап помечен как «потеря».')
       return
     }
+
+    // Валидация обязательных полей по конфигу.
+    const formAsRecord = form as unknown as Record<string, unknown>
+    const customFieldsObj = (form.custom_fields ?? {}) as Record<string, unknown>
+    const { missing, blocking } = validateRequiredFields(
+      fieldConfigs, formAsRecord, customFieldsObj, form.stage_id,
+    )
+    if (blocking.length > 0) {
+      alert(
+        'Нельзя сохранить: не заполнены обязательные поля с блокировкой — '
+        + blocking.map(c => fieldDisplayLabel(c)).join(', ')
+      )
+      return
+    }
+    if (missing.length > 0) {
+      const ok = confirm(
+        'Не заполнены обязательные поля: '
+        + missing.map(c => fieldDisplayLabel(c)).join(', ')
+        + '\n\nСохранить всё равно?'
+      )
+      if (!ok) return
+    }
+
     setSaving(true)
     const payload = {
       clinic_id: form.clinic_id,
@@ -807,6 +869,7 @@ function DealModal({
       contact_city: form.contact_city?.trim() || null,
       notes: form.notes?.trim() || null,
       tags: form.tags ?? [],
+      custom_fields: form.custom_fields ?? {},
     }
     const { error } = isNew
       ? await supabase.from('deals').insert(payload)
@@ -946,6 +1009,19 @@ function DealModal({
   function onStageClick(stageId: string) {
     const target = stages.find(s => s.id === stageId)
     if (!target) return
+
+    // Блокировка перехода на этап с пустыми обязательными полями.
+    const formAsRecord = form as unknown as Record<string, unknown>
+    const customFields = (form.custom_fields ?? {}) as Record<string, unknown>
+    const { blocking } = validateRequiredFields(fieldConfigs, formAsRecord, customFields, stageId)
+    if (blocking.length > 0) {
+      const names = blocking.map(c => fieldDisplayLabel(c)).join(', ')
+      alert(
+        `Нельзя перейти в этап «${target.name}»: не заполнены обязательные поля — ${names}.`
+      )
+      return
+    }
+
     // moving into lost — ensure reason exists
     if (target.stage_role === 'lost' && !form.loss_reason_id && reasons.length > 0) {
       setForm({ ...form, stage_id: stageId, loss_reason_id: reasons[0].id })
@@ -1067,6 +1143,14 @@ function DealModal({
                 <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-200 rounded-md shadow-lg z-10 py-1">
                   <button
                     type="button"
+                    onMouseDown={e => { e.preventDefault(); setShowHeaderMenu(false); setShowFieldsSettings(true) }}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                  >
+                    ⚙ Настройки полей
+                  </button>
+                  <div className="border-t border-gray-100 my-1" />
+                  <button
+                    type="button"
                     onMouseDown={e => { e.preventDefault(); setShowHeaderMenu(false); removeDeal() }}
                     className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
                   >
@@ -1085,149 +1169,277 @@ function DealModal({
           {/* LEFT: properties */}
           <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto">
             <div className="p-5 space-y-4 text-sm">
-              <Field label="Воронка">
-                <select
-                  value={form.pipeline_id ?? ''}
-                  onChange={e => {
-                    const pid = e.target.value
-                    const firstStage = stages.find(s => s.pipeline_id === pid)
-                    setForm({ ...form, pipeline_id: pid, stage_id: firstStage?.id ?? null })
-                  }}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
-                >
-                  {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </Field>
+              {(() => {
+                // Карта рендереров встроенных полей (ключи совпадают с DEFAULT_FIELD_CONFIGS).
+                // Render-функции замыкают form/setForm и не зависят от порядка.
+                const customFields = (form.custom_fields ?? {}) as Record<string, unknown>
+                const setCustom = (key: string, value: unknown) => {
+                  const next = { ...customFields, [key]: value }
+                  setForm({ ...form, custom_fields: next })
+                }
+                const reqFor = (k: string) => isFieldRequired(fieldConfigs, k, form.stage_id)
 
-              <Field label="Ответственный">
-                <select
-                  value={form.responsible_user_id ?? ''}
-                  onChange={e => setForm({ ...form, responsible_user_id: e.target.value || null })}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
-                >
-                  <option value="">— не назначен —</option>
-                  {users.map(u => (
-                    <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Источник">
-                <select
-                  value={form.source_id ?? ''}
-                  onChange={e => setForm({ ...form, source_id: e.target.value || null })}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
-                >
-                  <option value="">— не задан —</option>
-                  {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-              </Field>
-
-              <Field label="Врач">
-                <select
-                  value={form.preferred_doctor_id ?? ''}
-                  onChange={e => setForm({ ...form, preferred_doctor_id: e.target.value || null })}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
-                >
-                  <option value="">— не назначен —</option>
-                  {doctors.map(d => (
-                    <option key={d.id} value={d.id}>{d.first_name} {d.last_name ?? ''}</option>
-                  ))}
-                </select>
-              </Field>
-
-              {isLostStage && (
-                <Field label="Причина отказа" required>
-                  <select
-                    value={form.loss_reason_id ?? ''}
-                    onChange={e => setForm({ ...form, loss_reason_id: e.target.value || null })}
-                    className="w-full border border-red-300 rounded px-2 py-1.5 bg-white"
-                  >
-                    <option value="">— выберите —</option>
-                    {reasons.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                  </select>
-                </Field>
-              )}
-
-              <Field label="Комментарий">
-                <textarea
-                  value={form.notes ?? ''}
-                  onChange={e => setForm({ ...form, notes: e.target.value })}
-                  rows={3}
-                  className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
-                  placeholder="Внутренние заметки менеджера…"
-                />
-              </Field>
-
-              <Field label="Теги">
-                <TagEditor
-                  tags={form.tags ?? []}
-                  onChange={(tags) => setForm({ ...form, tags })}
-                />
-              </Field>
-
-              {/* Patient block */}
-              <div className="pt-3 border-t border-gray-100">
-                <label className="block text-xs text-gray-500 mb-1.5">Пациент</label>
-                {form.patient ? (
-                  <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50">
-                    <div className="font-medium text-gray-900">{form.patient.full_name}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">{form.patient.phones?.[0] || form.contact_phone || '— нет телефона —'}</div>
-                    {(form.patient.birth_date || form.patient.city) && (
-                      <div className="text-xs text-gray-500 mt-0.5">
-                        {form.patient.birth_date && <>ДР: {form.patient.birth_date}</>}
-                        {form.patient.city && <span className="ml-2">· {form.patient.city}</span>}
-                      </div>
-                    )}
-                    <div className="flex gap-3 mt-2 text-xs">
-                      <Link href={`/patients/${form.patient.id}`} className="text-blue-600 hover:underline">
-                        → карточка
-                      </Link>
-                      <button
-                        onClick={() => setForm({ ...form, patient_id: null, patient: null })}
-                        className="text-red-600 hover:underline"
+                const builtinRenderers: Record<string, () => React.ReactNode> = {
+                  pipeline: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'pipeline')!) || 'Воронка'} required={reqFor('pipeline')}>
+                      <select
+                        value={form.pipeline_id ?? ''}
+                        onChange={e => {
+                          const pid = e.target.value
+                          const firstStage = stages.find(s => s.pipeline_id === pid)
+                          setForm({ ...form, pipeline_id: pid, stage_id: firstStage?.id ?? null })
+                        }}
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
                       >
-                        Открепить
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <input
-                      type="text" value={patientSearch}
-                      onChange={e => setPatientSearch(e.target.value)}
-                      placeholder="Поиск по имени или телефону…"
-                      className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
-                    />
-                    {patientResults.length > 0 && (
-                      <div className="mt-1 border border-gray-200 rounded max-h-48 overflow-y-auto bg-white shadow-sm">
-                        {patientResults.map(p => (
-                          <button key={p.id} onClick={() => {
-                            setForm({ ...form, patient_id: p.id, patient: p })
-                            setPatientSearch(''); setPatientResults([])
-                          }} className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm">
-                            <div>{p.full_name}</div>
-                            <div className="text-xs text-gray-500">{p.phones?.[0]}</div>
-                          </button>
+                        {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </Field>
+                  ),
+                  responsible: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'responsible')!) || 'Ответственный'} required={reqFor('responsible')}>
+                      <select
+                        value={form.responsible_user_id ?? ''}
+                        onChange={e => setForm({ ...form, responsible_user_id: e.target.value || null })}
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                      >
+                        <option value="">— не назначен —</option>
+                        {users.map(u => (
+                          <option key={u.id} value={u.id}>{u.first_name} {u.last_name ?? ''}</option>
                         ))}
-                      </div>
-                    )}
-                    {/* Fallback contact fields when no patient linked */}
-                    <div className="mt-2 space-y-1.5">
-                      <input type="tel" value={form.contact_phone ?? ''}
-                        onChange={e => setForm({ ...form, contact_phone: e.target.value })}
-                        placeholder="Телефон контакта"
-                        className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                      </select>
+                    </Field>
+                  ),
+                  source: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'source')!) || 'Источник'} required={reqFor('source')}>
+                      <select
+                        value={form.source_id ?? ''}
+                        onChange={e => setForm({ ...form, source_id: e.target.value || null })}
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                      >
+                        <option value="">— не задан —</option>
+                        {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </Field>
+                  ),
+                  doctor: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'doctor')!) || 'Врач'} required={reqFor('doctor')}>
+                      <select
+                        value={form.preferred_doctor_id ?? ''}
+                        onChange={e => setForm({ ...form, preferred_doctor_id: e.target.value || null })}
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                      >
+                        <option value="">— не назначен —</option>
+                        {doctors.map(d => (
+                          <option key={d.id} value={d.id}>{d.first_name} {d.last_name ?? ''}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  ),
+                  comment: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'comment')!) || 'Комментарий'} required={reqFor('comment')}>
+                      <textarea
+                        value={form.notes ?? ''}
+                        onChange={e => setForm({ ...form, notes: e.target.value })}
+                        rows={3}
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                        placeholder="Внутренние заметки менеджера…"
                       />
-                      <input type="text" value={form.contact_city ?? ''}
-                        onChange={e => setForm({ ...form, contact_city: e.target.value })}
-                        placeholder="Город"
-                        className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                    </Field>
+                  ),
+                  tags: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'tags')!) || 'Теги'} required={reqFor('tags')}>
+                      <TagEditor
+                        tags={form.tags ?? []}
+                        onChange={(tags) => setForm({ ...form, tags })}
                       />
+                    </Field>
+                  ),
+                  patient: () => (
+                    <div className="pt-3 border-t border-gray-100">
+                      <label className="block text-xs text-gray-500 mb-1.5">
+                        {fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'patient')!) || 'Пациент'}
+                        {reqFor('patient') && <span className="text-red-500 ml-0.5">*</span>}
+                      </label>
+                      {form.patient ? (
+                        <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50">
+                          <div className="font-medium text-gray-900">{form.patient.full_name}</div>
+                          <div className="text-xs text-gray-500 mt-0.5">{form.patient.phones?.[0] || form.contact_phone || '— нет телефона —'}</div>
+                          {(form.patient.birth_date || form.patient.city) && (
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {form.patient.birth_date && <>ДР: {form.patient.birth_date}</>}
+                              {form.patient.city && <span className="ml-2">· {form.patient.city}</span>}
+                            </div>
+                          )}
+                          <div className="flex gap-3 mt-2 text-xs">
+                            <Link href={`/patients/${form.patient.id}`} className="text-blue-600 hover:underline">
+                              → карточка
+                            </Link>
+                            <button
+                              onClick={() => setForm({ ...form, patient_id: null, patient: null })}
+                              className="text-red-600 hover:underline"
+                            >
+                              Открепить
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <input
+                            type="text" value={patientSearch}
+                            onChange={e => setPatientSearch(e.target.value)}
+                            placeholder="Поиск по имени или телефону…"
+                            className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                          />
+                          {patientResults.length > 0 && (
+                            <div className="mt-1 border border-gray-200 rounded max-h-48 overflow-y-auto bg-white shadow-sm">
+                              {patientResults.map(p => (
+                                <button key={p.id} onClick={() => {
+                                  setForm({ ...form, patient_id: p.id, patient: p })
+                                  setPatientSearch(''); setPatientResults([])
+                                }} className="w-full text-left px-2 py-1.5 hover:bg-blue-50 text-sm">
+                                  <div>{p.full_name}</div>
+                                  <div className="text-xs text-gray-500">{p.phones?.[0]}</div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
+                  ),
+                  contact_phone: () => (
+                    !form.patient ? (
+                      <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'contact_phone')!) || 'Телефон контакта'} required={reqFor('contact_phone')}>
+                        <input type="tel" value={form.contact_phone ?? ''}
+                          onChange={e => setForm({ ...form, contact_phone: e.target.value })}
+                          placeholder="Телефон контакта"
+                          className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                        />
+                      </Field>
+                    ) : null
+                  ),
+                  contact_city: () => (
+                    !form.patient ? (
+                      <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'contact_city')!) || 'Город'} required={reqFor('contact_city')}>
+                        <input type="text" value={form.contact_city ?? ''}
+                          onChange={e => setForm({ ...form, contact_city: e.target.value })}
+                          placeholder="Город"
+                          className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                        />
+                      </Field>
+                    ) : null
+                  ),
+                }
+
+                function renderCustom(cfg: DealFieldConfig) {
+                  const value = customFields[cfg.field_key]
+                  const required = isFieldRequired(fieldConfigs, cfg.field_key, form.stage_id)
+                  const label = fieldDisplayLabel(cfg)
+                  switch (cfg.field_type) {
+                    case 'number':
+                      return (
+                        <Field key={cfg.field_key} label={label} required={required}>
+                          <input
+                            type="number"
+                            value={value == null ? '' : String(value)}
+                            onChange={e => setCustom(cfg.field_key, e.target.value === '' ? null : Number(e.target.value))}
+                            className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                          />
+                        </Field>
+                      )
+                    case 'date':
+                      return (
+                        <Field key={cfg.field_key} label={label} required={required}>
+                          <input
+                            type="date"
+                            value={typeof value === 'string' ? value : ''}
+                            onChange={e => setCustom(cfg.field_key, e.target.value || null)}
+                            className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                          />
+                        </Field>
+                      )
+                    case 'phone':
+                      return (
+                        <Field key={cfg.field_key} label={label} required={required}>
+                          <input
+                            type="tel"
+                            value={typeof value === 'string' ? value : ''}
+                            onChange={e => setCustom(cfg.field_key, e.target.value)}
+                            className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                          />
+                        </Field>
+                      )
+                    case 'textarea':
+                      return (
+                        <Field key={cfg.field_key} label={label} required={required}>
+                          <textarea
+                            value={typeof value === 'string' ? value : ''}
+                            onChange={e => setCustom(cfg.field_key, e.target.value)}
+                            rows={3}
+                            className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                          />
+                        </Field>
+                      )
+                    case 'select':
+                      return (
+                        <Field key={cfg.field_key} label={label} required={required}>
+                          <select
+                            value={typeof value === 'string' ? value : ''}
+                            onChange={e => setCustom(cfg.field_key, e.target.value || null)}
+                            className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
+                          >
+                            <option value="">— не задано —</option>
+                            {cfg.options.map(o => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                        </Field>
+                      )
+                    case 'text':
+                    default:
+                      return (
+                        <Field key={cfg.field_key} label={label} required={required}>
+                          <input
+                            type="text"
+                            value={typeof value === 'string' ? value : ''}
+                            onChange={e => setCustom(cfg.field_key, e.target.value)}
+                            className="w-full border border-gray-200 rounded px-2 py-1.5 hover:border-gray-300"
+                          />
+                        </Field>
+                      )
+                  }
+                }
+
+                return (
+                  <>
+                    {fieldConfigs.map(cfg => {
+                      if (!cfg.is_visible) return null
+                      if (cfg.is_builtin) {
+                        const fn = builtinRenderers[cfg.field_key]
+                        if (!fn) return null
+                        const node = fn()
+                        return node ? <div key={cfg.field_key}>{node}</div> : null
+                      }
+                      return renderCustom(cfg)
+                    })}
+
+                    {/* Причина отказа — динамическая, всегда вне основного списка
+                        (нужна только когда этап имеет роль 'lost'). */}
+                    {isLostStage && (
+                      <Field label="Причина отказа" required>
+                        <select
+                          value={form.loss_reason_id ?? ''}
+                          onChange={e => setForm({ ...form, loss_reason_id: e.target.value || null })}
+                          className="w-full border border-red-300 rounded px-2 py-1.5 bg-white"
+                        >
+                          <option value="">— выберите —</option>
+                          {reasons.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                        </select>
+                      </Field>
+                    )}
                   </>
-                )}
-              </div>
+                )
+              })()}
 
               {!isNew && (
                 <div className="pt-3 border-t border-gray-100 space-y-2">
@@ -1758,6 +1970,16 @@ function DealModal({
           </div>
         </div>
       </div>
+
+      {showFieldsSettings && form.clinic_id && (
+        <DealFieldsSettingsModal
+          clinicId={form.clinic_id}
+          pipelines={pipelines.map(p => ({ id: p.id, name: p.name }))}
+          stages={stages.map(s => ({ id: s.id, name: s.name, pipeline_id: s.pipeline_id }))}
+          onClose={() => setShowFieldsSettings(false)}
+          onSaved={(next) => { setFieldConfigs(next); setShowFieldsSettings(false) }}
+        />
+      )}
 
       {showBookingModal && form.clinic_id && (
         <CreateAppointmentModal
