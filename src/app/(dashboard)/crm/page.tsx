@@ -660,6 +660,8 @@ function DealModal({
     custom_fields: deal.custom_fields ?? {},
   })
   const [saving, setSaving] = useState(false)
+  // Доступ к «Хронологии» (аудит-лог событий по сделке) — только у админа.
+  const isAdmin = profile?.role?.slug === 'admin'
   const [activeTab, setActiveTab] = useState<'chat' | 'timeline' | 'tasks'>('chat')
 
   // Конфигурация полей левой колонки (мигр. 057). До загрузки — дефолт,
@@ -1473,38 +1475,6 @@ function DealModal({
              * оставшееся место по высоте, чтобы композер всегда был у футера. */}
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="p-5 pb-0 space-y-4 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '40%' }}>
-              {/* Journey KPI */}
-              {!isNew && journey && (
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-white border border-gray-200 rounded-lg p-3">
-                    <div className="text-xs text-gray-500 uppercase tracking-wider">Приёмы</div>
-                    <div className="text-xl font-semibold mt-1">
-                      {journey.appointments_count}
-                      <span className="text-xs text-gray-400 font-normal ml-2">
-                        визитов {journey.visits_completed}/{journey.visits_count}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="bg-white border border-gray-200 rounded-lg p-3">
-                    <div className="text-xs text-gray-500 uppercase tracking-wider">Начислено</div>
-                    <div className="text-xl font-semibold mt-1 font-mono">
-                      {Number(journey.charges_total).toLocaleString('ru-RU')} <span className="text-sm text-gray-400">₸</span>
-                    </div>
-                  </div>
-                  <div className="bg-white border border-gray-200 rounded-lg p-3">
-                    <div className="text-xs text-gray-500 uppercase tracking-wider">Оплачено</div>
-                    <div className="text-xl font-semibold mt-1 font-mono text-green-700">
-                      {Number(journey.payments_total).toLocaleString('ru-RU')} <span className="text-sm text-gray-400">₸</span>
-                    </div>
-                    {Number(journey.refunds_total) > 0 && (
-                      <div className="text-xs text-red-600 mt-0.5">
-                        возврат {Number(journey.refunds_total).toLocaleString('ru-RU')} ₸
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
               {/* Linked appointments */}
               {!isNew && appointments.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-lg">
@@ -1567,14 +1537,16 @@ function DealModal({
                         </span>
                       )}
                     </button>
-                    <button
-                      onClick={() => setActiveTab('timeline')}
-                      className={`px-4 py-2.5 text-sm font-medium ${
-                        activeTab === 'timeline' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-800'
-                      }`}
-                    >
-                      Хронология
-                    </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() => setActiveTab('timeline')}
+                        className={`px-4 py-2.5 text-sm font-medium ${
+                          activeTab === 'timeline' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-800'
+                        }`}
+                      >
+                        Хронология
+                      </button>
+                    )}
                     <button
                       onClick={() => setActiveTab('tasks')}
                       className={`px-4 py-2.5 text-sm font-medium ${
@@ -1794,7 +1766,7 @@ function DealModal({
                     </div>
                   )}
 
-                  {activeTab === 'timeline' && (
+                  {activeTab === 'timeline' && isAdmin && (
                     <div className="p-4 space-y-3 flex-1 min-h-0 overflow-y-auto">
                       {/* Comment composer */}
                       <div className="flex gap-2">
