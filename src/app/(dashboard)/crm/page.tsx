@@ -1255,9 +1255,12 @@ function DealModal({
             </div>
           </div>
 
-          {/* RIGHT: feed */}
-          <div className="flex-1 overflow-y-auto">
-            <div className="p-5 space-y-4">
+          {/* RIGHT: feed
+             * flex-col layout: верхний блок (KPI / приёмы / лабы) — shrink-0 и
+             * скроллится сам, если разрастётся; tabs-карточка занимает всё
+             * оставшееся место по высоте, чтобы композер всегда был у футера. */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="p-5 pb-0 space-y-4 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '40%' }}>
               {/* Journey KPI */}
               {!isNew && journey && (
                 <div className="grid grid-cols-3 gap-3">
@@ -1332,11 +1335,14 @@ function DealModal({
                   </div>
                 </div>
               )}
+            </div>
 
+            {/* Tabs + чат: растягиваемся на оставшуюся высоту, композер прилипает к низу */}
+            <div className="flex-1 min-h-0 p-5 pt-4 flex flex-col overflow-hidden">
               {/* Tabs: chat / timeline / tasks */}
               {!isNew && (
-                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="flex border-b border-gray-100">
+                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden flex-1 min-h-0 flex flex-col">
+                  <div className="flex border-b border-gray-100 flex-shrink-0">
                     <button
                       onClick={() => setActiveTab('chat')}
                       className={`px-4 py-2.5 text-sm font-medium ${
@@ -1368,7 +1374,7 @@ function DealModal({
                   </div>
 
                   {activeTab === 'chat' && (
-                    <div className="flex flex-col" style={{ height: 'calc(100vh - 240px)', minHeight: '520px' }}>
+                    <div className="flex flex-col flex-1 min-h-0">
                       {/* Messages list */}
                       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
                         {(() => {
@@ -1577,7 +1583,7 @@ function DealModal({
                   )}
 
                   {activeTab === 'timeline' && (
-                    <div className="p-4 space-y-3">
+                    <div className="p-4 space-y-3 flex-1 min-h-0 overflow-y-auto">
                       {/* Comment composer */}
                       <div className="flex gap-2">
                         <textarea
@@ -1640,7 +1646,7 @@ function DealModal({
                   )}
 
                   {activeTab === 'tasks' && (
-                    <div className="p-4 space-y-3">
+                    <div className="p-4 space-y-3 flex-1 min-h-0 overflow-y-auto">
                       {/* New task composer */}
                       <div className="space-y-2 bg-gray-50 rounded p-2.5">
                         <input
@@ -1718,11 +1724,11 @@ function DealModal({
 
               {/* Comments list (standalone block — for quick scan) */}
               {!isNew && comments.length > 0 && activeTab === 'tasks' && (
-                <div className="bg-white border border-gray-200 rounded-lg">
-                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
+                <div className="bg-white border border-gray-200 rounded-lg mt-4 flex-shrink-0 max-h-[30%] overflow-hidden flex flex-col">
+                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900 flex-shrink-0">
                     Комментарии
                   </div>
-                  <ul className="divide-y divide-gray-100">
+                  <ul className="divide-y divide-gray-100 overflow-y-auto">
                     {comments.map(c => (
                       <li key={c.id} className="px-4 py-2 text-sm">
                         <div className="text-xs text-gray-500">
