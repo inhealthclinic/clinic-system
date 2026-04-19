@@ -36,7 +36,7 @@ const MODULE_ORDER = [
 ]
 
 const SLUG_RU: Record<string, string> = {
-  owner:    'Владелец',
+  owner:    'Админ',
   admin:    'Администратор',
   doctor:   'Врач',
   nurse:    'Медсестра',
@@ -196,7 +196,7 @@ export default function RolesPage() {
                                     : 'border-gray-300 bg-white hover:border-gray-400 cursor-pointer',
                                   isSaving ? 'opacity-50' : '',
                                 ].join(' ')}
-                                title={isOwner ? 'Владелец имеет все права' : (checked ? 'Убрать право' : 'Добавить право')}
+                                title={isOwner ? 'Админ имеет все права' : (checked ? 'Убрать право' : 'Добавить право')}
                               >
                                 {checked && (
                                   <svg className={`w-3 h-3 ${isOwner ? 'text-purple-600' : 'text-white'}`} viewBox="0 0 12 12" fill="none">
@@ -223,7 +223,7 @@ export default function RolesPage() {
                   <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </span>
-              <span className="text-xs text-gray-500">Владелец — всегда все права</span>
+              <span className="text-xs text-gray-500">Админ — всегда все права</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="w-4 h-4 rounded border-2 border-blue-500 bg-blue-500 inline-flex items-center justify-center">
