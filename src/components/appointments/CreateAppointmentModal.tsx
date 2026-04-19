@@ -44,10 +44,30 @@ export interface CreateAppointmentModalProps {
   defaultTime?: string
   /** Если передан — пациент уже выбран, UI поиска скрыт. */
   defaultPatient?: DefaultPatient | null
+  /**
+   * Черновик нового пациента — ФИО/телефон подтягиваются из контекста
+   * (напр. из карточки сделки, когда пациент ещё не создан). Модалка
+   * откроется сразу на вкладке «+ Новый пациент» с этими значениями.
+   */
+  suggestedNewPatient?: { full_name?: string | null; phone?: string | null } | null
   /** Если передан — после создания записи пишется событие в deal_events. */
   dealId?: string | null
   onClose: () => void
   onCreated: (appointmentId?: string) => void
+}
+
+/** Приводит произвольный номер к формату «+7 7XX XXX XXXX» для поля newPat.phone. */
+function formatKzPhone(raw: string | null | undefined): string {
+  if (!raw) return '+7 7'
+  const digits = raw.replace(/\D/g, '')
+  // Отбрасываем ведущую 7/8, берём следующие 10 цифр.
+  const trimmed = digits.replace(/^[78]/, '').slice(0, 10)
+  if (!trimmed) return '+7 7'
+  let out = '+7 ' + trimmed.slice(0, 1)
+  if (trimmed.length > 1) out += trimmed.slice(1, 3)
+  if (trimmed.length > 3) out += ' ' + trimmed.slice(3, 6)
+  if (trimmed.length > 6) out += ' ' + trimmed.slice(6, 10)
+  return out
 }
 
 export function CreateAppointmentModal({
@@ -56,11 +76,19 @@ export function CreateAppointmentModal({
   defaultDoctorId,
   defaultTime,
   defaultPatient,
+  suggestedNewPatient,
   dealId,
   onClose,
   onCreated,
 }: CreateAppointmentModalProps) {
   const supabase = createClient()
+
+  const hasSuggested =
+    !defaultPatient &&
+    Boolean(
+      (suggestedNewPatient?.full_name && suggestedNewPatient.full_name.trim()) ||
+      (suggestedNewPatient?.phone && suggestedNewPatient.phone.trim())
+    )
 
   /* ── doctors ── */
   const [doctors, setDoctors]       = useState<DoctorRow[]>([])
@@ -68,7 +96,7 @@ export function CreateAppointmentModal({
   const [doctorsError, setDocErr]   = useState('')
 
   /* ── patient ── */
-  const [patientMode, setPatientMode]   = useState<PatientMode>('search')
+  const [patientMode, setPatientMode]   = useState<PatientMode>(hasSuggested ? 'new' : 'search')
   const [patientSearch, setPatientSearch] = useState('')
   const [searchResults, setSearchResults] = useState<{ id: string; full_name: string; phones: string[] }[]>([])
   const [showDropdown, setShowDropdown]  = useState(false)
@@ -83,8 +111,12 @@ export function CreateAppointmentModal({
 
   /* new patient form */
   const [newPat, setNewPat] = useState({
-    full_name: '',
-    phone: defaultPatient?.phone ? defaultPatient.phone : '+7 7',
+    full_name: suggestedNewPatient?.full_name?.trim() ?? '',
+    phone: suggestedNewPatient?.phone
+      ? formatKzPhone(suggestedNewPatient.phone)
+      : defaultPatient?.phone
+        ? defaultPatient.phone
+        : '+7 7',
     gender: 'other' as 'male' | 'female' | 'other',
     birth_date: '',
   })
