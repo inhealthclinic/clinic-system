@@ -507,6 +507,19 @@ function DealModal({
   const [saving, setSaving] = useState(false)
   const [history, setHistory] = useState<HistoryRow[]>([])
   const [historyLoaded, setHistoryLoaded] = useState(false)
+  const [journey, setJourney] = useState<{
+    appointments_count: number
+    visits_count: number
+    visits_completed: number
+    charges_total: number
+    payments_total: number
+    refunds_total: number
+  } | null>(null)
+  const [appointments, setAppointments] = useState<Array<{
+    id: string; date: string; time_start: string; status: string
+    doctor?: { first_name: string; last_name: string | null } | null
+    service?: { name: string } | null
+  }>>([])
 
   // patient search (minimal)
   const [patientSearch, setPatientSearch] = useState('')
@@ -523,6 +536,21 @@ function DealModal({
         setHistory((data ?? []) as HistoryRow[])
         setHistoryLoaded(true)
       })
+    supabase.from('v_deal_journey')
+      .select('appointments_count,visits_count,visits_completed,charges_total,payments_total,refunds_total')
+      .eq('deal_id', deal.id)
+      .maybeSingle()
+      .then(({ data }) => { if (data) setJourney(data) })
+    supabase.from('appointments')
+      .select('id,date,time_start,status,doctor:doctors(first_name,last_name),service:services(name)')
+      .eq('deal_id', deal.id)
+      .order('date', { ascending: false })
+      .limit(20)
+      .then(({ data }) => setAppointments((data ?? []) as unknown as Array<{
+        id: string; date: string; time_start: string; status: string
+        doctor?: { first_name: string; last_name: string | null } | null
+        service?: { name: string } | null
+      }>))
   }, [deal.id, isNew, supabase])
 
   useEffect(() => {
@@ -712,6 +740,54 @@ function DealModal({
               <div>
                 <div className="text-xs text-gray-500">Статус</div>
                 <div className="text-sm font-medium">{form.status}</div>
+              </div>
+            </div>
+          )}
+
+          {/* Journey: money + visits */}
+          {!isNew && journey && (
+            <div className="grid grid-cols-3 gap-2 bg-emerald-50 border border-emerald-200 rounded-md p-3">
+              <div>
+                <div className="text-xs text-emerald-800">Приёмы</div>
+                <div className="text-sm font-medium">
+                  {journey.appointments_count} · визитов {journey.visits_completed}/{journey.visits_count}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-emerald-800">Начислено</div>
+                <div className="text-sm font-medium font-mono">
+                  {Number(journey.charges_total).toLocaleString('ru-RU')} ₸
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-emerald-800">Оплачено</div>
+                <div className="text-sm font-medium font-mono">
+                  {Number(journey.payments_total).toLocaleString('ru-RU')} ₸
+                  {Number(journey.refunds_total) > 0 && (
+                    <span className="text-red-600 ml-1">
+                      (возврат {Number(journey.refunds_total).toLocaleString('ru-RU')})
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Linked appointments */}
+          {!isNew && appointments.length > 0 && (
+            <div>
+              <div className="text-xs font-medium text-gray-700 mb-1">Привязанные приёмы</div>
+              <div className="border border-gray-200 rounded-md divide-y divide-gray-100 text-xs">
+                {appointments.map(a => (
+                  <div key={a.id} className="px-3 py-2 flex items-center gap-2">
+                    <span className="text-gray-500">{a.date} {a.time_start?.slice(0,5)}</span>
+                    <span className="flex-1 text-gray-700">
+                      {a.doctor ? `${a.doctor.first_name} ${a.doctor.last_name ?? ''}` : '—'}
+                      {a.service ? ` · ${a.service.name}` : ''}
+                    </span>
+                    <span className="text-gray-400">{a.status}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
