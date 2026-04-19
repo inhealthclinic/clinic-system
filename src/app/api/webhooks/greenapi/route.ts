@@ -108,10 +108,14 @@ async function createInboundDeal(phone: string, senderName?: string): Promise<De
     return null
   }
 
+  // Legacy NOT NULL columns: funnel + stage (текстовые enum-ы, живут рядом с
+  // новыми pipeline_id/stage_id). Без них insert падает 23502.
   const payload: Record<string, unknown> = {
     clinic_id: clinicId,
     pipeline_id: stage.pipeline_id,
     stage_id: stage.id,
+    funnel: 'medical',
+    stage: 'new',
     name: `WhatsApp: ${senderName ?? phone}`,
     contact_phone: phone,
     status: 'open',
@@ -125,6 +129,8 @@ async function createInboundDeal(phone: string, senderName?: string): Promise<De
       clinic_id: clinicId,
       pipeline_id: stage.pipeline_id,
       stage_id: stage.id,
+      funnel: 'medical',
+      stage: 'new',
       name: `WhatsApp: ${senderName ?? phone}`,
       status: 'open',
     }
