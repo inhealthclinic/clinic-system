@@ -83,9 +83,10 @@ async function findDealByPhone(phone: string): Promise<DealRef | null> {
 async function createInboundDeal(phone: string, senderName?: string): Promise<DealRef | null> {
   const db = admin()
 
+  // clinic_id живёт на pipelines, не на pipeline_stages — джойним.
   const { data: stage, error: stageErr } = await db
     .from('pipeline_stages')
-    .select('id, clinic_id, pipeline_id')
+    .select('id, pipeline_id, pipeline:pipelines(clinic_id)')
     .order('position', { ascending: true })
     .limit(1)
     .maybeSingle()
@@ -99,10 +100,15 @@ async function createInboundDeal(phone: string, senderName?: string): Promise<De
     return null
   }
 
-  // Полный payload. Если какой-то колонки нет (source / contact_phone) —
-  // упадём и покажем в логах; дальше упростим.
+  const pipelineRel = Array.isArray(stage.pipeline) ? stage.pipeline[0] : stage.pipeline
+  const clinicId = (pipelineRel as { clinic_id?: string } | null)?.clinic_id
+  if (!clinicId) {
+    console.error('[greenapi] stage has no linked clinic via pipelines')
+    return null
+  }
+
   const payload: Record<string, unknown> = {
-    clinic_id: stage.clinic_id,
+    clinic_id: clinicId,
     pipeline_id: stage.pipeline_id,
     stage_id: stage.id,
     name: `WhatsApp: ${senderName ?? phone}`,
@@ -112,11 +118,10 @@ async function createInboundDeal(phone: string, senderName?: string): Promise<De
 
   let { data: deal, error } = await db.from('deals').insert(payload).select('id, clinic_id').single()
 
-  // Если упало — пробуем без source/contact_phone (на случай старой схемы)
   if (error && /contact_phone|source|column/.test(error.message)) {
     console.warn('[greenapi] deals insert failed on extra cols, retry minimal:', error.message)
     const minimal = {
-      clinic_id: stage.clinic_id,
+      clinic_id: clinicId,
       pipeline_id: stage.pipeline_id,
       stage_id: stage.id,
       name: `WhatsApp: ${senderName ?? phone}`,
