@@ -539,6 +539,38 @@ interface CommentRow {
   author?: { first_name: string; last_name: string | null } | null
 }
 
+interface MessageRow {
+  id: string
+  deal_id: string
+  clinic_id: string
+  direction: 'in' | 'out'
+  channel: 'internal' | 'whatsapp' | 'sms' | 'telegram' | 'call_note' | 'email'
+  author_id: string | null
+  body: string
+  attachments: unknown[]
+  external_sender: string | null
+  read_at: string | null
+  created_at: string
+  author?: { first_name: string; last_name: string | null } | null
+}
+
+const CHANNEL_LABEL: Record<MessageRow['channel'], string> = {
+  internal:  'Внутр.',
+  whatsapp:  'WhatsApp',
+  sms:       'SMS',
+  telegram:  'Telegram',
+  call_note: 'Звонок',
+  email:     'Email',
+}
+const CHANNEL_COLOR: Record<MessageRow['channel'], string> = {
+  internal:  '#64748b',
+  whatsapp:  '#22c55e',
+  sms:       '#3b82f6',
+  telegram:  '#0ea5e9',
+  call_note: '#f59e0b',
+  email:     '#8b5cf6',
+}
+
 const EVENT_LABEL: Record<string, string> = {
   deal_created:       'Сделка создана',
   stage_changed:      'Этап',
@@ -554,6 +586,8 @@ const EVENT_LABEL: Record<string, string> = {
   field_changed:      'Поле',
   deal_won:           'Сделка выиграна',
   deal_lost:          'Сделка потеряна',
+  message_in:         'Входящее',
+  message_out:        'Исходящее',
 }
 
 const EVENT_COLOR: Record<string, string> = {
@@ -571,6 +605,8 @@ const EVENT_COLOR: Record<string, string> = {
   field_changed:      '#94a3b8',
   deal_won:           '#16a34a',
   deal_lost:          '#dc2626',
+  message_in:         '#0ea5e9',
+  message_out:        '#22c55e',
 }
 
 function DealModal({
@@ -594,11 +630,15 @@ function DealModal({
   const isNew = !deal.id
   const [form, setForm] = useState<DealRow>(deal)
   const [saving, setSaving] = useState(false)
-  const [activeTab, setActiveTab] = useState<'timeline' | 'tasks'>('timeline')
+  const [activeTab, setActiveTab] = useState<'chat' | 'timeline' | 'tasks'>('chat')
 
   const [events, setEvents] = useState<TimelineEvent[]>([])
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [comments, setComments] = useState<CommentRow[]>([])
+  const [messages, setMessages] = useState<MessageRow[]>([])
+  const [search, setSearch] = useState('')
+  const [msgDraft, setMsgDraft] = useState('')
+  const [msgChannel, setMsgChannel] = useState<'internal'|'whatsapp'|'sms'|'telegram'|'call_note'|'email'>('internal')
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -644,6 +684,16 @@ function DealModal({
       .eq('deal_id', deal.id)
       .order('created_at', { ascending: false })
       .then(({ data }) => setComments((data ?? []) as unknown as CommentRow[]))
+    supabase.from('deal_messages')
+      .select('*, author:user_profiles!deal_messages_author_id_fkey(first_name,last_name)')
+      .eq('deal_id', deal.id)
+      .order('created_at', { ascending: true })
+      .limit(500)
+      .then(({ data }) => {
+        setMessages((data ?? []) as unknown as MessageRow[])
+        // mark incoming as read
+        supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+      })
     supabase.from('v_deal_journey')
       .select('appointments_count,visits_count,visits_completed,charges_total,payments_total,refunds_total')
       .eq('deal_id', deal.id)
@@ -751,6 +801,22 @@ function DealModal({
     loadRelated()
   }
 
+  async function sendMessage() {
+    const body = msgDraft.trim()
+    if (!body || isNew) return
+    const { error } = await supabase.from('deal_messages').insert({
+      deal_id: form.id,
+      clinic_id: form.clinic_id,
+      direction: 'out',
+      channel: msgChannel,
+      author_id: profile?.id ?? null,
+      body,
+    })
+    if (error) { alert(error.message); return }
+    setMsgDraft('')
+    loadRelated()
+  }
+
   async function addTask() {
     const title = newTaskTitle.trim()
     if (!title || isNew) return
@@ -821,6 +887,12 @@ function DealModal({
         return `${p.field}: ${JSON.stringify(p.from)} → ${JSON.stringify(p.to)}`
       case 'deal_created':
         return String(p.name ?? '')
+      case 'message_in':
+      case 'message_out': {
+        const ch = String(p.channel ?? '')
+        const preview = String(p.preview ?? '')
+        return `${ch ? `[${ch}] ` : ''}${preview}`
+      }
       default:
         return ''
     }
@@ -835,17 +907,32 @@ function DealModal({
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between">
-          <div className="min-w-0">
+        <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
             <div className="text-xs text-gray-400 uppercase tracking-wider">Сделка</div>
-            <div className="flex items-center gap-3 mt-0.5">
+            <div className="flex items-center gap-3 mt-0.5 flex-wrap">
               <input
                 type="text"
                 value={form.name ?? ''}
                 onChange={e => setForm({ ...form, name: e.target.value })}
                 placeholder={form.patient?.full_name || 'Новая сделка'}
-                className="text-lg font-semibold text-gray-900 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none min-w-[300px]"
+                className="text-lg font-semibold text-gray-900 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none min-w-[260px]"
               />
+              {/* Компактный селектор этапа — как в amoCRM */}
+              <div className="flex items-center gap-1.5">
+                {currentStage && (
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: currentStage.color }} />
+                )}
+                <select
+                  value={form.stage_id ?? ''}
+                  onChange={e => onStageClick(e.target.value)}
+                  className="text-sm border border-gray-200 rounded px-2 py-1 bg-white hover:border-gray-300"
+                >
+                  {pipelineStages.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
               {!isNew && (
                 <span className={`text-xs px-2 py-0.5 rounded ${
                   form.status === 'won' ? 'bg-green-100 text-green-700' :
@@ -856,41 +943,22 @@ function DealModal({
               )}
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
-        </div>
 
-        {/* Stage progress strip */}
-        <div className="bg-white border-b border-gray-200 px-6 py-3">
-          <div className="flex items-center gap-1 overflow-x-auto pb-1">
-            {pipelineStages.map((s, idx) => {
-              const active = form.stage_id === s.id
-              const isWonLost = s.stage_role === 'won' || s.stage_role === 'lost' || s.stage_role === 'closed'
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => onStageClick(s.id)}
-                  title={s.name}
-                  className={`relative px-3 py-2 text-xs whitespace-nowrap transition-colors ${
-                    idx === 0 ? 'rounded-l' : ''
-                  } ${idx === pipelineStages.length - 1 ? 'rounded-r' : ''} ${
-                    isWonLost ? 'border-l-2 border-white ml-1' : ''
-                  }`}
-                  style={{
-                    background: active ? s.color : '#f1f5f9',
-                    color: active ? '#fff' : '#475569',
-                    fontWeight: active ? 600 : 400,
-                    minWidth: 100,
-                  }}
-                >
-                  {s.name}
-                  {active && (
-                    <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent"
-                          style={{ borderTopColor: s.color }} />
-                  )}
-                </button>
-              )
-            })}
-          </div>
+          {/* Поиск по чату/хронологии */}
+          {!isNew && (
+            <div className="relative w-72 shrink-0">
+              <input
+                type="search"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Поиск по чату и хронологии…"
+                className="w-full border border-gray-200 rounded-md pl-8 pr-3 py-1.5 text-sm focus:border-blue-400 outline-none"
+              />
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
+            </div>
+          )}
+
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
         {/* Body: 2 columns */}
@@ -1166,10 +1234,22 @@ function DealModal({
                 </div>
               )}
 
-              {/* Tabs: timeline / tasks */}
+              {/* Tabs: chat / timeline / tasks */}
               {!isNew && (
                 <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
                   <div className="flex border-b border-gray-100">
+                    <button
+                      onClick={() => setActiveTab('chat')}
+                      className={`px-4 py-2.5 text-sm font-medium ${
+                        activeTab === 'chat' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-800'
+                      }`}
+                    >
+                      Чат {messages.filter(m => m.direction === 'in' && !m.read_at).length > 0 && (
+                        <span className="ml-1 text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full">
+                          {messages.filter(m => m.direction === 'in' && !m.read_at).length}
+                        </span>
+                      )}
+                    </button>
                     <button
                       onClick={() => setActiveTab('timeline')}
                       className={`px-4 py-2.5 text-sm font-medium ${
@@ -1187,6 +1267,96 @@ function DealModal({
                       Задачи {openTasksCount > 0 && <span className="ml-1 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">{openTasksCount}</span>}
                     </button>
                   </div>
+
+                  {activeTab === 'chat' && (
+                    <div className="flex flex-col" style={{ height: '60vh' }}>
+                      {/* Messages list */}
+                      <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
+                        {(() => {
+                          const filtered = messages.filter(m =>
+                            !search || m.body.toLowerCase().includes(search.toLowerCase())
+                          )
+                          if (filtered.length === 0) {
+                            return (
+                              <div className="text-sm text-gray-400 py-8 text-center">
+                                {search ? 'Ничего не найдено' : 'Пока нет сообщений'}
+                              </div>
+                            )
+                          }
+                          return filtered.map(m => (
+                            <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
+                                m.direction === 'out'
+                                  ? 'bg-blue-600 text-white'
+                                  : 'bg-white border border-gray-200 text-gray-900'
+                              }`}>
+                                <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider opacity-80">
+                                  <span className="w-1.5 h-1.5 rounded-full inline-block"
+                                        style={{ background: CHANNEL_COLOR[m.channel] }} />
+                                  <span>{CHANNEL_LABEL[m.channel]}</span>
+                                  {m.author && (
+                                    <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
+                                  )}
+                                  {m.external_sender && (
+                                    <span>· {m.external_sender}</span>
+                                  )}
+                                </div>
+                                <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                <div className={`text-[10px] mt-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-400'}`}>
+                                  {new Date(m.created_at).toLocaleString('ru-RU')}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        })()}
+                      </div>
+
+                      {/* Composer */}
+                      <div className="border-t border-gray-100 bg-white p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <label className="text-xs text-gray-500">Канал:</label>
+                          <select
+                            value={msgChannel}
+                            onChange={e => setMsgChannel(e.target.value as MessageRow['channel'])}
+                            className="text-xs border border-gray-200 rounded px-2 py-1"
+                          >
+                            <option value="internal">Внутренний</option>
+                            <option value="whatsapp">WhatsApp</option>
+                            <option value="sms">SMS</option>
+                            <option value="telegram">Telegram</option>
+                            <option value="call_note">Заметка по звонку</option>
+                            <option value="email">Email</option>
+                          </select>
+                          {msgChannel !== 'internal' && msgChannel !== 'call_note' && (
+                            <span className="text-[10px] text-amber-600 ml-auto">
+                              ⚠ канал не подключён — запись будет локальной
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex gap-2">
+                          <textarea
+                            value={msgDraft}
+                            onChange={e => setMsgDraft(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                e.preventDefault(); sendMessage()
+                              }
+                            }}
+                            placeholder="Сообщение…  (⌘+Enter — отправить)"
+                            rows={2}
+                            className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
+                          />
+                          <button
+                            onClick={sendMessage}
+                            disabled={!msgDraft.trim()}
+                            className="self-end px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
+                          >
+                            Отправить
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {activeTab === 'timeline' && (
                     <div className="p-4 space-y-3">
@@ -1208,33 +1378,46 @@ function DealModal({
                         </button>
                       </div>
 
-                      {/* Timeline list */}
-                      {events.length === 0 && (
-                        <div className="text-sm text-gray-400 py-4 text-center">Событий пока нет</div>
-                      )}
-                      {events.length > 0 && (
-                        <ol className="relative border-l-2 border-gray-100 space-y-3 ml-2 pt-1">
-                          {events.map(e => {
-                            const color = EVENT_COLOR[e.kind] ?? '#94a3b8'
-                            const label = EVENT_LABEL[e.kind] ?? e.kind
-                            const body = renderEventBody(e)
-                            return (
-                              <li key={e.id} className="ml-4 relative">
-                                <span className="absolute -left-[1.4rem] top-1 w-3 h-3 rounded-full border-2 border-white"
-                                      style={{ background: color }} />
-                                <div className="flex items-baseline gap-2 text-xs text-gray-500">
-                                  <span>{new Date(e.created_at).toLocaleString('ru-RU')}</span>
-                                  {e.actor_name && <span>· {e.actor_name}</span>}
-                                </div>
-                                <div className="mt-0.5 text-sm">
-                                  <span className="font-medium text-gray-800">{label}</span>
-                                  {body && <span className="text-gray-600"> — {body}</span>}
-                                </div>
-                              </li>
-                            )
-                          })}
-                        </ol>
-                      )}
+                      {/* Timeline list (с учётом поиска) */}
+                      {(() => {
+                        const q = search.toLowerCase()
+                        const filtered = !q
+                          ? events
+                          : events.filter(e => {
+                              const lbl = (EVENT_LABEL[e.kind] ?? e.kind).toLowerCase()
+                              const body = renderEventBody(e).toLowerCase()
+                              const actor = (e.actor_name ?? '').toLowerCase()
+                              return lbl.includes(q) || body.includes(q) || actor.includes(q)
+                            })
+                        if (filtered.length === 0) {
+                          return <div className="text-sm text-gray-400 py-4 text-center">
+                            {q ? 'Ничего не найдено' : 'Событий пока нет'}
+                          </div>
+                        }
+                        return (
+                          <ol className="relative border-l-2 border-gray-100 space-y-3 ml-2 pt-1">
+                            {filtered.map(e => {
+                              const color = EVENT_COLOR[e.kind] ?? '#94a3b8'
+                              const label = EVENT_LABEL[e.kind] ?? e.kind
+                              const body = renderEventBody(e)
+                              return (
+                                <li key={e.id} className="ml-4 relative">
+                                  <span className="absolute -left-[1.4rem] top-1 w-3 h-3 rounded-full border-2 border-white"
+                                        style={{ background: color }} />
+                                  <div className="flex items-baseline gap-2 text-xs text-gray-500">
+                                    <span>{new Date(e.created_at).toLocaleString('ru-RU')}</span>
+                                    {e.actor_name && <span>· {e.actor_name}</span>}
+                                  </div>
+                                  <div className="mt-0.5 text-sm">
+                                    <span className="font-medium text-gray-800">{label}</span>
+                                    {body && <span className="text-gray-600"> — {body}</span>}
+                                  </div>
+                                </li>
+                              )
+                            })}
+                          </ol>
+                        )
+                      })()}
                     </div>
                   )}
 
