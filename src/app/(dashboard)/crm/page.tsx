@@ -446,79 +446,78 @@ export default function CRMKanbanPage() {
           </div>
         </div>
 
-        {/* Переключатель вида — справа */}
-        <div className="inline-flex items-center bg-white border border-gray-200 rounded-md overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setViewMode('kanban')}
-            title="Сетка (канбан)"
-            aria-label="Сетка"
-            className={`px-2.5 py-2 inline-flex items-center justify-center ${
-              viewMode === 'kanban'
-                ? 'bg-gray-900 text-white'
-                : 'text-gray-600 hover:bg-gray-50'
-            }`}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <rect x="3" y="4" width="5" height="16" rx="1" stroke="currentColor" strokeWidth="1.8" />
-              <rect x="10" y="4" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.8" />
-              <rect x="17" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.8" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('table')}
-            title="Таблица"
-            aria-label="Таблица"
-            className={`px-2.5 py-2 inline-flex items-center justify-center border-l border-gray-200 ${
-              viewMode === 'table'
-                ? 'bg-gray-900 text-white'
-                : 'text-gray-600 hover:bg-gray-50'
-            }`}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <rect x="3" y="5" width="18" height="14" rx="1" stroke="currentColor" strokeWidth="1.8" />
-              <path d="M3 10h18M3 15h18M9 5v14" stroke="currentColor" strokeWidth="1.8" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      {/* Служебная панель: скрытые этапы + KPI конверсии */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <div className="flex-1" />
-        {isListCrmAdmin && hiddenTerminalCount > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowTerminal(v => !v)}
-            className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors ${
-              showTerminal
-                ? 'bg-gray-900 text-white border-gray-900 hover:bg-gray-800'
-                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-            }`}
-            title={showTerminal
-              ? 'Скрыть этапы «Успешно реализовано» и «Закрыто»'
-              : 'Показать этапы «Успешно реализовано» и «Закрыто»'}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-              {showTerminal ? (
-                <path d="M3 12s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7zM9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
-              ) : (
-                <path d="M3 3l18 18M10.6 10.6A3 3 0 0 0 13.4 13.4M9.9 5.1a9 9 0 0 1 11 6.9 10 10 0 0 1-2.5 3.6M6.6 6.6A10.5 10.5 0 0 0 3 12s3.5 7 9 7a8.7 8.7 0 0 0 4.4-1.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
-              )}
-            </svg>
-            {showTerminal ? 'Скрыть закрытые' : `Показать закрытые (${hiddenTerminalCount})`}
-          </button>
-        )}
-        {conversion && (
-          <div className="flex gap-3 text-xs text-gray-600">
-            <KPI label="Всего" value={conversion.total} />
-            <KPI label="Открытых" value={conversion.open_count} accent="text-blue-600" />
-            <KPI label="Успех" value={conversion.won} accent="text-green-600" />
-            <KPI label="Потерь" value={conversion.lost} accent="text-red-600" />
-            <KPI label="Конверсия" value={conversion.conversion_pct == null ? '—' : `${conversion.conversion_pct}%`} accent="text-gray-900" />
+        {/* Правый блок: переключатель вида + скрытые этапы + KPI конверсии — всё в один ряд */}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div className="inline-flex items-center bg-white border border-gray-200 rounded-md overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setViewMode('kanban')}
+              title="Сетка (канбан)"
+              aria-label="Сетка"
+              className={`px-2.5 py-2 inline-flex items-center justify-center ${
+                viewMode === 'kanban'
+                  ? 'bg-gray-900 text-white'
+                  : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <rect x="3" y="4" width="5" height="16" rx="1" stroke="currentColor" strokeWidth="1.8" />
+                <rect x="10" y="4" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.8" />
+                <rect x="17" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.8" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              title="Таблица"
+              aria-label="Таблица"
+              className={`px-2.5 py-2 inline-flex items-center justify-center border-l border-gray-200 ${
+                viewMode === 'table'
+                  ? 'bg-gray-900 text-white'
+                  : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <rect x="3" y="5" width="18" height="14" rx="1" stroke="currentColor" strokeWidth="1.8" />
+                <path d="M3 10h18M3 15h18M9 5v14" stroke="currentColor" strokeWidth="1.8" />
+              </svg>
+            </button>
           </div>
-        )}
+
+          {isListCrmAdmin && hiddenTerminalCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowTerminal(v => !v)}
+              className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                showTerminal
+                  ? 'bg-gray-900 text-white border-gray-900 hover:bg-gray-800'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+              title={showTerminal
+                ? 'Скрыть этапы «Успешно реализовано» и «Закрыто»'
+                : 'Показать этапы «Успешно реализовано» и «Закрыто»'}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                {showTerminal ? (
+                  <path d="M3 12s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7zM9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+                ) : (
+                  <path d="M3 3l18 18M10.6 10.6A3 3 0 0 0 13.4 13.4M9.9 5.1a9 9 0 0 1 11 6.9 10 10 0 0 1-2.5 3.6M6.6 6.6A10.5 10.5 0 0 0 3 12s3.5 7 9 7a8.7 8.7 0 0 0 4.4-1.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+                )}
+              </svg>
+              {showTerminal ? 'Скрыть закрытые' : `Показать закрытые (${hiddenTerminalCount})`}
+            </button>
+          )}
+
+          {conversion && (
+            <div className="flex gap-3 text-xs text-gray-600">
+              <KPI label="Всего" value={conversion.total} />
+              <KPI label="Открытых" value={conversion.open_count} accent="text-blue-600" />
+              <KPI label="Успех" value={conversion.won} accent="text-green-600" />
+              <KPI label="Потерь" value={conversion.lost} accent="text-red-600" />
+              <KPI label="Конверсия" value={conversion.conversion_pct == null ? '—' : `${conversion.conversion_pct}%`} accent="text-gray-900" />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Kanban / сетка — колонки по этапам с drag&drop */}
