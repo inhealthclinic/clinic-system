@@ -1285,6 +1285,7 @@ function DealModal({
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
   const [sendingPrepay, setSendingPrepay] = useState(false)
+  const [sending, setSending] = useState(false)
   // Статус WhatsApp-интеграции (Green API). null = ещё не проверяли.
   const [waConnected, setWaConnected] = useState<boolean | null>(null)
   // amoCRM-стиль: меню «…» в шапке карточки (удаление и т.п.).
@@ -1649,22 +1650,27 @@ function DealModal({
 
   async function sendMessage() {
     const body = msgDraft.trim()
-    if (!body || isNew) return
-    // API-роут: инсёртит + дергает Green-API и проставляет статус
-    const res = await fetch(`/api/deals/${form.id}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body, channel: msgChannel }),
-    })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
-    // Оптимистично добавляем своё сообщение сразу — не ждём realtime-эха.
-    // Дедуп по id: если Realtime позже принесёт ту же строку, we-set-prev выкинет её.
-    const m = json.message as MessageRow | undefined
-    if (m) {
-      setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
-    }
+    if (!body || isNew || sending) return
+    // Оптимистично очищаем черновик сразу — не ждём ответа API
     setMsgDraft('')
+    setSending(true)
+    try {
+      // API-роут: инсёртит + дергает Green-API и проставляет статус
+      const res = await fetch(`/api/deals/${form.id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, channel: msgChannel }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); setMsgDraft(body); return }
+      // Дедуп по id: если Realtime позже принесёт ту же строку, выкинет её.
+      const m = json.message as MessageRow | undefined
+      if (m) {
+        setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+      }
+    } finally {
+      setSending(false)
+    }
   }
 
   async function sendPrepayRequest() {
@@ -1691,41 +1697,47 @@ function DealModal({
 
   async function submitComposer() {
     const body = msgDraft.trim()
-    if (!body || isNew) return
+    if (!body || isNew || sending) return
 
     if (composerMode === 'chat') {
       await sendMessage()
       return
     }
-    if (composerMode === 'note') {
-      // Примечание — внутреннее сообщение (channel='internal'), клиенту не уходит.
-      const res = await fetch(`/api/deals/${form.id}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body, channel: 'internal' }),
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); return }
-      const m = json.message as MessageRow | undefined
-      if (m) {
-        setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+    setSending(true)
+    try {
+      if (composerMode === 'note') {
+        // Примечание — внутреннее сообщение (channel='internal'), клиенту не уходит.
+        setMsgDraft('')
+        const res = await fetch(`/api/deals/${form.id}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body, channel: 'internal' }),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); setMsgDraft(body); return }
+        const m = json.message as MessageRow | undefined
+        if (m) {
+          setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+        }
+        return
       }
-      setMsgDraft('')
-      return
-    }
-    if (composerMode === 'task') {
-      const { error } = await supabase.from('deal_tasks').insert({
-        deal_id: form.id,
-        clinic_id: form.clinic_id,
-        title: body,
-        due_at: composerTaskDue ? new Date(composerTaskDue).toISOString() : null,
-        assignee_id: composerTaskAssignee || profile?.id || null,
-        created_by: profile?.id ?? null,
-      })
-      if (error) { alert(error.message); return }
-      setMsgDraft(''); setComposerTaskDue(''); setComposerTaskAssignee('')
-      loadRelated()
-      return
+      if (composerMode === 'task') {
+        setMsgDraft('')
+        const { error } = await supabase.from('deal_tasks').insert({
+          deal_id: form.id,
+          clinic_id: form.clinic_id,
+          title: body,
+          due_at: composerTaskDue ? new Date(composerTaskDue).toISOString() : null,
+          assignee_id: composerTaskAssignee || profile?.id || null,
+          created_by: profile?.id ?? null,
+        })
+        if (error) { alert(error.message); setMsgDraft(body); return }
+        setComposerTaskDue(''); setComposerTaskAssignee('')
+        loadRelated()
+        return
+      }
+    } finally {
+      setSending(false)
     }
   }
 
@@ -2691,10 +2703,11 @@ function DealModal({
                           />
                           <button
                             onClick={submitComposer}
-                            disabled={!msgDraft.trim()}
+                            disabled={!msgDraft.trim() || sending}
                             className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
                           >
-                            {composerMode === 'chat' ? 'Отправить' :
+                            {sending ? '…' :
+                             composerMode === 'chat' ? 'Отправить' :
                              composerMode === 'note' ? 'Сохранить' :
                              'Поставить'}
                           </button>
