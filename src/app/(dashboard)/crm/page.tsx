@@ -1269,6 +1269,8 @@ function DealModal({
   const [unreadItems, setUnreadItems] = useState<UnreadItem[]>([])
   const [showUnreadPopup, setShowUnreadPopup] = useState(false)
   const [unreadSearch, setUnreadSearch] = useState('')
+  const [unreadMenuOpen, setUnreadMenuOpen] = useState(false)
+  const [unreadSort, setUnreadSort] = useState<'newest' | 'unread'>('newest')
   const dealClinicId = deal.clinic_id
   useEffect(() => {
     if (!dealClinicId) return
@@ -1907,9 +1909,9 @@ function DealModal({
               <span className="text-sm font-semibold text-gray-800">Непрочитанные {totalUnread > 0 && <span className="ml-1 text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">{totalUnread}</span>}</span>
               <button onClick={() => setShowUnreadPopup(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
             </div>
-            {/* Поиск */}
-            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
-              <div className="relative">
+            {/* Поиск + меню */}
+            <div className="px-3 py-2 border-b border-gray-100 shrink-0 flex items-center gap-2">
+              <div className="relative flex-1">
                 <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" width="13" height="13" viewBox="0 0 24 24" fill="none">
                   <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2"/>
                   <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
@@ -1918,9 +1920,35 @@ function DealModal({
                   type="text"
                   value={unreadSearch}
                   onChange={e => setUnreadSearch(e.target.value)}
-                  placeholder="Поиск по сделкам…"
+                  placeholder="Поиск…"
                   className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-200 rounded-md outline-none focus:border-blue-400"
                 />
+              </div>
+              {/* Меню сортировки */}
+              <div className="relative shrink-0">
+                <button
+                  onClick={() => setUnreadMenuOpen(v => !v)}
+                  className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500"
+                  title="Ещё"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>
+                  </svg>
+                </button>
+                {unreadMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1 text-xs">
+                    <div className="px-3 py-1.5 text-gray-400 text-[10px] uppercase tracking-wider">Сортировка</div>
+                    {(['newest','unread'] as const).map(opt => (
+                      <button key={opt}
+                        onClick={() => { setUnreadSort(opt); setUnreadMenuOpen(false) }}
+                        className={`w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 ${unreadSort === opt ? 'text-blue-600 font-medium' : 'text-gray-700'}`}
+                      >
+                        {unreadSort === opt && <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {opt === 'newest' ? 'Сначала новые' : 'Сначала непрочитанные'}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             {/* Список */}
