@@ -1870,9 +1870,11 @@ function DealModal({
                                         type="button"
                                         onClick={() => {
                                           // Открываем расписание в отдельном браузерном окне,
-                                          // чтобы не уходить со сделки.
-                                          const w = 1400
-                                          const h = 900
+                                          // чтобы не уходить со сделки. Размер подобран под
+                                          // реальную ширину сетки — без пустого поля справа.
+                                          // max-w-5xl (1024px) + padding p-2 (16px) ≈ 1060px.
+                                          const w = Math.min(1060, window.screen.availWidth - 40)
+                                          const h = Math.min(760, window.screen.availHeight - 40)
                                           const left = Math.max(0, Math.round((window.screen.availWidth - w) / 2))
                                           const top = Math.max(0, Math.round((window.screen.availHeight - h) / 2))
                                           window.open(
