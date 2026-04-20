@@ -1866,10 +1866,24 @@ function DealModal({
                                         onClick={() => { setShowBookingsPopover(false); setShowBookingModal(true) }}
                                         className="text-[11px] px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
                                       >+ Ещё запись</button>
-                                      <a
-                                        href="/schedule"
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          // Открываем расписание в отдельном браузерном окне,
+                                          // чтобы не уходить со сделки.
+                                          const w = 1400
+                                          const h = 900
+                                          const left = Math.max(0, Math.round((window.screen.availWidth - w) / 2))
+                                          const top = Math.max(0, Math.round((window.screen.availHeight - h) / 2))
+                                          window.open(
+                                            '/schedule',
+                                            'inhealth-schedule',
+                                            `width=${w},height=${h},left=${left},top=${top},noopener=false`,
+                                          )
+                                          setShowBookingsPopover(false)
+                                        }}
                                         className="text-[11px] text-blue-600 hover:underline"
-                                      >Открыть расписание →</a>
+                                      >Открыть расписание →</button>
                                     </div>
                                   </div>
                                 )}
