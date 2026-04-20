@@ -1876,7 +1876,7 @@ function DealModal({
                                           const left = Math.max(0, Math.round((window.screen.availWidth - w) / 2))
                                           const top = Math.max(0, Math.round((window.screen.availHeight - h) / 2))
                                           window.open(
-                                            '/schedule',
+                                            '/schedule-window',
                                             'inhealth-schedule',
                                             `width=${w},height=${h},left=${left},top=${top},noopener=false`,
                                           )
