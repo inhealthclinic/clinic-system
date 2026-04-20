@@ -1270,7 +1270,10 @@ function DealModal({
   const [showUnreadPopup, setShowUnreadPopup] = useState(false)
   const [unreadSearch, setUnreadSearch] = useState('')
   const [unreadMenuOpen, setUnreadMenuOpen] = useState(false)
-  const [unreadSort, setUnreadSort] = useState<'newest' | 'unread'>('newest')
+  const [unreadSort, setUnreadSort] = useState<'newest' | 'unread' | 'favorites'>('newest')
+  const [unreadMuted, setUnreadMuted] = useState(false)
+  const [unreadBulkMode, setUnreadBulkMode] = useState(false)
+  const [unreadSelected, setUnreadSelected] = useState<Set<string>>(new Set())
   const dealClinicId = deal.clinic_id
   useEffect(() => {
     if (!dealClinicId) return
@@ -1936,21 +1939,48 @@ function DealModal({
                   </svg>
                 </button>
                 {unreadMenuOpen && (
-                  <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1 text-xs">
+                  <div className="absolute right-0 top-full mt-1 w-52 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1 text-xs">
+                    {/* Действия */}
+                    <button onClick={() => { setUnreadBulkMode(v => !v); setUnreadMenuOpen(false) }}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2.5 text-gray-700">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.8"/><rect x="3" y="10" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.8"/><rect x="3" y="15" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.8"/><path d="M10 7h11M10 12h11M10 17h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                      Массовые действия
+                    </button>
+                    <button onClick={() => { setUnreadMuted(v => !v); setUnreadMenuOpen(false) }}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2.5 text-gray-700">
+                      {unreadMuted
+                        ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2v6h4l5 4V5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M23 9l-6 6M17 9l6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                        : <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2v6h4l5 4V5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                      }
+                      {unreadMuted ? 'Включить звук' : 'Отключить звук'}
+                    </button>
+                    <div className="my-1 border-t border-gray-100" />
+                    {/* Сортировка */}
                     <div className="px-3 py-1.5 text-gray-400 text-[10px] uppercase tracking-wider">Сортировка</div>
-                    {(['newest','unread'] as const).map(opt => (
+                    {(['newest','unread','favorites'] as const).map(opt => (
                       <button key={opt}
                         onClick={() => { setUnreadSort(opt); setUnreadMenuOpen(false) }}
                         className={`w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 ${unreadSort === opt ? 'text-blue-600 font-medium' : 'text-gray-700'}`}
                       >
                         {unreadSort === opt && <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                        {opt === 'newest' ? 'Сначала новые' : 'Сначала непрочитанные'}
+                        {opt === 'newest' ? 'Сначала новые' : opt === 'unread' ? 'Сначала непрочитанные' : 'Избранные'}
                       </button>
                     ))}
                   </div>
                 )}
               </div>
             </div>
+            {/* Панель массовых действий */}
+            {unreadBulkMode && (
+              <div className="px-3 py-2 border-b border-gray-100 bg-blue-50 flex items-center gap-2 shrink-0">
+                <span className="text-xs text-blue-700 flex-1">{unreadSelected.size} выбрано</span>
+                <button
+                  onClick={() => { setUnreadSelected(new Set()); setUnreadBulkMode(false) }}
+                  className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-white"
+                >Отмена</button>
+              </div>
+            )}
+
             {/* Список */}
             {unreadItems.length === 0 ? (
               <div className="flex-1 flex items-center justify-center text-sm text-gray-400">Всё прочитано</div>
@@ -1958,24 +1988,38 @@ function DealModal({
               <ul className="flex-1 overflow-y-auto divide-y divide-gray-100">
                 {unreadItems
                   .filter(m => !unreadSearch || (m.deal_name ?? '').toLowerCase().includes(unreadSearch.toLowerCase()) || m.body.toLowerCase().includes(unreadSearch.toLowerCase()) || (m.external_sender ?? '').toLowerCase().includes(unreadSearch.toLowerCase()))
-                  .map(m => (
+                  .map(m => {
+                    const isSelected = unreadSelected.has(m.id)
+                    return (
                   <li key={m.id}
-                    className="px-4 py-3 hover:bg-blue-50 cursor-pointer transition-colors"
-                    onClick={() => { setShowUnreadPopup(false); onSaved(false) }}>
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <span className="text-xs font-semibold text-gray-900 truncate">
-                        {m.deal_name ?? `#${m.deal_id.slice(0, 8)}`}
-                      </span>
-                      <span className="text-[10px] text-gray-400 shrink-0">
-                        {new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                    <div className="text-xs text-gray-500 truncate">
-                      {m.external_sender && <span className="text-gray-400 mr-1">{m.external_sender}:</span>}
-                      {m.body}
+                    className={`px-3 py-3 hover:bg-blue-50 cursor-pointer transition-colors flex items-start gap-2 ${isSelected ? 'bg-blue-50' : ''}`}
+                    onClick={() => {
+                      if (unreadBulkMode) {
+                        setUnreadSelected(prev => { const n = new Set(prev); n.has(m.id) ? n.delete(m.id) : n.add(m.id); return n })
+                      } else {
+                        setShowUnreadPopup(false); onSaved(false)
+                      }
+                    }}>
+                    {unreadBulkMode && (
+                      <input type="checkbox" checked={isSelected} readOnly className="mt-0.5 shrink-0 accent-blue-600" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-0.5">
+                        <span className="text-xs font-semibold text-gray-900 truncate">
+                          {m.deal_name ?? `#${m.deal_id.slice(0, 8)}`}
+                        </span>
+                        <span className="text-[10px] text-gray-400 shrink-0">
+                          {new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 truncate">
+                        {m.external_sender && <span className="text-gray-400 mr-1">{m.external_sender}:</span>}
+                        {m.body}
+                      </div>
                     </div>
                   </li>
-                ))}
+                    )
+                  })}
               </ul>
             )}
           </div>
