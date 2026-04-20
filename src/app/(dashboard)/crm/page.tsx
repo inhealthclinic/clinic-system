@@ -171,6 +171,39 @@ export default function CRMKanbanPage() {
   // Поиск по воронке: имя сделки / пациента / телефон / тег / город / заметка.
   const [listSearch, setListSearch] = useState('')
 
+  // Сортировка карточек внутри этапа и в таблице. Как в амоCRM — список
+  // опций + направление ↑/↓. Выбор запоминаем в localStorage.
+  type SortField = 'updated_at' | 'stage_entered_at' | 'created_at' | 'name' | 'amount'
+  const [sortField, setSortField] = useState<SortField>('created_at')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const f = window.localStorage.getItem('crm.sortField') as SortField | null
+    const d = window.localStorage.getItem('crm.sortDir') as 'asc' | 'desc' | null
+    if (f && ['updated_at','stage_entered_at','created_at','name','amount'].includes(f)) setSortField(f)
+    if (d === 'asc' || d === 'desc') setSortDir(d)
+  }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('crm.sortField', sortField)
+    window.localStorage.setItem('crm.sortDir', sortDir)
+  }, [sortField, sortDir])
+
+  // Автообновление — периодически перегружаем список сделок (30 сек).
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (window.localStorage.getItem('crm.autoRefresh') === '1') setAutoRefresh(true)
+  }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('crm.autoRefresh', autoRefresh ? '1' : '0')
+  }, [autoRefresh])
+
+  // Меню «Ещё» + модалка «Внешний вид карточки» на уровне страницы.
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false)
+  const [showPageFieldsSettings, setShowPageFieldsSettings] = useState(false)
+
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
   const [overStage, setOverStage] = useState<string | null>(null)
@@ -276,6 +309,30 @@ export default function CRMKanbanPage() {
     return hay.includes(q)
   }, [])
 
+  // Универсальный компаратор по выбранному полю/направлению.
+  const compareDeals = useCallback((a: DealRow, b: DealRow) => {
+    const mul = sortDir === 'asc' ? 1 : -1
+    const toTime = (v: string | null | undefined) => (v ? new Date(v).getTime() : 0)
+    let cmp = 0
+    switch (sortField) {
+      case 'created_at':
+        cmp = toTime(a.created_at) - toTime(b.created_at); break
+      case 'updated_at':
+        cmp = toTime(a.updated_at) - toTime(b.updated_at); break
+      case 'stage_entered_at':
+        cmp = toTime(a.stage_entered_at) - toTime(b.stage_entered_at); break
+      case 'amount':
+        cmp = (a.amount ?? 0) - (b.amount ?? 0); break
+      case 'name': {
+        const na = (a.name ?? a.patient?.full_name ?? '').toLowerCase()
+        const nb = (b.name ?? b.patient?.full_name ?? '').toLowerCase()
+        cmp = na.localeCompare(nb, 'ru')
+        break
+      }
+    }
+    return cmp * mul
+  }, [sortField, sortDir])
+
   const dealsByStage = useMemo(() => {
     const q = listSearch.trim().toLowerCase()
     const map = new Map<string, DealRow[]>()
@@ -287,11 +344,11 @@ export default function CRMKanbanPage() {
       const arr = map.get(d.stage_id)
       if (arr) arr.push(d)
     }
+    for (const arr of map.values()) arr.sort(compareDeals)
     return map
-  }, [deals, activeStages, activePipelineId, listSearch, matchesSearch])
+  }, [deals, activeStages, activePipelineId, listSearch, matchesSearch, compareDeals])
 
-  // Плоский список для табличного вида. Сортируем по дате входа на этап
-  // (самые свежие сверху — как в амоCRM).
+  // Плоский список для табличного вида.
   const tableDeals = useMemo(() => {
     const q = listSearch.trim().toLowerCase()
     const activeStageIds = new Set(activeStages.map(s => s.id))
@@ -299,12 +356,15 @@ export default function CRMKanbanPage() {
       .filter(d => d.pipeline_id === activePipelineId)
       .filter(d => d.stage_id != null && activeStageIds.has(d.stage_id))
       .filter(d => matchesSearch(d, q))
-      .sort((a, b) => {
-        const ta = new Date(a.stage_entered_at || a.updated_at).getTime()
-        const tb = new Date(b.stage_entered_at || b.updated_at).getTime()
-        return tb - ta
-      })
-  }, [deals, activePipelineId, activeStages, listSearch, matchesSearch])
+      .sort(compareDeals)
+  }, [deals, activePipelineId, activeStages, listSearch, matchesSearch, compareDeals])
+
+  // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
+  useEffect(() => {
+    if (!autoRefresh) return
+    const id = window.setInterval(() => { load() }, 30_000)
+    return () => window.clearInterval(id)
+  }, [autoRefresh, load])
 
   // ── drag & drop ────────────────────────────────────────────────────────────
 
@@ -348,6 +408,60 @@ export default function CRMKanbanPage() {
     load()
   }
 
+  // Переключаем сортировку: повторный клик по активному полю инвертирует
+  // направление, клик по новому — выставляет desc по умолчанию.
+  function changeSort(field: SortField) {
+    if (field === sortField) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortField(field); setSortDir('desc') }
+  }
+
+  // Экспорт текущего отфильтрованного списка сделок в CSV. Разделитель — ';'
+  // (совместим с Excel по-русски), перевод строк — \r\n, кодировка UTF-8 с BOM.
+  function exportDealsCsv() {
+    const esc = (v: unknown) => {
+      if (v == null) return ''
+      const s = String(v).replace(/"/g, '""')
+      return /[;"\r\n]/.test(s) ? `"${s}"` : s
+    }
+    const header = [
+      'ID', 'Сделка', 'Пациент', 'Телефон', 'Город',
+      'Воронка', 'Этап', 'Статус', 'Сумма', 'Ответственный',
+      'Теги', 'Создана', 'Обновлена',
+    ]
+    const rows = tableDeals.map(d => {
+      const stage = activeStages.find(s => s.id === d.stage_id)
+      const pipeline = pipelines.find(p => p.id === d.pipeline_id)
+      const resp = d.responsible ? `${d.responsible.first_name ?? ''} ${d.responsible.last_name ?? ''}`.trim() : ''
+      return [
+        d.id,
+        d.name ?? '',
+        d.patient?.full_name ?? '',
+        d.patient?.phones?.[0] ?? d.contact_phone ?? '',
+        d.patient?.city ?? d.contact_city ?? '',
+        pipeline?.name ?? '',
+        stage?.name ?? '',
+        d.status,
+        d.amount ?? '',
+        resp,
+        (d.tags ?? []).join(', '),
+        d.created_at,
+        d.updated_at,
+      ]
+    })
+    const csv = [header, ...rows].map(r => r.map(esc).join(';')).join('\r\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const today = new Date().toISOString().slice(0, 10)
+    const pipelineSlug = (activePipeline?.code || activePipeline?.name || 'crm').replace(/[^a-zа-я0-9_-]+/gi, '_')
+    a.href = url
+    a.download = `deals_${pipelineSlug}_${today}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   async function confirmLoss(reasonId: string | null, reasonName: string | null, comment: string) {
     if (!lossPending) return
     const { deal, stageId } = lossPending
@@ -389,6 +503,101 @@ export default function CRMKanbanPage() {
         <Link href="/settings/pipelines" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
           Настройка этапов
         </Link>
+
+        {/* Кнопка «…» — меню сортировки, автообновления, импорта/экспорта и т. п. */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setMoreMenuOpen(v => !v)}
+            onBlur={() => setTimeout(() => setMoreMenuOpen(false), 150)}
+            title="Ещё"
+            aria-label="Ещё"
+            className={`text-sm px-3 py-1.5 rounded-md border transition-colors ${
+              moreMenuOpen
+                ? 'bg-gray-900 text-white border-gray-900'
+                : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            •••
+          </button>
+          {moreMenuOpen && (
+            <div
+              className="absolute right-0 top-full mt-1 z-40 w-64 bg-white border border-gray-200 rounded-md shadow-lg py-1 text-sm"
+              onMouseDown={e => e.preventDefault()}
+            >
+              <MoreMenuItem
+                label="Импорт"
+                icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 4v12m0 0l-5-5m5 5l5-5M4 20h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                onClick={() => { alert('Импорт сделок: скоро будет доступен.'); setMoreMenuOpen(false) }}
+              />
+              <MoreMenuItem
+                label="Экспорт"
+                icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 20V8m0 0l-5 5m5-5l5 5M4 4h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                onClick={() => { exportDealsCsv(); setMoreMenuOpen(false) }}
+              />
+              <MoreMenuItem
+                label="Внешний вид карточки"
+                icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 5h16M4 12h10M4 19h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>}
+                onClick={() => { setShowPageFieldsSettings(true); setMoreMenuOpen(false) }}
+              />
+              <MoreMenuItem
+                label="Поиск дублей"
+                icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8"/><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>}
+                onClick={() => { alert('Поиск дублей: скоро будет доступен.'); setMoreMenuOpen(false) }}
+              />
+              <MoreMenuItem
+                label="Массовые действия"
+                icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.8"/><path d="M14 9l2.5 2.5L22 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                onClick={() => { alert('Массовые действия: скоро будут доступны.'); setMoreMenuOpen(false) }}
+              />
+
+              <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wider text-gray-400 border-t border-gray-100 mt-1">
+                Сортировка
+              </div>
+              {([
+                ['updated_at',       'По последнему сообщению'],
+                ['stage_entered_at', 'По последнему событию'],
+                ['created_at',       'По дате создания'],
+                ['name',             'По названию'],
+                ['amount',           'По бюджету'],
+              ] as [SortField, string][]).map(([f, lbl]) => {
+                const active = sortField === f
+                return (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => changeSort(f)}
+                    className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-gray-50 ${
+                      active ? 'text-blue-600 font-medium' : 'text-gray-700'
+                    }`}
+                  >
+                    <span>{lbl}</span>
+                    <span className="text-xs text-gray-400">
+                      {active ? (sortDir === 'asc' ? '↑' : '↓') : '↓'}
+                    </span>
+                  </button>
+                )
+              })}
+
+              <div className="border-t border-gray-100 mt-1" />
+              <button
+                type="button"
+                onClick={() => setAutoRefresh(v => !v)}
+                className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-gray-50 text-gray-700"
+              >
+                <span>Автообновление</span>
+                {autoRefresh ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-blue-600">
+                    <path d="M4 12l5 5L20 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : (
+                  <span className="text-xs text-gray-400">выкл</span>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+
         <button
           onClick={() => setSelectedDeal({
             id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
@@ -645,6 +854,17 @@ export default function CRMKanbanPage() {
           onSaved={() => { setSelectedDeal(null); load() }}
         />
       )}
+
+      {/* Настройки внешнего вида карточки — открываются из меню «…» */}
+      {showPageFieldsSettings && clinicId && (
+        <DealFieldsSettingsModal
+          clinicId={clinicId}
+          pipelines={pipelines.map(p => ({ id: p.id, name: p.name }))}
+          stages={stages.map(s => ({ id: s.id, name: s.name, pipeline_id: s.pipeline_id }))}
+          onClose={() => setShowPageFieldsSettings(false)}
+          onSaved={() => setShowPageFieldsSettings(false)}
+        />
+      )}
     </div>
   )
 }
@@ -657,6 +877,23 @@ function KPI({ label, value, accent = 'text-gray-900' }: { label: string; value:
       <div className="text-[10px] text-gray-500 uppercase">{label}</div>
       <div className={`text-sm font-semibold ${accent}`}>{value}</div>
     </div>
+  )
+}
+
+// ─── MoreMenuItem ─────────────────────────────────────────────────────────────
+// Строка выпадающего меню «…» — иконка + подпись, onMouseDown стоит на
+// родителе меню, чтобы не гасить клик от onBlur.
+
+function MoreMenuItem({ label, icon, onClick }: { label: string; icon: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-gray-700 hover:bg-gray-50"
+    >
+      <span className="text-gray-500">{icon}</span>
+      <span className="flex-1">{label}</span>
+    </button>
   )
 }
 
