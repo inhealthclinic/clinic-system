@@ -1281,6 +1281,17 @@ function DealModal({
     custom_fields: deal.custom_fields ?? {},
   })
   const [saving, setSaving] = useState(false)
+
+  // Кнопка «Сохранить» появляется только при наличии изменений
+  const DIRTY_KEYS: (keyof DealRow)[] = [
+    'name','patient_id','pipeline_id','stage_id','responsible_user_id',
+    'source_id','amount','preferred_doctor_id','appointment_type',
+    'loss_reason_id','contact_phone','contact_city','notes','tags','custom_fields',
+  ]
+  const isDirty = isNew || DIRTY_KEYS.some(k => {
+    const a = form[k], b = deal[k]
+    return JSON.stringify(a) !== JSON.stringify(b)
+  })
   // Доступ к «Хронологии» (аудит-лог событий по сделке) — только у админа.
   const isAdmin = profile?.role?.slug === 'admin'
   const [activeTab, setActiveTab] = useState<'chat' | 'timeline' | 'tasks'>('chat')
@@ -2894,10 +2905,12 @@ function DealModal({
 
         {/* Footer */}
         <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center gap-4">
-          <button onClick={save} disabled={saving}
-            className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
-            {saving ? 'Сохраняем…' : 'Сохранить'}
-          </button>
+          {isDirty && (
+            <button onClick={save} disabled={saving}
+              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
+              {saving ? 'Сохраняем…' : 'Сохранить'}
+            </button>
+          )}
           {totalUnread > 0 && (
             <div className="flex items-center gap-1.5 text-sm text-gray-500">
               <span className="relative flex items-center justify-center">
