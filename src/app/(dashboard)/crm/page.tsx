@@ -1275,6 +1275,10 @@ function DealModal({
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [comments, setComments] = useState<CommentRow[]>([])
   const [messages, setMessages] = useState<MessageRow[]>([])
+  const chatEndRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
   const [search, setSearch] = useState('')
   const [msgDraft, setMsgDraft] = useState('')
   const msgChannel: MessageRow['channel'] = 'whatsapp'
@@ -2467,6 +2471,7 @@ function DealModal({
                             )
                           })
                         })()}
+                        <div ref={chatEndRef} />
                       </div>
 
                       {/* Composer (amoCRM-style: Чат / Примечание / Задача) */}
