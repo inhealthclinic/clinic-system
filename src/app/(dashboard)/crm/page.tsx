@@ -2966,10 +2966,10 @@ function DealModal({
             </button>
           )}
 
-          {/* Бейдж непрочитанных — прижат вправо, открывает боковую панель */}
+          {/* Бейдж непрочитанных — слева, открывает боковую панель */}
           <button
             onClick={() => setShowUnreadPopup(v => !v)}
-            className={`ml-auto flex items-center gap-2 px-3 py-2 rounded-md transition-colors ${showUnreadPopup ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-100 text-gray-600'}`}
+            className={`flex items-center gap-2 px-3 py-2 rounded-md transition-colors ${showUnreadPopup ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-100 text-gray-600'}`}
           >
             <span className="relative flex items-center justify-center">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
