@@ -381,60 +381,73 @@ export default function CRMKanbanPage() {
 
   return (
     <div className="p-4 min-h-screen">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900">Воронка продаж</h1>
-          <p className="text-xs text-gray-500">Перетаскивайте карточки между этапами — история фиксируется автоматически.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
-            Аналитика
-          </Link>
-          <Link href="/settings/pipelines" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
-            Настройка этапов
-          </Link>
-          <button
-            onClick={() => setSelectedDeal({
-              id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
-              pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
-              stage: activeStages[0]?.code ?? null, funnel: activePipeline?.code ?? 'leads',
-              status: 'open', responsible_user_id: null, source_id: null, amount: null,
-              preferred_doctor_id: null, appointment_type: null, loss_reason_id: null,
-              contact_phone: null, contact_city: null, notes: null, tags: [],
-              custom_fields: {},
-              stage_entered_at: new Date().toISOString(),
-              created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-            } as DealRow)}
-            className="text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            + Сделка
-          </button>
-        </div>
+      {/* Header — только действия, без заголовка */}
+      <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
+        <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
+          Аналитика
+        </Link>
+        <Link href="/settings/pipelines" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
+          Настройка этапов
+        </Link>
+        <button
+          onClick={() => setSelectedDeal({
+            id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
+            pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
+            stage: activeStages[0]?.code ?? null, funnel: activePipeline?.code ?? 'leads',
+            status: 'open', responsible_user_id: null, source_id: null, amount: null,
+            preferred_doctor_id: null, appointment_type: null, loss_reason_id: null,
+            contact_phone: null, contact_city: null, notes: null, tags: [],
+            custom_fields: {},
+            stage_entered_at: new Date().toISOString(),
+            created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          } as DealRow)}
+          className="text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
+        >
+          + Сделка
+        </button>
       </div>
 
-      {/* Поиск + переключатель вида (сетка / таблица) — как в амоCRM */}
-      <div className="flex items-center gap-2 mb-3">
-        <div className="relative flex-1 max-w-xl">
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
-          >
-            <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
-            <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
-          <input
-            type="search"
-            value={listSearch}
-            onChange={e => setListSearch(e.target.value)}
-            placeholder="Поиск по сделкам: имя, телефон, тег, город…"
-            className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
-          />
+      {/* Табы воронок (слева) + поиск (по центру) + вид сетка/таблица (справа) */}
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        {/* Воронки — слева */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {pipelines.map(p => (
+            <button key={p.id} onClick={() => setActivePipelineId(p.id)}
+              className={`px-3 py-1.5 rounded-md text-sm border ${
+                activePipelineId === p.id
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+              }`}>
+              {p.name}
+            </button>
+          ))}
         </div>
-        <div className="ml-auto inline-flex items-center bg-white border border-gray-200 rounded-md overflow-hidden">
+
+        {/* Поиск — по центру (flex-1 + justify-center) */}
+        <div className="flex-1 flex justify-center min-w-[220px]">
+          <div className="relative w-full max-w-md">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+            >
+              <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
+              <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <input
+              type="search"
+              value={listSearch}
+              onChange={e => setListSearch(e.target.value)}
+              placeholder="Поиск по сделкам: имя, телефон, тег, город…"
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
+            />
+          </div>
+        </div>
+
+        {/* Переключатель вида — справа */}
+        <div className="inline-flex items-center bg-white border border-gray-200 rounded-md overflow-hidden">
           <button
             type="button"
             onClick={() => setViewMode('kanban')}
@@ -471,18 +484,8 @@ export default function CRMKanbanPage() {
         </div>
       </div>
 
-      {/* Pipeline tabs + KPI */}
+      {/* Служебная панель: скрытые этапы + KPI конверсии */}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        {pipelines.map(p => (
-          <button key={p.id} onClick={() => setActivePipelineId(p.id)}
-            className={`px-3 py-1.5 rounded-md text-sm border ${
-              activePipelineId === p.id
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
-            }`}>
-            {p.name}
-          </button>
-        ))}
         <div className="flex-1" />
         {isListCrmAdmin && hiddenTerminalCount > 0 && (
           <button
