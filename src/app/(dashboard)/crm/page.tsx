@@ -2874,16 +2874,11 @@ function DealModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-end">
-          <div className="flex gap-2">
-            <button onClick={onClose} className="px-4 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">
-              Отмена
-            </button>
-            <button onClick={save} disabled={saving}
-              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
-              {saving ? 'Сохраняем…' : 'Сохранить'}
-            </button>
-          </div>
+        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-start">
+          <button onClick={save} disabled={saving}
+            className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
+            {saving ? 'Сохраняем…' : 'Сохранить'}
+          </button>
         </div>
       </div>
 
