@@ -200,9 +200,15 @@ export default function CRMKanbanPage() {
     window.localStorage.setItem('crm.autoRefresh', autoRefresh ? '1' : '0')
   }, [autoRefresh])
 
-  // Меню «Ещё» + модалка «Внешний вид карточки» на уровне страницы.
+  // Меню «Ещё» + модалки, которые из него открываются.
   const [moreMenuOpen, setMoreMenuOpen] = useState(false)
   const [showPageFieldsSettings, setShowPageFieldsSettings] = useState(false)
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [showDupesModal, setShowDupesModal] = useState(false)
+
+  // Массовые действия — множественный выбор строк в таблице.
+  const [bulkMode, setBulkMode] = useState(false)
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
 
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
@@ -528,7 +534,7 @@ export default function CRMKanbanPage() {
               <MoreMenuItem
                 label="Импорт"
                 icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 4v12m0 0l-5-5m5 5l5-5M4 20h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                onClick={() => { alert('Импорт сделок: скоро будет доступен.'); setMoreMenuOpen(false) }}
+                onClick={() => { setShowImportModal(true); setMoreMenuOpen(false) }}
               />
               <MoreMenuItem
                 label="Экспорт"
@@ -543,12 +549,18 @@ export default function CRMKanbanPage() {
               <MoreMenuItem
                 label="Поиск дублей"
                 icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8"/><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>}
-                onClick={() => { alert('Поиск дублей: скоро будет доступен.'); setMoreMenuOpen(false) }}
+                onClick={() => { setShowDupesModal(true); setMoreMenuOpen(false) }}
               />
               <MoreMenuItem
-                label="Массовые действия"
+                label={bulkMode ? 'Выйти из массовых действий' : 'Массовые действия'}
                 icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.8"/><path d="M14 9l2.5 2.5L22 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                onClick={() => { alert('Массовые действия: скоро будут доступны.'); setMoreMenuOpen(false) }}
+                onClick={() => {
+                  const next = !bulkMode
+                  setBulkMode(next)
+                  if (next) setViewMode('table') // массовый выбор — только в таблице
+                  else setBulkSelected(new Set())
+                  setMoreMenuOpen(false)
+                }}
               />
 
               <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wider text-gray-400 border-t border-gray-100 mt-1">
@@ -775,6 +787,19 @@ export default function CRMKanbanPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wider">
                 <tr>
+                  {bulkMode && (
+                    <th className="px-3 py-2 w-8">
+                      <input
+                        type="checkbox"
+                        checked={tableDeals.length > 0 && bulkSelected.size === tableDeals.length}
+                        onChange={e => {
+                          if (e.target.checked) setBulkSelected(new Set(tableDeals.map(d => d.id)))
+                          else setBulkSelected(new Set())
+                        }}
+                        title="Выбрать все"
+                      />
+                    </th>
+                  )}
                   <th className="text-left px-3 py-2 font-medium">Сделка</th>
                   <th className="text-left px-3 py-2 font-medium">Пациент</th>
                   <th className="text-left px-3 py-2 font-medium">Телефон</th>
@@ -790,12 +815,38 @@ export default function CRMKanbanPage() {
                   const phone = d.patient?.phones?.[0] ?? d.contact_phone ?? ''
                   const resp = d.responsible
                   const respName = resp ? `${resp.first_name ?? ''} ${resp.last_name ?? ''}`.trim() : ''
+                  const isChecked = bulkSelected.has(d.id)
                   return (
                     <tr
                       key={d.id}
-                      onClick={() => setSelectedDeal(d)}
-                      className="hover:bg-blue-50/40 cursor-pointer"
+                      onClick={() => {
+                        if (bulkMode) {
+                          setBulkSelected(prev => {
+                            const n = new Set(prev)
+                            if (n.has(d.id)) n.delete(d.id); else n.add(d.id)
+                            return n
+                          })
+                        } else {
+                          setSelectedDeal(d)
+                        }
+                      }}
+                      className={`cursor-pointer ${isChecked ? 'bg-blue-50' : 'hover:bg-blue-50/40'}`}
                     >
+                      {bulkMode && (
+                        <td className="px-3 py-2" onClick={e => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {
+                              setBulkSelected(prev => {
+                                const n = new Set(prev)
+                                if (n.has(d.id)) n.delete(d.id); else n.add(d.id)
+                                return n
+                              })
+                            }}
+                          />
+                        </td>
+                      )}
                       <td className="px-3 py-2 text-gray-900">{d.name || '—'}</td>
                       <td className="px-3 py-2 text-gray-900">{d.patient?.full_name ?? '—'}</td>
                       <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{phone || '—'}</td>
@@ -819,7 +870,7 @@ export default function CRMKanbanPage() {
                 })}
                 {tableDeals.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center text-sm text-gray-400">
+                    <td colSpan={bulkMode ? 8 : 7} className="px-3 py-8 text-center text-sm text-gray-400">
                       {listSearch ? 'Ничего не найдено' : 'Нет сделок в этой воронке'}
                     </td>
                   </tr>
@@ -828,6 +879,40 @@ export default function CRMKanbanPage() {
             </table>
           </div>
         </div>
+      )}
+
+      {/* Плавающая панель действий для массового режима */}
+      {bulkMode && bulkSelected.size > 0 && (
+        <BulkActionBar
+          count={bulkSelected.size}
+          stages={activeStages}
+          users={users}
+          onCancel={() => { setBulkMode(false); setBulkSelected(new Set()) }}
+          onMoveStage={async (stageId) => {
+            const ids = Array.from(bulkSelected)
+            const { error } = await supabase.from('deals').update({ stage_id: stageId }).in('id', ids)
+            if (error) { alert(error.message); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onAssign={async (userId) => {
+            const ids = Array.from(bulkSelected)
+            const { error } = await supabase.from('deals').update({ responsible_user_id: userId }).in('id', ids)
+            if (error) { alert(error.message); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onDelete={async () => {
+            const ids = Array.from(bulkSelected)
+            if (!confirm(`Удалить ${ids.length} сделок? Они пропадут из канбана, но останутся в истории (soft delete).`)) return
+            const { error } = await supabase.from('deals')
+              .update({ deleted_at: new Date().toISOString() })
+              .in('id', ids)
+            if (error) { alert(error.message); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+        />
       )}
 
       {/* Modals */}
@@ -863,6 +948,26 @@ export default function CRMKanbanPage() {
           stages={stages.map(s => ({ id: s.id, name: s.name, pipeline_id: s.pipeline_id }))}
           onClose={() => setShowPageFieldsSettings(false)}
           onSaved={() => setShowPageFieldsSettings(false)}
+        />
+      )}
+
+      {/* Импорт сделок из CSV */}
+      {showImportModal && clinicId && (
+        <ImportDealsModal
+          clinicId={clinicId}
+          pipelineId={activePipelineId}
+          defaultStageId={activeStages[0]?.id ?? null}
+          onClose={() => setShowImportModal(false)}
+          onDone={() => { setShowImportModal(false); load() }}
+        />
+      )}
+
+      {/* Поиск дублей — группируем сделки с одинаковым телефоном / пациентом */}
+      {showDupesModal && (
+        <DuplicatesModal
+          deals={deals}
+          onOpenDeal={(d) => { setShowDupesModal(false); setSelectedDeal(d) }}
+          onClose={() => setShowDupesModal(false)}
         />
       )}
     </div>
@@ -3057,6 +3162,393 @@ function TemplatesDropdown({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── BulkActionBar ────────────────────────────────────────────────────────────
+// Плавающая панель внизу экрана с действиями над выбранными сделками.
+
+function BulkActionBar({
+  count,
+  stages,
+  users,
+  onMoveStage,
+  onAssign,
+  onDelete,
+  onCancel,
+}: {
+  count: number
+  stages: Stage[]
+  users: UserLite[]
+  onMoveStage: (stageId: string) => Promise<void>
+  onAssign: (userId: string) => Promise<void>
+  onDelete: () => Promise<void>
+  onCancel: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  async function wrap(fn: () => Promise<void>) {
+    if (busy) return
+    setBusy(true)
+    try { await fn() } finally { setBusy(false) }
+  }
+  return (
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 bg-gray-900 text-white rounded-xl shadow-2xl flex items-center gap-2 px-3 py-2">
+      <span className="text-sm font-medium px-1">Выбрано: {count}</span>
+      <div className="w-px h-5 bg-white/20 mx-1" />
+
+      <select
+        disabled={busy}
+        defaultValue=""
+        onChange={e => {
+          const v = e.target.value
+          e.currentTarget.value = ''
+          if (v) wrap(() => onMoveStage(v))
+        }}
+        className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+      >
+        <option value="" disabled>→ В этап</option>
+        {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+      </select>
+
+      <select
+        disabled={busy}
+        defaultValue=""
+        onChange={e => {
+          const v = e.target.value
+          e.currentTarget.value = ''
+          if (v) wrap(() => onAssign(v))
+        }}
+        className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+      >
+        <option value="" disabled>Ответственный</option>
+        {users.map(u => (
+          <option key={u.id} value={u.id}>{`${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()}</option>
+        ))}
+      </select>
+
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => wrap(onDelete)}
+        className="text-xs px-2.5 py-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-60"
+      >
+        Удалить
+      </button>
+
+      <div className="w-px h-5 bg-white/20 mx-1" />
+      <button
+        type="button"
+        onClick={onCancel}
+        className="text-xs px-2 py-1.5 rounded hover:bg-white/10"
+      >
+        Отмена
+      </button>
+    </div>
+  )
+}
+
+// ─── ImportDealsModal ─────────────────────────────────────────────────────────
+// Минимальный импорт сделок из CSV (разделитель ; или ,). Ожидаемые заголовки
+// на первой строке; русские и английские алиасы принимаются.
+
+function ImportDealsModal({
+  clinicId,
+  pipelineId,
+  defaultStageId,
+  onClose,
+  onDone,
+}: {
+  clinicId: string
+  pipelineId: string
+  defaultStageId: string | null
+  onClose: () => void
+  onDone: () => void
+}) {
+  const supabase = useMemo(() => createClient(), [])
+  const [rows, setRows] = useState<Record<string, string>[]>([])
+  const [fileName, setFileName] = useState<string>('')
+  const [busy, setBusy] = useState(false)
+  const [report, setReport] = useState<{ created: number; skipped: number; errors: string[] } | null>(null)
+
+  // Нормализация заголовков столбцов: кириллица/пробелы/регистр → канонические ключи.
+  const ALIASES: Record<string, string> = {
+    'название': 'name', 'сделка': 'name', 'name': 'name',
+    'пациент': 'patient', 'фио': 'patient', 'patient': 'patient',
+    'телефон': 'phone', 'phone': 'phone', 'tel': 'phone',
+    'город': 'city', 'city': 'city',
+    'сумма': 'amount', 'amount': 'amount', 'budget': 'amount',
+    'заметка': 'notes', 'комментарий': 'notes', 'notes': 'notes',
+    'теги': 'tags', 'tags': 'tags',
+  }
+
+  function parseCsv(text: string): Record<string, string>[] {
+    // Простой CSV parser: ; или , как разделитель, двойные кавычки.
+    const firstLine = text.split(/\r?\n/, 1)[0] ?? ''
+    const delim = (firstLine.match(/;/g)?.length ?? 0) >= (firstLine.match(/,/g)?.length ?? 0) ? ';' : ','
+    const lines: string[][] = []
+    let cur: string[] = []
+    let cell = ''
+    let inQ = false
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i]
+      if (inQ) {
+        if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++ }
+        else if (ch === '"') { inQ = false }
+        else { cell += ch }
+      } else {
+        if (ch === '"') inQ = true
+        else if (ch === delim) { cur.push(cell); cell = '' }
+        else if (ch === '\n') { cur.push(cell); lines.push(cur); cur = []; cell = '' }
+        else if (ch === '\r') { /* skip */ }
+        else cell += ch
+      }
+    }
+    if (cell.length || cur.length) { cur.push(cell); lines.push(cur) }
+    if (lines.length === 0) return []
+    const headers = (lines.shift() ?? []).map(h =>
+      ALIASES[h.trim().toLowerCase().replace(/^\uFEFF/, '')] ?? h.trim().toLowerCase()
+    )
+    return lines
+      .filter(r => r.some(c => c.trim().length > 0))
+      .map(r => {
+        const obj: Record<string, string> = {}
+        headers.forEach((h, i) => { obj[h] = (r[i] ?? '').trim() })
+        return obj
+      })
+  }
+
+  async function onFile(file: File) {
+    const text = await file.text()
+    setRows(parseCsv(text))
+    setFileName(file.name)
+    setReport(null)
+  }
+
+  async function runImport() {
+    if (busy || rows.length === 0) return
+    setBusy(true)
+    let created = 0, skipped = 0
+    const errors: string[] = []
+    for (const r of rows) {
+      try {
+        const name = r['name']?.trim() || r['patient']?.trim() || ''
+        if (!name && !r['phone']) { skipped++; continue }
+        const tags = (r['tags'] ?? '').split(/[;,]/).map(x => x.trim()).filter(Boolean)
+        const amount = r['amount'] ? Number(r['amount'].replace(/[^\d.,-]/g, '').replace(',', '.')) : null
+        const payload: Record<string, unknown> = {
+          clinic_id: clinicId,
+          pipeline_id: pipelineId,
+          stage_id: defaultStageId,
+          name: name || null,
+          contact_phone: r['phone'] || null,
+          contact_city: r['city'] || null,
+          notes: r['notes'] || null,
+          tags: tags.length ? tags : [],
+          amount: amount != null && !Number.isNaN(amount) ? amount : null,
+          funnel: 'leads',
+          status: 'open',
+        }
+        const { error } = await supabase.from('deals').insert(payload)
+        if (error) { errors.push(`${name || r['phone'] || '—'}: ${error.message}`); skipped++ }
+        else created++
+      } catch (e: unknown) {
+        errors.push(String(e))
+        skipped++
+      }
+    }
+    setReport({ created, skipped, errors: errors.slice(0, 10) })
+    setBusy(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="bg-white rounded-xl w-full max-w-xl shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Импорт сделок из CSV</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-4 text-sm">
+          <div>
+            <p className="text-gray-600 mb-2">
+              Загрузите CSV (разделитель «;» или «,»). Первая строка — заголовки. Распознаются:
+              <span className="font-mono text-xs text-gray-500"> название, пациент, телефон, город, сумма, заметка, теги</span>.
+            </p>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f) }}
+              className="block w-full text-sm file:mr-3 file:px-3 file:py-1.5 file:rounded file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700"
+            />
+          </div>
+          {fileName && (
+            <div className="text-xs text-gray-500">
+              Файл: <span className="text-gray-800">{fileName}</span> · распознано строк: <b>{rows.length}</b>
+            </div>
+          )}
+          {rows.length > 0 && !report && (
+            <div className="border border-gray-100 rounded-md overflow-hidden max-h-56 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 text-gray-500">
+                  <tr>
+                    <th className="px-2 py-1 text-left">#</th>
+                    <th className="px-2 py-1 text-left">Название</th>
+                    <th className="px-2 py-1 text-left">Телефон</th>
+                    <th className="px-2 py-1 text-left">Сумма</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice(0, 10).map((r, i) => (
+                    <tr key={i} className="border-t border-gray-100">
+                      <td className="px-2 py-1 text-gray-400">{i + 1}</td>
+                      <td className="px-2 py-1">{r['name'] || r['patient'] || '—'}</td>
+                      <td className="px-2 py-1">{r['phone'] || '—'}</td>
+                      <td className="px-2 py-1">{r['amount'] || '—'}</td>
+                    </tr>
+                  ))}
+                  {rows.length > 10 && (
+                    <tr><td colSpan={4} className="px-2 py-1 text-center text-gray-400">…и ещё {rows.length - 10}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {report && (
+            <div className="bg-gray-50 border border-gray-100 rounded-md p-3 text-xs space-y-1">
+              <div>Создано: <b className="text-green-700">{report.created}</b></div>
+              <div>Пропущено: <b className="text-amber-700">{report.skipped}</b></div>
+              {report.errors.length > 0 && (
+                <div>
+                  <div className="text-gray-500 mt-2">Ошибки (первые 10):</div>
+                  <ul className="list-disc pl-4 text-red-700">
+                    {report.errors.map((e, i) => <li key={i}>{e}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded border border-gray-200 text-gray-600 hover:bg-gray-50">
+            {report ? 'Закрыть' : 'Отмена'}
+          </button>
+          {!report ? (
+            <button
+              onClick={runImport}
+              disabled={busy || rows.length === 0}
+              className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
+            >
+              {busy ? 'Импортируем…' : `Импортировать ${rows.length}`}
+            </button>
+          ) : (
+            <button
+              onClick={onDone}
+              className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              Готово
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── DuplicatesModal ──────────────────────────────────────────────────────────
+// Группируем сделки по нормализованному телефону и ФИО пациента. Показываем
+// только группы из ≥2 сделок.
+
+function DuplicatesModal({
+  deals,
+  onOpenDeal,
+  onClose,
+}: {
+  deals: DealRow[]
+  onOpenDeal: (d: DealRow) => void
+  onClose: () => void
+}) {
+  const groups = useMemo(() => {
+    const normPhone = (p: string) => p.replace(/\D+/g, '').replace(/^8/, '7')
+    const byPhone = new Map<string, DealRow[]>()
+    const byName  = new Map<string, DealRow[]>()
+    for (const d of deals) {
+      const phones = [
+        ...(d.patient?.phones ?? []),
+        d.contact_phone ?? '',
+      ].map(normPhone).filter(p => p.length >= 7)
+      for (const p of phones) {
+        if (!byPhone.has(p)) byPhone.set(p, [])
+        byPhone.get(p)!.push(d)
+      }
+      const name = (d.patient?.full_name ?? d.name ?? '').trim().toLowerCase()
+      if (name.length > 2) {
+        if (!byName.has(name)) byName.set(name, [])
+        byName.get(name)!.push(d)
+      }
+    }
+    const seen = new Set<string>()
+    const out: { key: string; kind: 'Телефон' | 'ФИО'; label: string; deals: DealRow[] }[] = []
+    for (const [phone, arr] of byPhone) {
+      const uniq = Array.from(new Map(arr.map(d => [d.id, d])).values())
+      if (uniq.length >= 2) {
+        uniq.forEach(d => seen.add(d.id))
+        out.push({ key: `phone:${phone}`, kind: 'Телефон', label: phone, deals: uniq })
+      }
+    }
+    for (const [name, arr] of byName) {
+      const uniq = Array.from(new Map(arr.map(d => [d.id, d])).values())
+      // Пропускаем группы, уже полностью покрытые телефонным совпадением.
+      if (uniq.length >= 2 && uniq.some(d => !seen.has(d.id))) {
+        out.push({ key: `name:${name}`, kind: 'ФИО', label: name, deals: uniq })
+      }
+    }
+    return out.sort((a, b) => b.deals.length - a.deals.length)
+  }, [deals])
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="bg-white rounded-xl w-full max-w-2xl shadow-2xl max-h-[80vh] flex flex-col">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+          <h3 className="font-semibold text-gray-900">Поиск дублей</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="px-5 py-2 text-xs text-gray-500 border-b border-gray-100 flex-shrink-0">
+          Группы сделок с одинаковыми телефонами или ФИО пациента.
+          Найдено групп: <b className="text-gray-700">{groups.length}</b>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {groups.length === 0 ? (
+            <div className="text-center text-sm text-gray-400 py-10">Дубликатов не найдено 🎉</div>
+          ) : (
+            groups.map(g => (
+              <div key={g.key} className="border border-gray-100 rounded-lg overflow-hidden">
+                <div className="bg-gray-50 px-3 py-2 text-xs text-gray-600 flex items-center gap-2">
+                  <span className="uppercase tracking-wider text-[10px] text-gray-400">{g.kind}</span>
+                  <span className="font-mono">{g.label}</span>
+                  <span className="ml-auto text-gray-500">{g.deals.length} сделок</span>
+                </div>
+                <ul className="divide-y divide-gray-100 text-sm">
+                  {g.deals.map(d => (
+                    <li key={d.id}>
+                      <button
+                        type="button"
+                        onClick={() => onOpenDeal(d)}
+                        className="w-full text-left px-3 py-2 hover:bg-blue-50/50 flex items-center gap-3"
+                      >
+                        <span className="text-gray-900 flex-1 truncate">{d.name || d.patient?.full_name || '—'}</span>
+                        <span className="text-xs text-gray-400 whitespace-nowrap">{d.contact_phone ?? d.patient?.phones?.[0] ?? ''}</span>
+                        <span className="text-xs text-gray-400 whitespace-nowrap">{fmtAge(d.updated_at)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   )
 }
