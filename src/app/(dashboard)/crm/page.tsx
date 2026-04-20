@@ -1104,27 +1104,8 @@ function DealModal({
                 placeholder={form.patient?.full_name || 'Новая сделка'}
                 className="text-lg font-semibold text-gray-900 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none min-w-[260px]"
               />
-              {/* Селектор этапа в стиле amoCRM — крупный цветной чип */}
-              <select
-                value={form.stage_id ?? ''}
-                onChange={e => onStageClick(e.target.value)}
-                style={{
-                  background: stageColor(currentStage),
-                  // own arrow — чтобы хорошо смотрелось на цветном фоне
-                  backgroundImage:
-                    'url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 viewBox=%270 0 12 12%27 fill=%27none%27><path d=%27M3 5l3 3 3-3%27 stroke=%27white%27 stroke-width=%271.8%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/></svg>")',
-                  backgroundRepeat: 'no-repeat',
-                  backgroundPosition: 'right 8px center',
-                  paddingRight: '26px',
-                }}
-                className="appearance-none text-xs font-semibold uppercase tracking-wider text-white rounded px-3 py-1.5 cursor-pointer hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-blue-300"
-              >
-                {pipelineStages.map(s => (
-                  <option key={s.id} value={s.id} className="text-gray-900 bg-white normal-case">
-                    {s.name}
-                  </option>
-                ))}
-              </select>
+              {/* Селектор этапа удалён — этапы теперь живут в левой колонке
+                 под селектом «Воронка» (см. рендер pipeline ниже). */}
               {!isNew && (
                 <span className={`text-xs px-2 py-0.5 rounded ${
                   form.status === 'won' ? 'bg-green-100 text-green-700' :
@@ -1217,6 +1198,37 @@ function DealModal({
                       >
                         {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
+
+                      {/* Этапы текущей воронки — кликабельные чипы.
+                         Подсвечиваем активный цветом stage.color, остальные
+                         серые. Клик = смена этапа (через onStageClick с
+                         валидацией обязательных полей). */}
+                      {pipelineStages.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-1">
+                          {pipelineStages.map(s => {
+                            const active = s.id === form.stage_id
+                            const color = stageColor(s)
+                            return (
+                              <button
+                                key={s.id}
+                                type="button"
+                                onClick={() => onStageClick(s.id)}
+                                style={active ? { background: color, borderColor: color } : undefined}
+                                className={
+                                  active
+                                    ? 'text-left text-xs font-semibold uppercase tracking-wider text-white rounded px-2.5 py-1.5 border transition'
+                                    : 'text-left text-xs text-gray-700 rounded px-2.5 py-1.5 border border-gray-200 bg-white hover:bg-gray-50 transition flex items-center gap-2'
+                                }
+                              >
+                                {!active && (
+                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+                                )}
+                                <span>{s.name}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
                     </Field>
                   ),
                   responsible: () => (
