@@ -1972,42 +1972,72 @@ function DealModal({
             </div>
             {/* Панель массовых действий */}
             {unreadBulkMode && (
-              <div className="px-3 py-2 border-b border-gray-100 bg-blue-50 shrink-0">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs text-blue-700 flex-1 font-medium">{unreadSelected.size} выбрано</span>
-                  <button onClick={() => { setUnreadSelected(new Set()); setUnreadBulkMode(false) }}
-                    className="text-xs text-gray-500 hover:text-gray-700">Отмена</button>
+              <div className="px-3 py-2 border-b border-gray-200 bg-white shrink-0">
+                <div className="flex items-center gap-1.5">
+                  {/* Прочитать */}
+                  <button
+                    disabled={unreadSelected.size === 0}
+                    onClick={async () => {
+                      await supabase.from('deal_messages')
+                        .update({ read_at: new Date().toISOString() })
+                        .in('id', Array.from(unreadSelected))
+                      setUnreadSelected(new Set())
+                      setUnreadBulkMode(false)
+                    }}
+                    className="flex items-center gap-1 text-xs px-2 py-1.5 rounded border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Прочитать
+                  </button>
+                  {/* Удалить */}
+                  <button
+                    disabled={unreadSelected.size === 0}
+                    onClick={async () => {
+                      if (!confirm(`Удалить ${unreadSelected.size} сообщений?`)) return
+                      await supabase.from('deal_messages')
+                        .delete()
+                        .in('id', Array.from(unreadSelected))
+                      setUnreadSelected(new Set())
+                      setUnreadBulkMode(false)
+                    }}
+                    className="flex items-center gap-1 text-xs px-2 py-1.5 rounded border border-gray-200 text-red-500 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                    Удалить
+                  </button>
+                  <div className="flex-1" />
+                  {/* × — выход из bulk-режима */}
+                  <button
+                    onClick={() => { setUnreadSelected(new Set()); setUnreadBulkMode(false) }}
+                    className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 text-base leading-none"
+                    title="Отмена"
+                  >×</button>
+                  {/* □ — выбрать всё / снять выбор */}
+                  {(() => {
+                    const allIds = unreadItems.map(m => m.id)
+                    const allSelected = allIds.length > 0 && allIds.every(id => unreadSelected.has(id))
+                    return (
+                      <button
+                        onClick={() => {
+                          if (allSelected) {
+                            setUnreadSelected(new Set())
+                          } else {
+                            setUnreadSelected(new Set(allIds))
+                          }
+                        }}
+                        className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500"
+                        title={allSelected ? 'Снять выбор' : 'Выбрать все'}
+                      >
+                        {allSelected
+                          ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="2" fill="currentColor" className="text-blue-500"/><path d="M8 12l3 3 5-5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          : <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="2"/></svg>
+                        }
+                      </button>
+                    )
+                  })()}
                 </div>
                 {unreadSelected.size > 0 && (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={async () => {
-                        await supabase.from('deal_messages')
-                          .update({ read_at: new Date().toISOString() })
-                          .in('id', Array.from(unreadSelected))
-                        setUnreadSelected(new Set())
-                        setUnreadBulkMode(false)
-                      }}
-                      className="flex-1 text-xs py-1.5 rounded bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center justify-center gap-1"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      Прочитано
-                    </button>
-                    <button
-                      onClick={async () => {
-                        if (!confirm(`Удалить ${unreadSelected.size} сообщений?`)) return
-                        await supabase.from('deal_messages')
-                          .delete()
-                          .in('id', Array.from(unreadSelected))
-                        setUnreadSelected(new Set())
-                        setUnreadBulkMode(false)
-                      }}
-                      className="flex-1 text-xs py-1.5 rounded bg-white border border-red-200 text-red-600 hover:bg-red-50 flex items-center justify-center gap-1"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-                      Удалить
-                    </button>
-                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400">{unreadSelected.size} выбрано</div>
                 )}
               </div>
             )}
