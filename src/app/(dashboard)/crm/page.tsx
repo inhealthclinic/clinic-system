@@ -1972,12 +1972,43 @@ function DealModal({
             </div>
             {/* Панель массовых действий */}
             {unreadBulkMode && (
-              <div className="px-3 py-2 border-b border-gray-100 bg-blue-50 flex items-center gap-2 shrink-0">
-                <span className="text-xs text-blue-700 flex-1">{unreadSelected.size} выбрано</span>
-                <button
-                  onClick={() => { setUnreadSelected(new Set()); setUnreadBulkMode(false) }}
-                  className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-white"
-                >Отмена</button>
+              <div className="px-3 py-2 border-b border-gray-100 bg-blue-50 shrink-0">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-blue-700 flex-1 font-medium">{unreadSelected.size} выбрано</span>
+                  <button onClick={() => { setUnreadSelected(new Set()); setUnreadBulkMode(false) }}
+                    className="text-xs text-gray-500 hover:text-gray-700">Отмена</button>
+                </div>
+                {unreadSelected.size > 0 && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={async () => {
+                        await supabase.from('deal_messages')
+                          .update({ read_at: new Date().toISOString() })
+                          .in('id', Array.from(unreadSelected))
+                        setUnreadSelected(new Set())
+                        setUnreadBulkMode(false)
+                      }}
+                      className="flex-1 text-xs py-1.5 rounded bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center justify-center gap-1"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      Прочитано
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!confirm(`Удалить ${unreadSelected.size} сообщений?`)) return
+                        await supabase.from('deal_messages')
+                          .delete()
+                          .in('id', Array.from(unreadSelected))
+                        setUnreadSelected(new Set())
+                        setUnreadBulkMode(false)
+                      }}
+                      className="flex-1 text-xs py-1.5 rounded bg-white border border-red-200 text-red-600 hover:bg-red-50 flex items-center justify-center gap-1"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                      Удалить
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
