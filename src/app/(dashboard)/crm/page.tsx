@@ -1107,15 +1107,8 @@ function DealModal({
                 className="text-lg font-semibold text-gray-900 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none min-w-[260px]"
               />
               {/* Селектор этапа удалён — этапы теперь живут в левой колонке
-                 под селектом «Воронка» (см. рендер pipeline ниже). */}
-              {!isNew && (
-                <span className={`text-xs px-2 py-0.5 rounded ${
-                  form.status === 'won' ? 'bg-green-100 text-green-700' :
-                  form.status === 'lost' ? 'bg-red-100 text-red-700' :
-                  form.status === 'closed' ? 'bg-gray-200 text-gray-600' :
-                  'bg-blue-100 text-blue-700'
-                }`}>{form.status}</span>
-              )}
+                 под селектом «Воронка» (см. рендер pipeline ниже).
+                 Плашка статуса (open/won/lost/closed) скрыта по запросу. */}
             </div>
           </div>
 
