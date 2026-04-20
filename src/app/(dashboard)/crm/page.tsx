@@ -2389,13 +2389,12 @@ function TemplatesDropdown({
       <button
         type="button"
         onClick={() => setOpen(v => !v)}
-        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-slate-100 text-gray-700 hover:bg-slate-200 transition-colors"
+        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md bg-slate-100 text-gray-700 hover:bg-slate-200 transition-colors"
         title="Вставить шаблон сообщения"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
           <path d="M4 6h16M4 12h10M4 18h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
         </svg>
-        Шаблоны
         <svg width="10" height="10" viewBox="0 0 10 10" className={`transition-transform ${open ? 'rotate-180' : ''}`}>
           <path d="M1 3l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
