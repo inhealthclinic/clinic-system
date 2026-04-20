@@ -155,6 +155,22 @@ export default function CRMKanbanPage() {
     window.localStorage.setItem('crm.showTerminalStages', showTerminal ? '1' : '0')
   }, [showTerminal])
 
+  // Режим просмотра: канбан (этапы-колонки) или таблица (плоский список).
+  // Персистим выбор, чтобы менеджер возвращался к привычному виду.
+  const [viewMode, setViewMode] = useState<'kanban' | 'table'>('kanban')
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const v = window.localStorage.getItem('crm.viewMode')
+    if (v === 'table' || v === 'kanban') setViewMode(v)
+  }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('crm.viewMode', viewMode)
+  }, [viewMode])
+
+  // Поиск по воронке: имя сделки / пациента / телефон / тег / город / заметка.
+  const [listSearch, setListSearch] = useState('')
+
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
   const [overStage, setOverStage] = useState<string | null>(null)
@@ -243,17 +259,52 @@ export default function CRMKanbanPage() {
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
   const conversion = conversions.find(c => c.pipeline_id === activePipelineId)
 
+  // Совпадение сделки с поисковым запросом. Сравниваем по имени сделки,
+  // ФИО пациента, всем телефонам, городам, заметкам и тегам.
+  const matchesSearch = useCallback((d: DealRow, q: string) => {
+    if (!q) return true
+    const hay = [
+      d.name ?? '',
+      d.patient?.full_name ?? '',
+      ...(d.patient?.phones ?? []),
+      d.contact_phone ?? '',
+      d.contact_city ?? '',
+      d.patient?.city ?? '',
+      d.notes ?? '',
+      ...(d.tags ?? []),
+    ].join(' ').toLowerCase()
+    return hay.includes(q)
+  }, [])
+
   const dealsByStage = useMemo(() => {
+    const q = listSearch.trim().toLowerCase()
     const map = new Map<string, DealRow[]>()
     for (const s of activeStages) map.set(s.id, [])
     for (const d of deals) {
       if (d.pipeline_id !== activePipelineId) continue
       if (!d.stage_id) continue
+      if (!matchesSearch(d, q)) continue
       const arr = map.get(d.stage_id)
       if (arr) arr.push(d)
     }
     return map
-  }, [deals, activeStages, activePipelineId])
+  }, [deals, activeStages, activePipelineId, listSearch, matchesSearch])
+
+  // Плоский список для табличного вида. Сортируем по дате входа на этап
+  // (самые свежие сверху — как в амоCRM).
+  const tableDeals = useMemo(() => {
+    const q = listSearch.trim().toLowerCase()
+    const activeStageIds = new Set(activeStages.map(s => s.id))
+    return deals
+      .filter(d => d.pipeline_id === activePipelineId)
+      .filter(d => d.stage_id != null && activeStageIds.has(d.stage_id))
+      .filter(d => matchesSearch(d, q))
+      .sort((a, b) => {
+        const ta = new Date(a.stage_entered_at || a.updated_at).getTime()
+        const tb = new Date(b.stage_entered_at || b.updated_at).getTime()
+        return tb - ta
+      })
+  }, [deals, activePipelineId, activeStages, listSearch, matchesSearch])
 
   // ── drag & drop ────────────────────────────────────────────────────────────
 
@@ -362,6 +413,64 @@ export default function CRMKanbanPage() {
         </div>
       </div>
 
+      {/* Поиск + переключатель вида (сетка / таблица) — как в амоCRM */}
+      <div className="flex items-center gap-2 mb-3">
+        <div className="relative flex-1 max-w-xl">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+          >
+            <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.8" />
+            <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+          <input
+            type="search"
+            value={listSearch}
+            onChange={e => setListSearch(e.target.value)}
+            placeholder="Поиск по сделкам: имя, телефон, тег, город…"
+            className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
+          />
+        </div>
+        <div className="inline-flex items-center bg-white border border-gray-200 rounded-md overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setViewMode('kanban')}
+            title="Сетка (канбан)"
+            className={`px-2.5 py-2 text-xs inline-flex items-center gap-1.5 ${
+              viewMode === 'kanban'
+                ? 'bg-gray-900 text-white'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="4" width="5" height="16" rx="1" stroke="currentColor" strokeWidth="1.8" />
+              <rect x="10" y="4" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.8" />
+              <rect x="17" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.8" />
+            </svg>
+            Сетка
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('table')}
+            title="Таблица"
+            className={`px-2.5 py-2 text-xs inline-flex items-center gap-1.5 border-l border-gray-200 ${
+              viewMode === 'table'
+                ? 'bg-gray-900 text-white'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="5" width="18" height="14" rx="1" stroke="currentColor" strokeWidth="1.8" />
+              <path d="M3 10h18M3 15h18M9 5v14" stroke="currentColor" strokeWidth="1.8" />
+            </svg>
+            Таблица
+          </button>
+        </div>
+      </div>
+
       {/* Pipeline tabs + KPI */}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         {pipelines.map(p => (
@@ -409,42 +518,106 @@ export default function CRMKanbanPage() {
         )}
       </div>
 
-      {/* Kanban */}
-      <div className="flex gap-3 overflow-x-auto pb-4">
-        {activeStages.map(stage => {
-          const cards = dealsByStage.get(stage.id) ?? []
-          const count = counts.find(c => c.stage_id === stage.id)
-          const isOver = overStage === stage.id
-          return (
-            <div
-              key={stage.id}
-              className={`min-w-[280px] w-[280px] bg-gray-50 border rounded-lg transition-colors ${
-                isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
-              }`}
-              onDragOver={(e) => onDragOver(e, stage.id)}
-              onDragLeave={() => onDragLeave(stage.id)}
-              onDrop={(e) => onDrop(e, stage.id)}
-            >
-              <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
-                <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
-                <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
+      {/* Kanban / сетка — колонки по этапам с drag&drop */}
+      {viewMode === 'kanban' && (
+        <div className="flex gap-3 overflow-x-auto pb-4">
+          {activeStages.map(stage => {
+            const cards = dealsByStage.get(stage.id) ?? []
+            const count = counts.find(c => c.stage_id === stage.id)
+            const isOver = overStage === stage.id
+            return (
+              <div
+                key={stage.id}
+                className={`min-w-[280px] w-[280px] bg-gray-50 border rounded-lg transition-colors ${
+                  isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
+                }`}
+                onDragOver={(e) => onDragOver(e, stage.id)}
+                onDragLeave={() => onDragLeave(stage.id)}
+                onDrop={(e) => onDrop(e, stage.id)}
+              >
+                <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
+                  <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
+                  <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
+                </div>
+                <div className="p-2 space-y-2 min-h-[40px] max-h-[calc(100vh-240px)] overflow-y-auto">
+                  {cards.map(d => (
+                    <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => setSelectedDeal(d)} />
+                  ))}
+                  {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
+                </div>
               </div>
-              <div className="p-2 space-y-2 min-h-[40px] max-h-[calc(100vh-240px)] overflow-y-auto">
-                {cards.map(d => (
-                  <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => setSelectedDeal(d)} />
-                ))}
-                {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
-              </div>
+            )
+          })}
+          {activeStages.length === 0 && (
+            <div className="text-sm text-gray-500 p-6">
+              В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
             </div>
-          )
-        })}
-        {activeStages.length === 0 && (
-          <div className="text-sm text-gray-500 p-6">
-            В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
+          )}
+        </div>
+      )}
+
+      {/* Таблица — плоский список сделок активной воронки */}
+      {viewMode === 'table' && (
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wider">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium">Сделка</th>
+                  <th className="text-left px-3 py-2 font-medium">Пациент</th>
+                  <th className="text-left px-3 py-2 font-medium">Телефон</th>
+                  <th className="text-left px-3 py-2 font-medium">Этап</th>
+                  <th className="text-right px-3 py-2 font-medium">Сумма</th>
+                  <th className="text-left px-3 py-2 font-medium">Ответственный</th>
+                  <th className="text-left px-3 py-2 font-medium">Обновлено</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {tableDeals.map(d => {
+                  const stage = activeStages.find(s => s.id === d.stage_id)
+                  const phone = d.patient?.phones?.[0] ?? d.contact_phone ?? ''
+                  const resp = d.responsible
+                  const respName = resp ? `${resp.first_name ?? ''} ${resp.last_name ?? ''}`.trim() : ''
+                  return (
+                    <tr
+                      key={d.id}
+                      onClick={() => setSelectedDeal(d)}
+                      className="hover:bg-blue-50/40 cursor-pointer"
+                    >
+                      <td className="px-3 py-2 text-gray-900">{d.name || '—'}</td>
+                      <td className="px-3 py-2 text-gray-900">{d.patient?.full_name ?? '—'}</td>
+                      <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{phone || '—'}</td>
+                      <td className="px-3 py-2">
+                        {stage ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full border border-gray-200 bg-white">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: stage.color }} />
+                            {stage.name}
+                          </span>
+                        ) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-900 whitespace-nowrap">
+                        {d.amount != null ? `${new Intl.NumberFormat('ru-RU').format(d.amount)} ₸` : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{respName || '—'}</td>
+                      <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
+                        {fmtAge(d.stage_entered_at || d.updated_at)}
+                      </td>
+                    </tr>
+                  )
+                })}
+                {tableDeals.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-8 text-center text-sm text-gray-400">
+                      {listSearch ? 'Ничего не найдено' : 'Нет сделок в этой воронке'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Modals */}
       {lossPending && (
