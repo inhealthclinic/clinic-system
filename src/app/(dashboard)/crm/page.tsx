@@ -692,6 +692,10 @@ function DealModal({
   const [showHeaderMenu, setShowHeaderMenu] = useState(false)
   // Свёрнутый/развёрнутый список этапов под селектом «Воронка».
   const [stagesExpanded, setStagesExpanded] = useState(false)
+  // Шаблоны сообщений (редактируются в /settings/message-templates).
+  const [templates, setTemplates] = useState<Array<{
+    id: string; title: string; body: string; is_favorite: boolean; sort_order: number
+  }>>([])
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -807,6 +811,25 @@ function DealModal({
       .catch(() => { if (alive) setWaConnected(false) })
     return () => { alive = false }
   }, [])
+
+  // Шаблоны сообщений для выпадашки в композере. Редактируются
+  // в /settings/message-templates. Грузим один раз при открытии карточки.
+  useEffect(() => {
+    if (!profile?.clinic_id) return
+    let alive = true
+    supabase.from('message_templates')
+      .select('id,title,body,is_favorite,sort_order')
+      .eq('clinic_id', profile.clinic_id)
+      .eq('is_active', true)
+      .order('sort_order')
+      .then(({ data }) => {
+        if (!alive) return
+        setTemplates((data ?? []) as Array<{
+          id: string; title: string; body: string; is_favorite: boolean; sort_order: number
+        }>)
+      })
+    return () => { alive = false }
+  }, [supabase, profile?.clinic_id])
 
   useEffect(() => {
     if (!patientSearch || patientSearch.length < 2) { setPatientResults([]); return }
@@ -1722,8 +1745,8 @@ function DealModal({
 
                       {/* Composer (amoCRM-style: Чат / Примечание / Задача) */}
                       <div className="border-t border-gray-100 bg-white">
-                        {/* Mode dropdown */}
-                        <div className="flex items-center gap-2 px-3 pt-2">
+                        {/* Mode dropdown + канал слева; кнопки-действия справа (amoCRM-style) */}
+                        <div className="flex items-center gap-2 px-3 pt-2 flex-wrap">
                           <ComposerModeDropdown
                             value={composerMode}
                             onChange={setComposerMode}
@@ -1734,35 +1757,43 @@ function DealModal({
                               WhatsApp
                             </span>
                           )}
-                          {/* «Записать на приём» — рядом с WhatsApp */}
-                          {!isNew && (
-                            <button
-                              type="button"
-                              onClick={() => setShowBookingModal(true)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                              title="Создать запись в расписании для этой сделки"
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                                <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" strokeWidth="1.8"/>
-                                <path d="M16 2v4M8 2v4M3 9h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                              </svg>
-                              Записать на приём
-                            </button>
+                          {/* «Шаблоны» — рядом с WhatsApp, amoCRM-style */}
+                          {composerMode !== 'task' && (
+                            <TemplatesDropdown
+                              templates={templates}
+                              onPick={(t) => {
+                                setMsgDraft(prev => prev ? `${prev}\n${t.body}` : t.body)
+                              }}
+                            />
                           )}
-                          {/* «Получить предоплату» — отправка Kaspi-ссылки в WhatsApp */}
+                          {/* Правая группа: действия по сделке */}
                           {!isNew && (
-                            <button
-                              type="button"
-                              onClick={sendPrepayRequest}
-                              disabled={sendingPrepay}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                              title="Отправить клиенту в WhatsApp ссылку на предоплату (Kaspi)"
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                                <path d="M12 1v22M5 8h10a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                              {sendingPrepay ? 'Отправляем…' : 'Получить предоплату'}
-                            </button>
+                            <div className="ml-auto flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setShowBookingModal(true)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                                title="Создать запись в расписании для этой сделки"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                  <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                                  <path d="M16 2v4M8 2v4M3 9h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                                </svg>
+                                Записать на приём
+                              </button>
+                              <button
+                                type="button"
+                                onClick={sendPrepayRequest}
+                                disabled={sendingPrepay}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                                title="Отправить клиенту в WhatsApp ссылку на предоплату (Kaspi)"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                  <path d="M12 1v22M5 8h10a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                                </svg>
+                                {sendingPrepay ? 'Отправляем…' : 'Получить предоплату'}
+                              </button>
+                            </div>
                           )}
                         </div>
 
@@ -2307,6 +2338,139 @@ function TagEditor({
               + создать тег <span className="font-medium text-gray-900">«{draft.trim()}»</span>
             </button>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── TemplatesDropdown ────────────────────────────────────────────────────────
+// Кнопка «Шаблоны» в композере. Показывает список шаблонов (message_templates),
+// сверху — избранные. Клик по шаблону вставляет body в поле ввода через onPick.
+// Редактирование шаблонов — /settings/message-templates.
+
+function TemplatesDropdown({
+  templates,
+  onPick,
+}: {
+  templates: Array<{ id: string; title: string; body: string; is_favorite: boolean; sort_order: number }>
+  onPick: (t: { id: string; title: string; body: string }) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent) {
+      if (!rootRef.current) return
+      if (!rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onEsc(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  const needle = q.trim().toLowerCase()
+  const filtered = templates.filter(t =>
+    !needle ||
+    t.title.toLowerCase().includes(needle) ||
+    t.body.toLowerCase().includes(needle)
+  )
+  const favorites = filtered.filter(t => t.is_favorite)
+  const others    = filtered.filter(t => !t.is_favorite)
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-slate-100 text-gray-700 hover:bg-slate-200 transition-colors"
+        title="Вставить шаблон сообщения"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+          <path d="M4 6h16M4 12h10M4 18h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+        Шаблоны
+        <svg width="10" height="10" viewBox="0 0 10 10" className={`transition-transform ${open ? 'rotate-180' : ''}`}>
+          <path d="M1 3l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 bottom-full mb-1 z-30 w-80 max-h-96 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg">
+          <div className="p-2 border-b border-gray-100 sticky top-0 bg-white">
+            <input
+              type="text"
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="Поиск шаблона…"
+              className="w-full text-xs border border-gray-200 rounded px-2 py-1.5 outline-none focus:border-blue-400"
+              autoFocus
+            />
+          </div>
+
+          {templates.length === 0 ? (
+            <div className="p-4 text-xs text-gray-500 space-y-2">
+              <div>Шаблонов пока нет.</div>
+              <a
+                href="/settings/message-templates"
+                className="inline-block text-blue-600 hover:underline"
+              >Создать в настройках →</a>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="p-4 text-xs text-gray-500">Ничего не найдено.</div>
+          ) : (
+            <>
+              {favorites.length > 0 && (
+                <div className="py-1">
+                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-400 font-medium">
+                    Избранные
+                  </div>
+                  {favorites.map(t => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onMouseDown={e => { e.preventDefault(); onPick(t); setOpen(false) }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2"
+                    >
+                      <span className="text-amber-500 shrink-0">★</span>
+                      <span className="truncate">{t.title}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {others.length > 0 && (
+                <div className="py-1 border-t border-gray-100">
+                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-400 font-medium">
+                    Шаблоны
+                  </div>
+                  {others.map(t => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onMouseDown={e => { e.preventDefault(); onPick(t); setOpen(false) }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 truncate"
+                      title={t.body}
+                    >
+                      {t.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="border-t border-gray-100 p-2 bg-slate-50">
+            <a
+              href="/settings/message-templates"
+              className="block text-[11px] text-blue-600 hover:underline"
+            >Редактировать шаблоны →</a>
+          </div>
         </div>
       )}
     </div>
