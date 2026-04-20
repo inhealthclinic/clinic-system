@@ -434,39 +434,39 @@ export default function CRMKanbanPage() {
             className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
           />
         </div>
-        <div className="inline-flex items-center bg-white border border-gray-200 rounded-md overflow-hidden">
+        <div className="ml-auto inline-flex items-center bg-white border border-gray-200 rounded-md overflow-hidden">
           <button
             type="button"
             onClick={() => setViewMode('kanban')}
             title="Сетка (канбан)"
-            className={`px-2.5 py-2 text-xs inline-flex items-center gap-1.5 ${
+            aria-label="Сетка"
+            className={`px-2.5 py-2 inline-flex items-center justify-center ${
               viewMode === 'kanban'
                 ? 'bg-gray-900 text-white'
                 : 'text-gray-600 hover:bg-gray-50'
             }`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <rect x="3" y="4" width="5" height="16" rx="1" stroke="currentColor" strokeWidth="1.8" />
               <rect x="10" y="4" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.8" />
               <rect x="17" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.8" />
             </svg>
-            Сетка
           </button>
           <button
             type="button"
             onClick={() => setViewMode('table')}
             title="Таблица"
-            className={`px-2.5 py-2 text-xs inline-flex items-center gap-1.5 border-l border-gray-200 ${
+            aria-label="Таблица"
+            className={`px-2.5 py-2 inline-flex items-center justify-center border-l border-gray-200 ${
               viewMode === 'table'
                 ? 'bg-gray-900 text-white'
                 : 'text-gray-600 hover:bg-gray-50'
             }`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <rect x="3" y="5" width="18" height="14" rx="1" stroke="currentColor" strokeWidth="1.8" />
               <path d="M3 10h18M3 15h18M9 5v14" stroke="currentColor" strokeWidth="1.8" />
             </svg>
-            Таблица
           </button>
         </div>
       </div>
