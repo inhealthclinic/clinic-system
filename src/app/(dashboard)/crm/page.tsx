@@ -1360,6 +1360,56 @@ function DealModal({
 
   useEffect(() => { loadRelated() }, [loadRelated])
 
+  // Realtime: подписка на deal_messages для текущей открытой сделки.
+  // Пока модалка открыта — любые INSERT/UPDATE по этой сделке
+  // немедленно попадают в список без reload-а страницы.
+  useEffect(() => {
+    if (isNew || !deal.id) return
+    const ch = supabase.channel(`deal-messages:${deal.id}`)
+    // Приводим к any: перегрузка .on('postgres_changes', …) требует
+    // приватных типов из @supabase/realtime-js, а нам хватит рантайма.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(ch as any).on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'deal_messages',
+        filter: `deal_id=eq.${deal.id}`,
+      },
+      (payload: { new: MessageRow }) => {
+        const row = payload.new
+        setMessages(prev => {
+          // Дедуп на случай, если строку уже подставил оптимистичный setState
+          if (prev.some(m => m.id === row.id)) return prev
+          return [...prev, row]
+        })
+        // Входящее — сразу помечаем прочитанным, т.к. карточка открыта
+        if (row.direction === 'in') {
+          supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ).on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'deal_messages',
+        filter: `deal_id=eq.${deal.id}`,
+      },
+      (payload: { new: MessageRow }) => {
+        const row = payload.new
+        setMessages(prev => prev.map(m => (m.id === row.id ? { ...m, ...row } : m)))
+      }
+    )
+    ch.subscribe()
+
+    return () => {
+      supabase.removeChannel(ch)
+    }
+  }, [deal.id, isNew, supabase])
+
   // Загрузка конфигов полей по клинике сделки.
   useEffect(() => {
     const cid = form.clinic_id
@@ -1538,8 +1588,13 @@ function DealModal({
     })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
+    // Оптимистично добавляем своё сообщение сразу — не ждём realtime-эха.
+    // Дедуп по id: если Realtime позже принесёт ту же строку, we-set-prev выкинет её.
+    const m = json.message as MessageRow | undefined
+    if (m) {
+      setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+    }
     setMsgDraft('')
-    loadRelated()
   }
 
   async function sendPrepayRequest() {
@@ -1555,7 +1610,10 @@ function DealModal({
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
-      loadRelated()
+      const m = json.message as MessageRow | undefined
+      if (m) {
+        setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+      }
     } finally {
       setSendingPrepay(false)
     }
@@ -1578,8 +1636,11 @@ function DealModal({
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); return }
+      const m = json.message as MessageRow | undefined
+      if (m) {
+        setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+      }
       setMsgDraft('')
-      loadRelated()
       return
     }
     if (composerMode === 'task') {
