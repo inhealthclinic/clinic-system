@@ -960,7 +960,7 @@ export default function CRMKanbanPage() {
           apptTypes={apptTypes}
           allTags={Array.from(new Set(deals.flatMap(d => d.tags ?? []))).sort((a, b) => a.localeCompare(b, 'ru'))}
           onClose={() => closeDeal()}
-          onSaved={() => { closeDeal(); load() }}
+          onSaved={(wasNew) => { if (wasNew) closeDeal(); load() }}
         />
       )}
 
@@ -1250,7 +1250,7 @@ function DealModal({
   apptTypes: ApptType[]
   allTags: string[]
   onClose: () => void
-  onSaved: () => void
+  onSaved: (wasNew: boolean) => void
 }) {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
@@ -1627,7 +1627,7 @@ function DealModal({
       : await supabase.from('deals').update(payload).eq('id', form.id)
     setSaving(false)
     if (error) { alert('Ошибка: ' + error.message); return }
-    onSaved()
+    onSaved(isNew)
   }
 
   async function removeDeal() {
@@ -1635,7 +1635,7 @@ function DealModal({
     if (!confirm('Удалить сделку? Она будет помечена удалённой (deleted_at).')) return
     const { error } = await supabase.from('deals').update({ deleted_at: new Date().toISOString() }).eq('id', form.id)
     if (error) { alert(error.message); return }
-    onSaved()
+    onSaved(true) // удаление — закрываем модалку
   }
 
   async function addComment() {
