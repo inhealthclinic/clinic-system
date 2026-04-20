@@ -29,7 +29,7 @@ export default function ScheduleWindowLayout({ children }: { children: React.Rea
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <main className="p-4">{children}</main>
+      <main className="p-2">{children}</main>
     </div>
   )
 }
