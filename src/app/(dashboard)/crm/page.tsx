@@ -2361,21 +2361,49 @@ function DealModal({
                       {/* Messages list */}
                       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
                         {(() => {
-                          const filtered = messages.filter(m =>
-                            !search || m.body.toLowerCase().includes(search.toLowerCase())
-                          )
-                          if (filtered.length === 0) {
+                          const q = search.toLowerCase()
+                          // Системные события (кроме дублирующих message_in/out)
+                          const SKIP_KINDS = new Set(['message_in', 'message_out'])
+                          const evItems = events
+                            .filter(e => !SKIP_KINDS.has(e.kind))
+                            .filter(e => !q || (EVENT_LABEL[e.kind] ?? e.kind).toLowerCase().includes(q) || renderEventBody(e).toLowerCase().includes(q))
+                            .map(e => ({ type: 'event' as const, ts: e.created_at, e }))
+                          const msgItems = messages
+                            .filter(m => !q || m.body.toLowerCase().includes(q))
+                            .map(m => ({ type: 'msg' as const, ts: m.created_at, m }))
+                          const combined = [...evItems, ...msgItems].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0)
+
+                          if (combined.length === 0) {
                             return (
                               <div className="text-sm text-gray-400 py-8 text-center">
                                 {search ? 'Ничего не найдено' : 'Пока нет сообщений'}
                               </div>
                             )
                           }
-                          return filtered.map(m => {
+                          return combined.map(item => {
+                            // Системное событие — центрированная серая строка
+                            if (item.type === 'event') {
+                              const e = item.e
+                              const label = EVENT_LABEL[e.kind] ?? e.kind
+                              const body = renderEventBody(e)
+                              return (
+                                <div key={`ev-${e.id}`} className="flex items-center gap-2 my-1">
+                                  <div className="flex-1 h-px bg-gray-200" />
+                                  <div className="text-[11px] text-gray-500 whitespace-nowrap max-w-[80%] text-center">
+                                    <span className="font-medium text-gray-700">{label}</span>
+                                    {body && <span className="text-gray-500"> — {body}</span>}
+                                    {e.actor_name && <span className="text-gray-400"> · {e.actor_name}</span>}
+                                    <span className="text-gray-400 ml-1">{new Date(e.created_at).toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</span>
+                                  </div>
+                                  <div className="flex-1 h-px bg-gray-200" />
+                                </div>
+                              )
+                            }
+                            const m = item.m
                             // Примечание — внутреннее, центрированное, мягкое жёлтое
                             if (m.channel === 'internal') {
                               return (
-                                <div key={m.id} className="flex justify-center">
+                                <div key={`msg-${m.id}`} className="flex justify-center">
                                   <div className="max-w-[85%] rounded-md px-3 py-2 text-sm bg-amber-100 text-gray-900">
                                     <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider text-gray-600">
                                       <span>📝 Примечание · только для команды</span>
@@ -2393,7 +2421,7 @@ function DealModal({
                             }
                             // Обычное сообщение — входящее (серое) / исходящее (синее)
                             return (
-                              <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                              <div key={`msg-${m.id}`} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
                                   m.direction === 'out'
                                     ? 'bg-blue-600 text-white'
