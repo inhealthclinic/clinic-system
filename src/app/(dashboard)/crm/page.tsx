@@ -220,17 +220,23 @@ export default function CRMKanbanPage() {
     () => stages.filter(s => s.pipeline_id === activePipelineId && s.is_active).sort((a,b) => a.sort_order - b.sort_order),
     [stages, activePipelineId]
   )
-  // Этапы, показываемые в канбане. По умолчанию прячем won/closed
-  // — их можно раскрыть кнопкой «Показать закрытые» в тулбаре.
+  // Этапы, показываемые в канбане. По умолчанию прячем только именно
+  // «Успешно реализовано» и «Закрыто» — остальные, включая «Записан»
+  // (даже если в БД у него stage_role='won'), остаются видимы.
+  const isHiddenTerminal = (s: Stage) => {
+    const n = (s.name ?? '').trim().toLowerCase()
+    return n === 'успешно реализовано' || n === 'закрыто'
+  }
+  const isListCrmAdmin = profile?.role?.slug === 'admin'
   const hiddenTerminalCount = useMemo(
-    () => allActiveStages.filter(s => s.stage_role === 'won' || s.stage_role === 'closed').length,
+    () => allActiveStages.filter(isHiddenTerminal).length,
     [allActiveStages]
   )
   const activeStages = useMemo(
-    () => showTerminal
+    () => (showTerminal && isListCrmAdmin)
       ? allActiveStages
-      : allActiveStages.filter(s => s.stage_role !== 'won' && s.stage_role !== 'closed'),
-    [allActiveStages, showTerminal]
+      : allActiveStages.filter(s => !isHiddenTerminal(s)),
+    [allActiveStages, showTerminal, isListCrmAdmin]
   )
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
   const conversion = conversions.find(c => c.pipeline_id === activePipelineId)
@@ -367,7 +373,7 @@ export default function CRMKanbanPage() {
           </button>
         ))}
         <div className="flex-1" />
-        {hiddenTerminalCount > 0 && (
+        {isListCrmAdmin && hiddenTerminalCount > 0 && (
           <button
             type="button"
             onClick={() => setShowTerminal(v => !v)}
