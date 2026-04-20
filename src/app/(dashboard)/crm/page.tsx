@@ -1268,6 +1268,7 @@ function DealModal({
   const [totalUnread, setTotalUnread] = useState(0)
   const [unreadItems, setUnreadItems] = useState<UnreadItem[]>([])
   const [showUnreadPopup, setShowUnreadPopup] = useState(false)
+  const [unreadSearch, setUnreadSearch] = useState('')
   const dealClinicId = deal.clinic_id
   useEffect(() => {
     if (!dealClinicId) return
@@ -1901,15 +1902,35 @@ function DealModal({
         {/* Боковая панель непрочитанных — выезжает слева */}
         {showUnreadPopup && (
           <div className="absolute left-0 top-0 bottom-0 w-72 bg-white border-r border-gray-200 shadow-xl z-40 flex flex-col">
+            {/* Шапка */}
             <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between shrink-0">
-              <span className="text-sm font-semibold text-gray-800">Непрочитанные</span>
+              <span className="text-sm font-semibold text-gray-800">Непрочитанные {totalUnread > 0 && <span className="ml-1 text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">{totalUnread}</span>}</span>
               <button onClick={() => setShowUnreadPopup(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
             </div>
+            {/* Поиск */}
+            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
+              <div className="relative">
+                <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2"/>
+                  <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                <input
+                  type="text"
+                  value={unreadSearch}
+                  onChange={e => setUnreadSearch(e.target.value)}
+                  placeholder="Поиск по сделкам…"
+                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-200 rounded-md outline-none focus:border-blue-400"
+                />
+              </div>
+            </div>
+            {/* Список */}
             {unreadItems.length === 0 ? (
               <div className="flex-1 flex items-center justify-center text-sm text-gray-400">Всё прочитано</div>
             ) : (
               <ul className="flex-1 overflow-y-auto divide-y divide-gray-100">
-                {unreadItems.map(m => (
+                {unreadItems
+                  .filter(m => !unreadSearch || (m.deal_name ?? '').toLowerCase().includes(unreadSearch.toLowerCase()) || m.body.toLowerCase().includes(unreadSearch.toLowerCase()) || (m.external_sender ?? '').toLowerCase().includes(unreadSearch.toLowerCase()))
+                  .map(m => (
                   <li key={m.id}
                     className="px-4 py-3 hover:bg-blue-50 cursor-pointer transition-colors"
                     onClick={() => { setShowUnreadPopup(false); onSaved(false) }}>
