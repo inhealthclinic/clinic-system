@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -127,6 +128,8 @@ export default function CRMKanbanPage() {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id
+  const router = useRouter()
+  const searchParams = useSearchParams()
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
@@ -217,8 +220,29 @@ export default function CRMKanbanPage() {
   // pending loss prompt
   const [lossPending, setLossPending] = useState<{ deal: DealRow; stageId: string } | null>(null)
 
-  // selected deal
+  // selected deal — persisted in ?deal=<id> query param
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null)
+  const pendingDealId = useRef<string | null>(searchParams.get('deal'))
+
+  const openDeal = useCallback((d: DealRow) => {
+    setSelectedDeal(d)
+    if (d.id) router.replace(`?deal=${d.id}`, { scroll: false })
+  }, [router])
+
+  const closeDeal = useCallback(() => {
+    setSelectedDeal(null)
+    router.replace('?', { scroll: false })
+  }, [router])
+
+  // On initial load, restore selected deal from URL
+  useEffect(() => {
+    if (!pendingDealId.current || deals.length === 0) return
+    const d = deals.find(x => x.id === pendingDealId.current)
+    if (d) {
+      setSelectedDeal(d)
+      pendingDealId.current = null
+    }
+  }, [deals])
 
   const load = useCallback(async () => {
     if (!clinicId) return
@@ -611,7 +635,7 @@ export default function CRMKanbanPage() {
         </div>
 
         <button
-          onClick={() => setSelectedDeal({
+          onClick={() => openDeal({
             id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
             pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
             stage: activeStages[0]?.code ?? null, funnel: activePipeline?.code ?? 'leads',
@@ -765,7 +789,7 @@ export default function CRMKanbanPage() {
                 </div>
                 <div className="p-2 space-y-2 min-h-[40px] max-h-[calc(100vh-240px)] overflow-y-auto">
                   {cards.map(d => (
-                    <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => setSelectedDeal(d)} />
+                    <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
                   ))}
                   {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
                 </div>
@@ -827,7 +851,7 @@ export default function CRMKanbanPage() {
                             return n
                           })
                         } else {
-                          setSelectedDeal(d)
+                          openDeal(d)
                         }
                       }}
                       className={`cursor-pointer ${isChecked ? 'bg-blue-50' : 'hover:bg-blue-50/40'}`}
@@ -935,8 +959,8 @@ export default function CRMKanbanPage() {
           reasons={reasons}
           apptTypes={apptTypes}
           allTags={Array.from(new Set(deals.flatMap(d => d.tags ?? []))).sort((a, b) => a.localeCompare(b, 'ru'))}
-          onClose={() => setSelectedDeal(null)}
-          onSaved={() => { setSelectedDeal(null); load() }}
+          onClose={() => closeDeal()}
+          onSaved={() => { closeDeal(); load() }}
         />
       )}
 
@@ -966,7 +990,7 @@ export default function CRMKanbanPage() {
       {showDupesModal && (
         <DuplicatesModal
           deals={deals}
-          onOpenDeal={(d) => { setShowDupesModal(false); setSelectedDeal(d) }}
+          onOpenDeal={(d) => { setShowDupesModal(false); openDeal(d) }}
           onClose={() => setShowDupesModal(false)}
         />
       )}
@@ -1407,6 +1431,52 @@ function DealModal({
 
     return () => {
       supabase.removeChannel(ch)
+    }
+  }, [deal.id, isNew, supabase])
+
+  // Polling fallback для чата в открытой сделке.
+  // wss://*.supabase.co часто блокируется VPN/прокси, и realtime-подписка
+  // выше не работает. Каждые 5 сек добираем сообщения этой сделки новее
+  // max(created_at) из уже загруженных и мержим в state с дедупом по id.
+  useEffect(() => {
+    if (isNew || !deal.id) return
+    let stopped = false
+    const id = setInterval(async () => {
+      if (stopped) return
+      // Определяем «с какого момента» искать новые. Берём max(created_at)
+      // из текущего state через функциональный setMessages, чтобы не
+      // лопатить deps и не ретриггерить интервал при каждом изменении.
+      let since: string | null = null
+      setMessages(prev => {
+        if (prev.length > 0) {
+          since = prev[prev.length - 1].created_at
+        }
+        return prev
+      })
+      const query = supabase
+        .from('deal_messages')
+        .select('*')
+        .eq('deal_id', deal.id)
+        .order('created_at', { ascending: true })
+        .limit(50)
+      const { data } = since
+        ? await query.gt('created_at', since)
+        : await query
+      if (stopped || !data || data.length === 0) return
+      setMessages(prev => {
+        const known = new Set(prev.map(m => m.id))
+        const toAdd = (data as MessageRow[]).filter(m => !known.has(m.id))
+        if (toAdd.length === 0) return prev
+        // Если появилось новое входящее — помечаем прочитанным
+        if (toAdd.some(m => m.direction === 'in')) {
+          supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+        }
+        return [...prev, ...toAdd]
+      })
+    }, 5000)
+    return () => {
+      stopped = true
+      clearInterval(id)
     }
   }, [deal.id, isNew, supabase])
 
