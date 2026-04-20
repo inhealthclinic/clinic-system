@@ -2318,51 +2318,6 @@ function DealModal({
              * скроллится сам, если разрастётся; tabs-карточка занимает всё
              * оставшееся место по высоте, чтобы композер всегда был у футера. */}
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="p-5 pb-0 space-y-4 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '40%' }}>
-              {/* Linked appointments */}
-              {!isNew && appointments.length > 0 && (
-                <div className="bg-white border border-gray-200 rounded-lg">
-                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
-                    Приёмы ({appointments.length})
-                  </div>
-                  <div className="divide-y divide-gray-100">
-                    {appointments.map(a => (
-                      <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 text-sm">
-                        <div className="text-gray-500 w-32 shrink-0">
-                          {a.date} · {a.time_start?.slice(0,5)}
-                        </div>
-                        <div className="flex-1 text-gray-700">
-                          {a.doctor ? `${a.doctor.first_name} ${a.doctor.last_name ?? ''}` : '—'}
-                          {a.service && <span className="text-gray-500"> · {a.service.name}</span>}
-                        </div>
-                        <span className="text-xs text-gray-400 shrink-0">{a.status}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Lab orders */}
-              {!isNew && labOrders.length > 0 && (
-                <div className="bg-white border border-gray-200 rounded-lg">
-                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
-                    Лабораторные заказы ({labOrders.length})
-                  </div>
-                  <div className="divide-y divide-gray-100">
-                    {labOrders.map(o => (
-                      <div key={o.id} className="px-4 py-2 flex items-center gap-3 text-sm">
-                        <Link href={`/lab/${o.id}`} className="text-blue-600 hover:underline">
-                          #{o.id.slice(0, 8)}
-                        </Link>
-                        <span className="text-gray-500">{new Date(o.created_at).toLocaleDateString('ru-RU')}</span>
-                        <span className="ml-auto text-xs text-gray-400">{o.status}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
             {/* Tabs + чат: растягиваемся на оставшуюся высоту, композер прилипает к низу */}
             <div className="flex-1 min-h-0 p-5 pt-4 flex flex-col overflow-hidden">
               {/* Tabs: chat / timeline / tasks */}
