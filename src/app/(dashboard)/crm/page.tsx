@@ -11,6 +11,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { useUnreadDealMessages } from '@/lib/hooks/useUnreadDealMessages'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
 import {
@@ -1256,6 +1257,10 @@ function DealModal({
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
+  // Счётчик непрочитанных по ДРУГИМ сделкам (не текущей)
+  const { count: totalUnread } = useUnreadDealMessages()
+  const otherUnread = Math.max(0, totalUnread - (isNew ? 0 : 0)) // покажем total, текущая уже открыта
+
   const [form, setForm] = useState<DealRow>({
     ...deal,
     // Старые сделки могут прийти без custom_fields — нормализуем.
@@ -2874,11 +2879,24 @@ function DealModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-start">
+        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center gap-4">
           <button onClick={save} disabled={saving}
             className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
             {saving ? 'Сохраняем…' : 'Сохранить'}
           </button>
+          {totalUnread > 0 && (
+            <div className="flex items-center gap-1.5 text-sm text-gray-500">
+              <span className="relative flex items-center justify-center">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-gray-400">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </span>
+              </span>
+              <span className="text-xs text-gray-400">непрочитанных по другим сделкам</span>
+            </div>
+          )}
         </div>
       </div>
 
