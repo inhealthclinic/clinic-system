@@ -1490,8 +1490,23 @@ function DealModal({
 
                 return (
                   <>
+                    {/* Теги — выносим в самый верх карточки без подписи «Теги»,
+                        как в amoCRM: пустое состояние — серая pill-плашка
+                        «#ТЕГИРОВАТЬ», с тегами — серые чипы в ряд. */}
+                    {fieldConfigs.find(c => c.field_key === 'tags')?.is_visible !== false && (
+                      <div className="-mx-1">
+                        <TagEditor
+                          tags={form.tags ?? []}
+                          allTags={allTags}
+                          onChange={(tags) => setForm({ ...form, tags })}
+                        />
+                      </div>
+                    )}
+
                     {fieldConfigs.map(cfg => {
                       if (!cfg.is_visible) return null
+                      // tags отрендерены выше, отдельно от общего списка.
+                      if (cfg.field_key === 'tags') return null
                       if (cfg.is_builtin) {
                         const fn = builtinRenderers[cfg.field_key]
                         if (!fn) return null
@@ -2218,52 +2233,69 @@ function TagEditor({
     && !allTags.some(t => t.toLowerCase() === q)
     && !tags.some(t => t.toLowerCase() === q)
 
+  const empty = tags.length === 0 && !open
   return (
     <div ref={rootRef} className="relative">
-      <div
-        onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0) }}
-        className="flex flex-wrap gap-1 border border-gray-200 rounded px-1.5 py-1 min-h-[34px] cursor-text hover:border-gray-300 focus-within:border-blue-500"
-      >
-        {tags.map(t => (
-          <span key={t} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded">
-            {t}
-            <button
-              type="button"
-              onClick={e => { e.stopPropagation(); onChange(tags.filter(x => x !== t)) }}
-              className="hover:text-blue-900"
-            >×</button>
-          </span>
-        ))}
-        <input
-          ref={inputRef}
-          type="text"
-          value={draft}
-          onChange={e => { setDraft(e.target.value); setOpen(true) }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' || e.key === ',') {
-              e.preventDefault()
-              if (suggestions.length > 0 && !canCreate) add(suggestions[0])
-              else add(draft)
-            } else if (e.key === 'Backspace' && !draft && tags.length > 0) {
-              onChange(tags.slice(0, -1))
-            }
-          }}
-          placeholder={tags.length === 0 ? '+ тег' : ''}
-          className="flex-1 min-w-[60px] text-xs outline-none bg-transparent"
-        />
-      </div>
+      {empty ? (
+        // Закрытое пустое состояние: серая pill-плашка «#ТЕГИРОВАТЬ» как в amoCRM.
+        <button
+          type="button"
+          onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0) }}
+          className="inline-flex items-center text-[11px] font-medium uppercase tracking-wider text-gray-500 bg-gray-100 hover:bg-gray-200 rounded px-2 py-1 transition"
+        >
+          #ТЕГИРОВАТЬ
+        </button>
+      ) : (
+        <div
+          onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0) }}
+          className="flex flex-wrap gap-1 cursor-text min-h-[28px] items-center"
+        >
+          {tags.map(t => (
+            <span
+              key={t}
+              className="group inline-flex items-center gap-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-[11px] font-medium uppercase tracking-wider px-2 py-1 rounded transition"
+            >
+              {t}
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); onChange(tags.filter(x => x !== t)) }}
+                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-gray-900 transition"
+              >×</button>
+            </span>
+          ))}
+          {open && (
+            <input
+              ref={inputRef}
+              type="text"
+              value={draft}
+              onChange={e => { setDraft(e.target.value); setOpen(true) }}
+              onFocus={() => setOpen(true)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' || e.key === ',') {
+                  e.preventDefault()
+                  if (suggestions.length > 0 && !canCreate) add(suggestions[0])
+                  else add(draft)
+                } else if (e.key === 'Backspace' && !draft && tags.length > 0) {
+                  onChange(tags.slice(0, -1))
+                }
+              }}
+              placeholder="добавить тег…"
+              className="flex-1 min-w-[90px] text-xs outline-none bg-transparent px-1 py-0.5"
+            />
+          )}
+        </div>
+      )}
 
       {open && (suggestions.length > 0 || canCreate) && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-30 max-h-56 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg py-1">
+        <div className="absolute left-0 top-full mt-1 z-30 min-w-[220px] max-h-56 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg py-1">
           {suggestions.slice(0, 50).map(t => (
             <button
               key={t}
               type="button"
               onMouseDown={e => { e.preventDefault(); add(t) }}
-              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2"
+              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50"
             >
-              <span className="inline-block bg-blue-50 text-blue-700 px-2 py-0.5 rounded">{t}</span>
+              <span className="inline-block bg-gray-100 text-gray-700 text-[11px] font-medium uppercase tracking-wider px-2 py-0.5 rounded">{t}</span>
             </button>
           ))}
           {canCreate && (
