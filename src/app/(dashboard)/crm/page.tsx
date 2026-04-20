@@ -687,6 +687,8 @@ function DealModal({
   const [waConnected, setWaConnected] = useState<boolean | null>(null)
   // amoCRM-стиль: меню «…» в шапке карточки (удаление и т.п.).
   const [showHeaderMenu, setShowHeaderMenu] = useState(false)
+  // Свёрнутый/развёрнутый список этапов под селектом «Воронка».
+  const [stagesExpanded, setStagesExpanded] = useState(false)
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -1199,30 +1201,48 @@ function DealModal({
                         {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
 
-                      {/* Этапы текущей воронки — кликабельные чипы.
-                         Подсвечиваем активный цветом stage.color, остальные
-                         серые. Клик = смена этапа (через onStageClick с
-                         валидацией обязательных полей). */}
+                      {/* Этапы текущей воронки — сворачиваемый список.
+                         Свёрнут: видно только активный этап + стрелка.
+                         Развёрнут: весь список. Клик по этапу идёт через
+                         onStageClick с валидацией обязательных полей. */}
                       {pipelineStages.length > 0 && (
                         <div className="mt-2 flex flex-col gap-1">
-                          {pipelineStages.map(s => {
+                          {(() => {
+                            const activeStage = pipelineStages.find(s => s.id === form.stage_id) ?? pipelineStages[0]
+                            const activeColor = stageColor(activeStage)
+                            // Свёрнутый вид — одна большая цветная кнопка со стрелкой.
+                            // По клику разворачивается весь список.
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => setStagesExpanded(v => !v)}
+                                style={{ background: activeColor, borderColor: activeColor }}
+                                className="w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-white rounded px-2.5 py-1.5 border hover:opacity-90 transition"
+                              >
+                                <span>{activeStage.name}</span>
+                                <svg
+                                  width="12"
+                                  height="12"
+                                  viewBox="0 0 12 12"
+                                  className={`transition-transform ${stagesExpanded ? 'rotate-180' : ''}`}
+                                >
+                                  <path d="M3 5l3 3 3-3" stroke="white" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              </button>
+                            )
+                          })()}
+                          {stagesExpanded && pipelineStages.map(s => {
                             const active = s.id === form.stage_id
+                            if (active) return null // активный уже показан в свёрнутой кнопке
                             const color = stageColor(s)
                             return (
                               <button
                                 key={s.id}
                                 type="button"
-                                onClick={() => onStageClick(s.id)}
-                                style={active ? { background: color, borderColor: color } : undefined}
-                                className={
-                                  active
-                                    ? 'text-left text-xs font-semibold uppercase tracking-wider text-white rounded px-2.5 py-1.5 border transition'
-                                    : 'text-left text-xs text-gray-700 rounded px-2.5 py-1.5 border border-gray-200 bg-white hover:bg-gray-50 transition flex items-center gap-2'
-                                }
+                                onClick={() => { onStageClick(s.id); setStagesExpanded(false) }}
+                                className="text-left text-xs text-gray-700 rounded px-2.5 py-1.5 border border-gray-200 bg-white hover:bg-gray-50 transition flex items-center gap-2"
                               >
-                                {!active && (
-                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                                )}
+                                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
                                 <span>{s.name}</span>
                               </button>
                             )
