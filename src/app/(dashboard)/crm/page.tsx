@@ -696,6 +696,9 @@ function DealModal({
   const [templates, setTemplates] = useState<Array<{
     id: string; title: string; body: string; is_favorite: boolean; sort_order: number
   }>>([])
+  // Поповер со списком уже имеющихся записей при повторном клике
+  // «Записать на приём» (amoCRM-style: не плодим дубликаты вслепую).
+  const [showBookingsPopover, setShowBookingsPopover] = useState(false)
   const [journey, setJourney] = useState<{
     appointments_count: number
     visits_count: number
@@ -1767,20 +1770,110 @@ function DealModal({
                             />
                           )}
                           {/* Правая группа: действия по сделке */}
-                          {!isNew && (
+                          {!isNew && (() => {
+                            // Активные записи — будущие (с учётом времени начала) и не отменённые.
+                            const now = new Date()
+                            const todayStr = now.toISOString().slice(0, 10)
+                            const cancelledStatuses = new Set(['cancelled', 'canceled', 'no_show', 'отменён', 'отмена'])
+                            const upcoming = appointments
+                              .filter(a => !cancelledStatuses.has(String(a.status ?? '').toLowerCase()))
+                              .filter(a => (a.date ?? '') >= todayStr)
+                              .sort((a, b) => {
+                                const k = (a.date ?? '').localeCompare(b.date ?? '')
+                                return k !== 0 ? k : (a.time_start ?? '').localeCompare(b.time_start ?? '')
+                              })
+                            const nearest = upcoming[0]
+                            const alreadyBooked = upcoming.length > 0
+                            const nearestLabel = nearest
+                              ? `${nearest.date?.split('-').reverse().slice(0, 2).join('.')} ${String(nearest.time_start ?? '').slice(0, 5)}`
+                              : ''
+                            return (
                             <div className="ml-auto flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setShowBookingModal(true)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                                title="Создать запись в расписании для этой сделки"
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                                  <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" strokeWidth="1.8"/>
-                                  <path d="M16 2v4M8 2v4M3 9h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                                </svg>
-                                Записать на приём
-                              </button>
+                              <div className="relative">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (alreadyBooked) setShowBookingsPopover(v => !v)
+                                    else setShowBookingModal(true)
+                                  }}
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                                    alreadyBooked
+                                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                                  }`}
+                                  title={alreadyBooked
+                                    ? `Уже записан: ${nearestLabel}. Нажмите, чтобы увидеть все записи или добавить ещё одну.`
+                                    : 'Создать запись в расписании для этой сделки'}
+                                >
+                                  {alreadyBooked ? (
+                                    <>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                        <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                                      </svg>
+                                      Записан · {nearestLabel}
+                                      {upcoming.length > 1 && (
+                                        <span className="ml-0.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-emerald-600 text-white text-[9px]">
+                                          {upcoming.length}
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                        <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                                        <path d="M16 2v4M8 2v4M3 9h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                                      </svg>
+                                      Записать на приём
+                                    </>
+                                  )}
+                                </button>
+
+                                {/* Поповер со списком активных записей и кнопкой создания ещё одной */}
+                                {showBookingsPopover && alreadyBooked && (
+                                  <div
+                                    className="absolute right-0 bottom-full mb-1 z-30 w-80 rounded-md border border-gray-200 bg-white shadow-lg"
+                                    onMouseLeave={() => setShowBookingsPopover(false)}
+                                  >
+                                    <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+                                      <div className="text-xs font-semibold text-gray-900">
+                                        Активные записи ({upcoming.length})
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowBookingsPopover(false)}
+                                        className="text-gray-400 hover:text-gray-600 text-sm leading-none"
+                                      >×</button>
+                                    </div>
+                                    <ul className="max-h-56 overflow-y-auto divide-y divide-gray-100">
+                                      {upcoming.map(a => (
+                                        <li key={a.id} className="px-3 py-2 text-xs">
+                                          <div className="font-medium text-gray-900">
+                                            {a.date?.split('-').reverse().join('.')} · {String(a.time_start ?? '').slice(0, 5)}
+                                          </div>
+                                          <div className="text-gray-500 mt-0.5">
+                                            {a.doctor ? `${a.doctor.first_name} ${a.doctor.last_name ?? ''}` : '— врач не указан —'}
+                                            {a.service && <span> · {a.service.name}</span>}
+                                          </div>
+                                          <div className="text-[10px] text-gray-400 mt-0.5 uppercase tracking-wider">
+                                            {a.status}
+                                          </div>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                    <div className="p-2 border-t border-gray-100 bg-slate-50 flex items-center justify-between gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => { setShowBookingsPopover(false); setShowBookingModal(true) }}
+                                        className="text-[11px] px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
+                                      >+ Ещё запись</button>
+                                      <a
+                                        href="/schedule"
+                                        className="text-[11px] text-blue-600 hover:underline"
+                                      >Открыть расписание →</a>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                               <button
                                 type="button"
                                 onClick={sendPrepayRequest}
@@ -1794,7 +1887,8 @@ function DealModal({
                                 {sendingPrepay ? 'Отправляем…' : 'Получить предоплату'}
                               </button>
                             </div>
-                          )}
+                            )
+                          })()}
                         </div>
 
                         {/* Task-specific extra fields — amoCRM-style */}
