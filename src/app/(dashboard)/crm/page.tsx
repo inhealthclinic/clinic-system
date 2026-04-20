@@ -500,7 +500,7 @@ export default function CRMKanbanPage() {
   }
 
   return (
-    <div className="p-4 min-h-screen">
+    <div className="min-h-screen">
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
 import { CommandPalette } from '@/components/CommandPalette'
@@ -10,7 +10,12 @@ import { useCurrentUser } from '@/lib/hooks/useCurrentUser'
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { isLoading, user } = useCurrentUser()
   const router = useRouter()
+  const pathname = usePathname()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  // На /crm сводим внешние отступы к минимуму, чтобы тулбар прижался
+  // к верху экрана (как в амоCRM).
+  const isCrm = pathname.startsWith('/crm')
 
   useEffect(() => {
     if (!isLoading && !user) {
@@ -58,7 +63,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* Main content */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header onMenuClick={() => setSidebarOpen(true)} />
-        <main className="flex-1 overflow-auto p-6">
+        <main className={`flex-1 overflow-auto ${isCrm ? 'p-3' : 'p-6'}`}>
           {children}
         </main>
       </div>
