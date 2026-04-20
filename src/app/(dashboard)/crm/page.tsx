@@ -819,6 +819,22 @@ function DealModal({
     .filter(s => s.pipeline_id === form.pipeline_id)
     .sort((a,b) => a.sort_order - b.sort_order)
 
+  // Fallback-палитра в стиле amoCRM для старых этапов, у которых
+  // в БД остался дефолтный серый #94a3b8 и ещё никто не перекрасил.
+  const STAGE_NAME_COLORS: Record<string, string> = {
+    'В работе':              '#3B82F6',
+    'Касание':               '#A78BFA',
+    'Записан':               '#A3E635',
+    'Успешно реализовано':   '#22C55E',
+    'Отказ':                 '#F87171',
+    'Закрыто':               '#9CA3AF',
+  }
+  function stageColor(s?: { name?: string; color?: string } | null): string {
+    if (!s) return '#94a3b8'
+    if (s.color && s.color !== '#94a3b8') return s.color
+    return STAGE_NAME_COLORS[s.name ?? ''] ?? '#94a3b8'
+  }
+
   const currentStage = stages.find(s => s.id === form.stage_id)
   const isLostStage = currentStage?.stage_role === 'lost'
 
@@ -1088,21 +1104,27 @@ function DealModal({
                 placeholder={form.patient?.full_name || 'Новая сделка'}
                 className="text-lg font-semibold text-gray-900 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none min-w-[260px]"
               />
-              {/* Компактный селектор этапа — как в amoCRM */}
-              <div className="flex items-center gap-1.5">
-                {currentStage && (
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: currentStage.color }} />
-                )}
-                <select
-                  value={form.stage_id ?? ''}
-                  onChange={e => onStageClick(e.target.value)}
-                  className="text-sm border border-gray-200 rounded px-2 py-1 bg-white hover:border-gray-300"
-                >
-                  {pipelineStages.map(s => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              </div>
+              {/* Селектор этапа в стиле amoCRM — крупный цветной чип */}
+              <select
+                value={form.stage_id ?? ''}
+                onChange={e => onStageClick(e.target.value)}
+                style={{
+                  background: stageColor(currentStage),
+                  // own arrow — чтобы хорошо смотрелось на цветном фоне
+                  backgroundImage:
+                    'url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 viewBox=%270 0 12 12%27 fill=%27none%27><path d=%27M3 5l3 3 3-3%27 stroke=%27white%27 stroke-width=%271.8%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/></svg>")',
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 8px center',
+                  paddingRight: '26px',
+                }}
+                className="appearance-none text-xs font-semibold uppercase tracking-wider text-white rounded px-3 py-1.5 cursor-pointer hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-blue-300"
+              >
+                {pipelineStages.map(s => (
+                  <option key={s.id} value={s.id} className="text-gray-900 bg-white normal-case">
+                    {s.name}
+                  </option>
+                ))}
+              </select>
               {!isNew && (
                 <span className={`text-xs px-2 py-0.5 rounded ${
                   form.status === 'won' ? 'bg-green-100 text-green-700' :
@@ -1449,7 +1471,7 @@ function DealModal({
                     <span className="text-gray-500">Этап</span>
                     <span className="flex items-center gap-1.5">
                       {currentStage && (
-                        <span className="w-2 h-2 rounded-full" style={{ background: currentStage.color }} />
+                        <span className="w-2 h-2 rounded-full" style={{ background: stageColor(currentStage) }} />
                       )}
                       <span className="font-medium text-gray-900">{currentStage?.name ?? '—'}</span>
                     </span>
