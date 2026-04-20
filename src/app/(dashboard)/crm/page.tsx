@@ -1895,9 +1895,42 @@ function DealModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
       <div
-        className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden"
+        className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden relative"
         onClick={e => e.stopPropagation()}
       >
+        {/* Боковая панель непрочитанных — выезжает слева */}
+        {showUnreadPopup && (
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white border-r border-gray-200 shadow-xl z-40 flex flex-col">
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between shrink-0">
+              <span className="text-sm font-semibold text-gray-800">Непрочитанные</span>
+              <button onClick={() => setShowUnreadPopup(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            </div>
+            {unreadItems.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center text-sm text-gray-400">Всё прочитано</div>
+            ) : (
+              <ul className="flex-1 overflow-y-auto divide-y divide-gray-100">
+                {unreadItems.map(m => (
+                  <li key={m.id}
+                    className="px-4 py-3 hover:bg-blue-50 cursor-pointer transition-colors"
+                    onClick={() => { setShowUnreadPopup(false); onSaved(false) }}>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-xs font-semibold text-gray-900 truncate">
+                        {m.deal_name ?? `#${m.deal_id.slice(0, 8)}`}
+                      </span>
+                      <span className="text-[10px] text-gray-400 shrink-0">
+                        {new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-500 truncate">
+                      {m.external_sender && <span className="text-gray-400 mr-1">{m.external_sender}:</span>}
+                      {m.body}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
         {/* Header */}
         <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -2933,60 +2966,25 @@ function DealModal({
             </button>
           )}
 
-          {/* Бейдж непрочитанных — клик открывает попап (прижат вправо) */}
-          <div className="relative ml-auto">
-            <button
-              onClick={() => setShowUnreadPopup(v => !v)}
-              className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors"
-            >
-              <span className="relative flex items-center justify-center">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-gray-500">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                {totalUnread > 0 && (
-                  <span className="absolute -top-2 -right-2 min-w-[17px] h-[17px] px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-                    {totalUnread > 99 ? '99+' : totalUnread}
-                  </span>
-                )}
-              </span>
-              <span className="text-sm text-gray-600">
-                {totalUnread > 0 ? `${totalUnread} непрочитанных` : 'Нет новых'}
-              </span>
-            </button>
-
-            {/* Попап со списком непрочитанных */}
-            {showUnreadPopup && (
-              <div className="absolute bottom-full mb-2 right-0 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
-                <div className="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between">
-                  <span className="text-sm font-semibold text-gray-800">Непрочитанные</span>
-                  <button onClick={() => setShowUnreadPopup(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
-                </div>
-                {unreadItems.length === 0 ? (
-                  <div className="px-4 py-6 text-sm text-gray-400 text-center">Всё прочитано</div>
-                ) : (
-                  <ul className="max-h-72 overflow-y-auto divide-y divide-gray-50">
-                    {unreadItems.map(m => (
-                      <li key={m.id} className="px-4 py-2.5 hover:bg-blue-50 cursor-pointer transition-colors"
-                        onClick={() => { setShowUnreadPopup(false); onSaved(false) /* просто закрываем попап */ }}>
-                        <div className="flex items-center justify-between gap-2 mb-0.5">
-                          <span className="text-xs font-medium text-gray-800 truncate">
-                            {m.deal_name ?? m.deal_id.slice(0, 8)}
-                          </span>
-                          <span className="text-[10px] text-gray-400 shrink-0">
-                            {new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        </div>
-                        <div className="text-xs text-gray-500 truncate">
-                          {m.external_sender && <span className="text-gray-400">{m.external_sender}: </span>}
-                          {m.body}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </div>
+          {/* Бейдж непрочитанных — прижат вправо, открывает боковую панель */}
+          <button
+            onClick={() => setShowUnreadPopup(v => !v)}
+            className={`ml-auto flex items-center gap-2 px-3 py-2 rounded-md transition-colors ${showUnreadPopup ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-100 text-gray-600'}`}
+          >
+            <span className="relative flex items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              {totalUnread > 0 && (
+                <span className="absolute -top-2 -right-2 min-w-[17px] h-[17px] px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </span>
+              )}
+            </span>
+            <span className="text-sm">
+              {totalUnread > 0 ? `${totalUnread} непрочитанных` : 'Нет новых'}
+            </span>
+          </button>
         </div>
       </div>
 
