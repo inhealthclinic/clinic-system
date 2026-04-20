@@ -407,6 +407,7 @@ export default function CRMKanbanPage() {
           doctors={doctors}
           reasons={reasons}
           apptTypes={apptTypes}
+          allTags={Array.from(new Set(deals.flatMap(d => d.tags ?? []))).sort((a, b) => a.localeCompare(b, 'ru'))}
           onClose={() => setSelectedDeal(null)}
           onSaved={() => { setSelectedDeal(null); load() }}
         />
@@ -637,6 +638,7 @@ const EVENT_COLOR: Record<string, string> = {
 
 function DealModal({
   deal, pipelines, stages, sources, users, doctors, reasons, apptTypes,
+  allTags,
   onClose, onSaved,
 }: {
   deal: DealRow
@@ -647,6 +649,7 @@ function DealModal({
   doctors: DoctorLite[]
   reasons: LossReason[]
   apptTypes: ApptType[]
+  allTags: string[]
   onClose: () => void
   onSaved: () => void
 }) {
@@ -1324,6 +1327,7 @@ function DealModal({
                     <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'tags')!) || 'Теги'} required={reqFor('tags')}>
                       <TagEditor
                         tags={form.tags ?? []}
+                        allTags={allTags}
                         onChange={(tags) => setForm({ ...form, tags })}
                       />
                     </Field>
@@ -2170,31 +2174,109 @@ function Field({ label, required, children }: { label: string; required?: boolea
   )
 }
 
-function TagEditor({ tags, onChange }: { tags: string[]; onChange: (next: string[]) => void }) {
+function TagEditor({
+  tags, allTags, onChange,
+}: {
+  tags: string[]
+  allTags: string[]
+  onChange: (next: string[]) => void
+}) {
   const [draft, setDraft] = useState('')
-  function add() {
-    const v = draft.trim()
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Закрытие по клику вне компонента (как в amoCRM).
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent) {
+      if (!rootRef.current) return
+      if (!rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onEsc(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  function add(raw: string) {
+    const v = raw.trim()
     if (!v) return
     if (tags.includes(v)) { setDraft(''); return }
     onChange([...tags, v])
     setDraft('')
   }
+
+  const q = draft.trim().toLowerCase()
+  const suggestions = allTags
+    .filter(t => !tags.includes(t))
+    .filter(t => !q || t.toLowerCase().includes(q))
+  const canCreate = q.length > 0
+    && !allTags.some(t => t.toLowerCase() === q)
+    && !tags.some(t => t.toLowerCase() === q)
+
   return (
-    <div className="flex flex-wrap gap-1 border border-gray-200 rounded px-1.5 py-1 min-h-[34px]">
-      {tags.map(t => (
-        <span key={t} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded">
-          {t}
-          <button onClick={() => onChange(tags.filter(x => x !== t))} className="hover:text-blue-900">×</button>
-        </span>
-      ))}
-      <input
-        type="text" value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add() } }}
-        onBlur={add}
-        placeholder={tags.length === 0 ? 'добавить…' : ''}
-        className="flex-1 min-w-[60px] text-xs outline-none bg-transparent"
-      />
+    <div ref={rootRef} className="relative">
+      <div
+        onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0) }}
+        className="flex flex-wrap gap-1 border border-gray-200 rounded px-1.5 py-1 min-h-[34px] cursor-text hover:border-gray-300 focus-within:border-blue-500"
+      >
+        {tags.map(t => (
+          <span key={t} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded">
+            {t}
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onChange(tags.filter(x => x !== t)) }}
+              className="hover:text-blue-900"
+            >×</button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          onChange={e => { setDraft(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' || e.key === ',') {
+              e.preventDefault()
+              if (suggestions.length > 0 && !canCreate) add(suggestions[0])
+              else add(draft)
+            } else if (e.key === 'Backspace' && !draft && tags.length > 0) {
+              onChange(tags.slice(0, -1))
+            }
+          }}
+          placeholder={tags.length === 0 ? '+ тег' : ''}
+          className="flex-1 min-w-[60px] text-xs outline-none bg-transparent"
+        />
+      </div>
+
+      {open && (suggestions.length > 0 || canCreate) && (
+        <div className="absolute left-0 right-0 top-full mt-1 z-30 max-h-56 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg py-1">
+          {suggestions.slice(0, 50).map(t => (
+            <button
+              key={t}
+              type="button"
+              onMouseDown={e => { e.preventDefault(); add(t) }}
+              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2"
+            >
+              <span className="inline-block bg-blue-50 text-blue-700 px-2 py-0.5 rounded">{t}</span>
+            </button>
+          ))}
+          {canCreate && (
+            <button
+              type="button"
+              onMouseDown={e => { e.preventDefault(); add(draft) }}
+              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 border-t border-gray-100 text-gray-600"
+            >
+              + создать тег <span className="font-medium text-gray-900">«{draft.trim()}»</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
