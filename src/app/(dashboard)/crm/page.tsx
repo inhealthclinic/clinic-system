@@ -142,6 +142,19 @@ export default function CRMKanbanPage() {
 
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
+  // Терминальные этапы (успешно реализовано / закрыто) по умолчанию скрыты —
+  // менеджеры работают в основном с активными сделками. Выбор запоминается.
+  const [showTerminal, setShowTerminal] = useState<boolean>(false)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const v = window.localStorage.getItem('crm.showTerminalStages')
+    if (v === '1') setShowTerminal(true)
+  }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('crm.showTerminalStages', showTerminal ? '1' : '0')
+  }, [showTerminal])
+
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
   const [overStage, setOverStage] = useState<string | null>(null)
@@ -201,9 +214,23 @@ export default function CRMKanbanPage() {
 
   useEffect(() => { load() }, [load])
 
-  const activeStages = useMemo(
+  // Все активные этапы воронки (включая терминальные won/closed).
+  // Нужны для подсчёта counts и как источник для dealsByStage.
+  const allActiveStages = useMemo(
     () => stages.filter(s => s.pipeline_id === activePipelineId && s.is_active).sort((a,b) => a.sort_order - b.sort_order),
     [stages, activePipelineId]
+  )
+  // Этапы, показываемые в канбане. По умолчанию прячем won/closed
+  // — их можно раскрыть кнопкой «Показать закрытые» в тулбаре.
+  const hiddenTerminalCount = useMemo(
+    () => allActiveStages.filter(s => s.stage_role === 'won' || s.stage_role === 'closed').length,
+    [allActiveStages]
+  )
+  const activeStages = useMemo(
+    () => showTerminal
+      ? allActiveStages
+      : allActiveStages.filter(s => s.stage_role !== 'won' && s.stage_role !== 'closed'),
+    [allActiveStages, showTerminal]
   )
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
   const conversion = conversions.find(c => c.pipeline_id === activePipelineId)
@@ -340,6 +367,29 @@ export default function CRMKanbanPage() {
           </button>
         ))}
         <div className="flex-1" />
+        {hiddenTerminalCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowTerminal(v => !v)}
+            className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors ${
+              showTerminal
+                ? 'bg-gray-900 text-white border-gray-900 hover:bg-gray-800'
+                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+            }`}
+            title={showTerminal
+              ? 'Скрыть этапы «Успешно реализовано» и «Закрыто»'
+              : 'Показать этапы «Успешно реализовано» и «Закрыто»'}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+              {showTerminal ? (
+                <path d="M3 12s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7zM9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+              ) : (
+                <path d="M3 3l18 18M10.6 10.6A3 3 0 0 0 13.4 13.4M9.9 5.1a9 9 0 0 1 11 6.9 10 10 0 0 1-2.5 3.6M6.6 6.6A10.5 10.5 0 0 0 3 12s3.5 7 9 7a8.7 8.7 0 0 0 4.4-1.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+              )}
+            </svg>
+            {showTerminal ? 'Скрыть закрытые' : `Показать закрытые (${hiddenTerminalCount})`}
+          </button>
+        )}
         {conversion && (
           <div className="flex gap-3 text-xs text-gray-600">
             <KPI label="Всего" value={conversion.total} />
