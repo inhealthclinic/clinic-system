@@ -94,6 +94,29 @@ export default function PipelinesSettingsPage() {
   const [loading, setLoading] = useState(true)
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
+  // Локальные черновики полей ввода — чтобы на каждую клавишу не дёргать БД
+  // и чтобы корректно работало сохранение на blur (иначе guard
+  // `e.target.value !== s.name` всегда ложный — обновление не уходит).
+  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})
+
+  // Статус автосохранения — видимая индикация, что настройки уходят в БД.
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  // Supabase возвращает PostgrestBuilder — PromiseLike, не Promise (нет .catch/.finally).
+  // Поэтому принимаем PromiseLike и await приводит к результату корректно.
+  async function runSave(op: () => PromiseLike<{ error: { message: string } | null }>): Promise<boolean> {
+    setSaveState('saving')
+    const { error } = await op()
+    if (error) {
+      setSaveState('error')
+      alert(error.message)
+      setTimeout(() => setSaveState(s => s === 'error' ? 'idle' : s), 2500)
+      return false
+    }
+    setSaveState('saved')
+    setTimeout(() => setSaveState(s => s === 'saved' ? 'idle' : s), 1200)
+    return true
+  }
+
   const load = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
@@ -143,15 +166,11 @@ export default function PipelinesSettingsPage() {
   async function renamePipeline(p: Pipeline) {
     const name = prompt('Новое название', p.name)?.trim()
     if (!name || name === p.name) return
-    const { error } = await supabase.from('pipelines').update({ name }).eq('id', p.id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('pipelines').update({ name }).eq('id', p.id))) load()
   }
 
   async function togglePipelineActive(p: Pipeline) {
-    const { error } = await supabase.from('pipelines').update({ is_active: !p.is_active }).eq('id', p.id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('pipelines').update({ is_active: !p.is_active }).eq('id', p.id))) load()
   }
 
   async function addStage() {
@@ -169,16 +188,12 @@ export default function PipelinesSettingsPage() {
   }
 
   async function updateStage(id: string, patch: Partial<Stage>) {
-    const { error } = await supabase.from('pipeline_stages').update(patch).eq('id', id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('pipeline_stages').update(patch).eq('id', id))) load()
   }
 
   async function deleteStage(s: Stage) {
     if (!confirm(`Удалить этап «${s.name}»?`)) return
-    const { error } = await supabase.from('pipeline_stages').delete().eq('id', s.id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('pipeline_stages').delete().eq('id', s.id))) load()
   }
 
   async function moveStage(s: Stage, dir: -1 | 1) {
@@ -207,15 +222,11 @@ export default function PipelinesSettingsPage() {
     load()
   }
   async function toggleReason(r: LossReason) {
-    const { error } = await supabase.from('deal_loss_reasons').update({ is_active: !r.is_active }).eq('id', r.id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('deal_loss_reasons').update({ is_active: !r.is_active }).eq('id', r.id))) load()
   }
   async function deleteReason(r: LossReason) {
     if (!confirm(`Удалить причину «${r.name}»?`)) return
-    const { error } = await supabase.from('deal_loss_reasons').delete().eq('id', r.id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('deal_loss_reasons').delete().eq('id', r.id))) load()
   }
 
   // Sources
@@ -230,15 +241,11 @@ export default function PipelinesSettingsPage() {
     load()
   }
   async function toggleSource(s: LeadSource) {
-    const { error } = await supabase.from('lead_sources').update({ is_active: !s.is_active }).eq('id', s.id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('lead_sources').update({ is_active: !s.is_active }).eq('id', s.id))) load()
   }
   async function deleteSource(s: LeadSource) {
     if (!confirm(`Удалить «${s.name}»?`)) return
-    const { error } = await supabase.from('lead_sources').delete().eq('id', s.id)
-    if (error) { alert(error.message); return }
-    load()
+    if (await runSave(() => supabase.from('lead_sources').delete().eq('id', s.id))) load()
   }
 
   // ── render ─────────────────────────────────────────────────────────────────
@@ -247,14 +254,63 @@ export default function PipelinesSettingsPage() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Воронки CRM</h1>
           <p className="text-sm text-gray-500">
-            Все настройки хранятся в базе и применяются ко всем менеджерам клиники.
+            Изменения сохраняются автоматически и сразу применяются ко всем менеджерам клиники.
           </p>
         </div>
-        <Link href="/crm" className="text-sm text-blue-600 hover:underline">← К канбану</Link>
+        <div className="flex items-center gap-3">
+          {/* Индикатор автосохранения — заменяет привычную кнопку «Сохранить» */}
+          <span
+            className={[
+              'inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors',
+              saveState === 'saving' ? 'bg-blue-50 border-blue-100 text-blue-700'
+                : saveState === 'saved' ? 'bg-green-50 border-green-100 text-green-700'
+                : saveState === 'error' ? 'bg-red-50 border-red-100 text-red-700'
+                : 'bg-gray-50 border-gray-100 text-gray-500',
+            ].join(' ')}
+            aria-live="polite"
+          >
+            {saveState === 'saving' && (
+              <>
+                <svg width="10" height="10" viewBox="0 0 24 24" className="animate-spin" fill="none">
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+                  <path d="M21 12a9 9 0 0 1-9 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                </svg>
+                Сохраняем…
+              </>
+            )}
+            {saveState === 'saved' && (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <path d="M4 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Сохранено
+              </>
+            )}
+            {saveState === 'error' && (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 8v5M12 17h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                Ошибка сохранения
+              </>
+            )}
+            {saveState === 'idle' && (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
+                  <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                </svg>
+                Автосохранение
+              </>
+            )}
+          </span>
+          <Link href="/crm" className="text-sm text-blue-600 hover:underline">← К канбану</Link>
+        </div>
       </div>
 
       {/* Pipelines tabs */}
@@ -332,10 +388,27 @@ export default function PipelinesSettingsPage() {
                   <td className="px-3 py-2">
                     <input
                       type="text"
-                      value={s.name}
+                      value={nameDrafts[s.id] ?? s.name}
                       disabled={!s.is_editable}
-                      onChange={e => setStages(prev => prev.map(x => x.id === s.id ? { ...x, name: e.target.value } : x))}
-                      onBlur={e => { if (e.target.value !== s.name) updateStage(s.id, { name: e.target.value }) }}
+                      onChange={e => setNameDrafts(d => ({ ...d, [s.id]: e.target.value }))}
+                      onBlur={e => {
+                        const v = e.target.value.trim()
+                        setNameDrafts(d => {
+                          if (!(s.id in d)) return d
+                          const n = { ...d }; delete n[s.id]; return n
+                        })
+                        if (v && v !== s.name) updateStage(s.id, { name: v })
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                        if (e.key === 'Escape') {
+                          setNameDrafts(d => {
+                            if (!(s.id in d)) return d
+                            const n = { ...d }; delete n[s.id]; return n
+                          })
+                          ;(e.target as HTMLInputElement).blur()
+                        }
+                      }}
                       className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-blue-500 outline-none"
                     />
                     {s.is_system && <div className="text-[10px] text-gray-400 mt-0.5">системный</div>}
