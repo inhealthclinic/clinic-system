@@ -220,12 +220,14 @@ export default function CRMKanbanPage() {
     () => stages.filter(s => s.pipeline_id === activePipelineId && s.is_active).sort((a,b) => a.sort_order - b.sort_order),
     [stages, activePipelineId]
   )
-  // Этапы, показываемые в канбане. По умолчанию прячем только именно
-  // «Успешно реализовано» и «Закрыто» — остальные, включая «Записан»
-  // (даже если в БД у него stage_role='won'), остаются видимы.
+  // Этапы, показываемые в канбане. По умолчанию прячем терминальные
+  // won/closed (например «Успешно реализовано», «Закрыто»), но
+  // оставляем «Записан»/«Записана» и подобные: у них в БД бывает
+  // stage_role='won', но по смыслу это рабочий этап воронки.
   const isHiddenTerminal = (s: Stage) => {
     const n = (s.name ?? '').trim().toLowerCase()
-    return n === 'успешно реализовано' || n === 'закрыто'
+    if (n.includes('запис')) return false // Записан/Записана/… — всегда видимо
+    return s.stage_role === 'won' || s.stage_role === 'closed'
   }
   const isListCrmAdmin = profile?.role?.slug === 'admin'
   const hiddenTerminalCount = useMemo(
