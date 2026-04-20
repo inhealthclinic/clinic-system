@@ -1256,19 +1256,40 @@ function DealModal({
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
-  // Счётчик непрочитанных по ВСЕМ сделкам клиники (прямой запрос, не RPC)
+  // Счётчик + список непрочитанных по ВСЕМ сделкам клиники
+  interface UnreadItem {
+    id: string
+    deal_id: string
+    deal_name: string | null
+    body: string
+    external_sender: string | null
+    created_at: string
+  }
   const [totalUnread, setTotalUnread] = useState(0)
+  const [unreadItems, setUnreadItems] = useState<UnreadItem[]>([])
+  const [showUnreadPopup, setShowUnreadPopup] = useState(false)
   const dealClinicId = deal.clinic_id
   useEffect(() => {
     if (!dealClinicId) return
     const fetchUnread = async () => {
-      const { count } = await supabase
+      const { data } = await supabase
         .from('deal_messages')
-        .select('id', { count: 'exact', head: true })
+        .select('id, deal_id, body, external_sender, created_at, deal:deals(name)')
         .eq('clinic_id', dealClinicId)
         .eq('direction', 'in')
         .is('read_at', null)
-      setTotalUnread(count ?? 0)
+        .order('created_at', { ascending: false })
+        .limit(30)
+      const items = (data ?? []).map((m: Record<string, unknown>) => ({
+        id: m.id as string,
+        deal_id: m.deal_id as string,
+        deal_name: (m.deal as { name?: string | null } | null)?.name ?? null,
+        body: m.body as string,
+        external_sender: m.external_sender as string | null,
+        created_at: m.created_at as string,
+      }))
+      setUnreadItems(items)
+      setTotalUnread(items.length)
     }
     fetchUnread()
     const interval = setInterval(fetchUnread, 8000)
@@ -2904,26 +2925,68 @@ function DealModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center gap-4">
+        <div className="px-6 py-4 bg-white border-t border-gray-200 flex items-center gap-4 relative">
           {isDirty && (
             <button onClick={save} disabled={saving}
-              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
+              className="px-5 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
               {saving ? 'Сохраняем…' : 'Сохранить'}
             </button>
           )}
-          {totalUnread > 0 && (
-            <div className="flex items-center gap-1.5 text-sm text-gray-500">
+
+          {/* Бейдж непрочитанных — клик открывает попап */}
+          <div className="relative">
+            <button
+              onClick={() => setShowUnreadPopup(v => !v)}
+              className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors"
+            >
               <span className="relative flex items-center justify-center">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="text-gray-400">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-gray-500">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
-                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-                  {totalUnread > 99 ? '99+' : totalUnread}
-                </span>
+                {totalUnread > 0 && (
+                  <span className="absolute -top-2 -right-2 min-w-[17px] h-[17px] px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                    {totalUnread > 99 ? '99+' : totalUnread}
+                  </span>
+                )}
               </span>
-              <span className="text-xs text-gray-400">непрочитанных по другим сделкам</span>
-            </div>
-          )}
+              <span className="text-sm text-gray-600">
+                {totalUnread > 0 ? `${totalUnread} непрочитанных` : 'Нет новых'}
+              </span>
+            </button>
+
+            {/* Попап со списком непрочитанных */}
+            {showUnreadPopup && (
+              <div className="absolute bottom-full mb-2 left-0 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-gray-800">Непрочитанные</span>
+                  <button onClick={() => setShowUnreadPopup(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+                </div>
+                {unreadItems.length === 0 ? (
+                  <div className="px-4 py-6 text-sm text-gray-400 text-center">Всё прочитано</div>
+                ) : (
+                  <ul className="max-h-72 overflow-y-auto divide-y divide-gray-50">
+                    {unreadItems.map(m => (
+                      <li key={m.id} className="px-4 py-2.5 hover:bg-blue-50 cursor-pointer transition-colors"
+                        onClick={() => { setShowUnreadPopup(false); onSaved(false) /* просто закрываем попап */ }}>
+                        <div className="flex items-center justify-between gap-2 mb-0.5">
+                          <span className="text-xs font-medium text-gray-800 truncate">
+                            {m.deal_name ?? m.deal_id.slice(0, 8)}
+                          </span>
+                          <span className="text-[10px] text-gray-400 shrink-0">
+                            {new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">
+                          {m.external_sender && <span className="text-gray-400">{m.external_sender}: </span>}
+                          {m.body}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
