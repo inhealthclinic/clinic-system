@@ -1187,70 +1187,95 @@ function DealModal({
                 const reqFor = (k: string) => isFieldRequired(fieldConfigs, k, form.stage_id)
 
                 const builtinRenderers: Record<string, () => React.ReactNode> = {
-                  pipeline: () => (
-                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'pipeline')!) || 'Воронка'} required={reqFor('pipeline')}>
-                      <select
-                        value={form.pipeline_id ?? ''}
-                        onChange={e => {
-                          const pid = e.target.value
-                          const firstStage = stages.find(s => s.pipeline_id === pid)
-                          setForm({ ...form, pipeline_id: pid, stage_id: firstStage?.id ?? null })
-                        }}
-                        className="w-full border border-gray-200 rounded px-2 py-1.5 bg-white hover:border-gray-300"
-                      >
-                        {pipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                      </select>
+                  pipeline: () => {
+                    // Единый кастом-дроп в стиле amoCRM: закрытый — цветной чип
+                    // активного этапа, открытый — сгруппированный список всех
+                    // воронок; каждая воронка = серый заголовок с именем +
+                    // цветные ряды этапов. Клик по этапу ставит pipeline_id
+                    // + stage_id одним движением.
+                    const activeStage = pipelineStages.find(s => s.id === form.stage_id) ?? pipelineStages[0]
+                    const activeColor = stageColor(activeStage)
+                    return (
+                      <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'pipeline')!) || 'Воронка'} required={reqFor('pipeline')}>
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setStagesExpanded(v => !v)}
+                            onBlur={() => setTimeout(() => setStagesExpanded(false), 150)}
+                            style={activeStage ? { background: activeColor, borderColor: activeColor } : undefined}
+                            className={
+                              activeStage
+                                ? 'w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-white rounded px-2.5 py-1.5 border hover:opacity-90 transition'
+                                : 'w-full flex items-center justify-between text-sm text-gray-500 rounded px-2.5 py-1.5 border border-gray-200 bg-white hover:bg-gray-50 transition'
+                            }
+                          >
+                            <span>{activeStage?.name ?? '— выберите этап —'}</span>
+                            <svg
+                              width="12"
+                              height="12"
+                              viewBox="0 0 12 12"
+                              className={`transition-transform ${stagesExpanded ? 'rotate-180' : ''}`}
+                            >
+                              <path
+                                d="M3 5l3 3 3-3"
+                                stroke={activeStage ? 'white' : '#6b7280'}
+                                strokeWidth="1.8"
+                                fill="none"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </button>
 
-                      {/* Этапы текущей воронки — сворачиваемый список.
-                         Свёрнут: видно только активный этап + стрелка.
-                         Развёрнут: весь список. Клик по этапу идёт через
-                         onStageClick с валидацией обязательных полей. */}
-                      {pipelineStages.length > 0 && (
-                        <div className="mt-2 flex flex-col gap-1">
-                          {(() => {
-                            const activeStage = pipelineStages.find(s => s.id === form.stage_id) ?? pipelineStages[0]
-                            const activeColor = stageColor(activeStage)
-                            // Свёрнутый вид — одна большая цветная кнопка со стрелкой.
-                            // По клику разворачивается весь список.
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => setStagesExpanded(v => !v)}
-                                style={{ background: activeColor, borderColor: activeColor }}
-                                className="w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-white rounded px-2.5 py-1.5 border hover:opacity-90 transition"
-                              >
-                                <span>{activeStage.name}</span>
-                                <svg
-                                  width="12"
-                                  height="12"
-                                  viewBox="0 0 12 12"
-                                  className={`transition-transform ${stagesExpanded ? 'rotate-180' : ''}`}
-                                >
-                                  <path d="M3 5l3 3 3-3" stroke="white" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                                </svg>
-                              </button>
-                            )
-                          })()}
-                          {stagesExpanded && pipelineStages.map(s => {
-                            const active = s.id === form.stage_id
-                            if (active) return null // активный уже показан в свёрнутой кнопке
-                            const color = stageColor(s)
-                            return (
-                              <button
-                                key={s.id}
-                                type="button"
-                                onClick={() => { onStageClick(s.id); setStagesExpanded(false) }}
-                                className="text-left text-xs text-gray-700 rounded px-2.5 py-1.5 border border-gray-200 bg-white hover:bg-gray-50 transition flex items-center gap-2"
-                              >
-                                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                                <span>{s.name}</span>
-                              </button>
-                            )
-                          })}
+                          {stagesExpanded && (
+                            <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-md border border-gray-200 bg-white shadow-lg py-1 max-h-[360px] overflow-y-auto">
+                              {pipelines.map(p => {
+                                const pStages = stages
+                                  .filter(s => s.pipeline_id === p.id)
+                                  .sort((a, b) => a.sort_order - b.sort_order)
+                                return (
+                                  <div key={p.id} className="py-1">
+                                    <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-400 font-medium">
+                                      {p.name}
+                                    </div>
+                                    {pStages.map(s => {
+                                      const active = s.id === form.stage_id
+                                      const color = stageColor(s)
+                                      return (
+                                        <button
+                                          key={s.id}
+                                          type="button"
+                                          onMouseDown={e => {
+                                            e.preventDefault()
+                                            // Смена воронки: одним кликом ставим pipeline_id + stage_id.
+                                            if (s.pipeline_id !== form.pipeline_id) {
+                                              setForm({ ...form, pipeline_id: s.pipeline_id, stage_id: s.id })
+                                            } else {
+                                              onStageClick(s.id)
+                                            }
+                                            setStagesExpanded(false)
+                                          }}
+                                          style={{ background: color }}
+                                          className="w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-white px-3 py-2 hover:opacity-90 transition"
+                                        >
+                                          <span>{s.name}</span>
+                                          {active && (
+                                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                              <path d="M2 6l3 3 5-6" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                          )}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </Field>
-                  ),
+                      </Field>
+                    )
+                  },
                   responsible: () => (
                     <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'responsible')!) || 'Ответственный'} required={reqFor('responsible')}>
                       <select
