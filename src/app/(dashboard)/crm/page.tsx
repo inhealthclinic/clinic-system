@@ -11,7 +11,6 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
-import { useUnreadDealMessages } from '@/lib/hooks/useUnreadDealMessages'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
 import {
@@ -1257,9 +1256,24 @@ function DealModal({
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
-  // Счётчик непрочитанных по ДРУГИМ сделкам (не текущей)
-  const { count: totalUnread } = useUnreadDealMessages()
-  const otherUnread = Math.max(0, totalUnread - (isNew ? 0 : 0)) // покажем total, текущая уже открыта
+  // Счётчик непрочитанных по ВСЕМ сделкам клиники (прямой запрос, не RPC)
+  const [totalUnread, setTotalUnread] = useState(0)
+  const dealClinicId = deal.clinic_id
+  useEffect(() => {
+    if (!dealClinicId) return
+    const fetchUnread = async () => {
+      const { count } = await supabase
+        .from('deal_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('clinic_id', dealClinicId)
+        .eq('direction', 'in')
+        .is('read_at', null)
+      setTotalUnread(count ?? 0)
+    }
+    fetchUnread()
+    const interval = setInterval(fetchUnread, 8000)
+    return () => clearInterval(interval)
+  }, [dealClinicId, supabase])
 
   const [form, setForm] = useState<DealRow>({
     ...deal,
