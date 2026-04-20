@@ -904,8 +904,10 @@ function DealModal({
     return () => clearTimeout(t)
   }, [patientSearch, supabase, profile?.clinic_id])
 
+  // Только активные этапы текущей воронки — если менеджер снял галку
+  // «Активен» в /settings/pipelines, этап исчезает из карточки сделки.
   const pipelineStages = stages
-    .filter(s => s.pipeline_id === form.pipeline_id)
+    .filter(s => s.pipeline_id === form.pipeline_id && s.is_active)
     .sort((a,b) => a.sort_order - b.sort_order)
 
   // Fallback-палитра в стиле amoCRM для старых этапов, у которых
@@ -1310,8 +1312,11 @@ function DealModal({
                           {stagesExpanded && (
                             <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-md border border-gray-200 bg-white shadow-lg py-1 max-h-[360px] overflow-y-auto">
                               {pipelines.map(p => {
+                                // Только активные этапы — если менеджер снял галку
+                                // «Активен» в /settings/pipelines, этап исчезает
+                                // из комбинированного выпадающего списка воронки.
                                 const pStages = stages
-                                  .filter(s => s.pipeline_id === p.id)
+                                  .filter(s => s.pipeline_id === p.id && s.is_active)
                                   .sort((a, b) => a.sort_order - b.sort_order)
                                 return (
                                   <div key={p.id} className="py-1">
