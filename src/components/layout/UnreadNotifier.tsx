@@ -40,6 +40,39 @@ export function UnreadNotifier() {
     }
   }, [])
 
+  // Разблокировать AudioContext на первом user gesture.
+  // Chrome autoplay policy оставляет свеже-созданный AudioContext в suspended
+  // state до тех пор, пока пользователь не кликнет/нажмёт клавишу. Если мы
+  // создаём ctx впервые прямо внутри realtime-колбэка (без gesture рядом) —
+  // osc.start() молчит. Создаём и будим ctx на первом клике/нажатии по странице.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const unlock = () => {
+      try {
+        if (!audioCtxRef.current) {
+          const Ctx: typeof AudioContext | undefined =
+            window.AudioContext ??
+            (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+          if (Ctx) audioCtxRef.current = new Ctx()
+        }
+        audioCtxRef.current?.resume().catch(() => {})
+      } catch {
+        // ignore
+      }
+      document.removeEventListener('click', unlock)
+      document.removeEventListener('keydown', unlock)
+      document.removeEventListener('touchstart', unlock)
+    }
+    document.addEventListener('click', unlock, { once: false })
+    document.addEventListener('keydown', unlock, { once: false })
+    document.addEventListener('touchstart', unlock, { once: false })
+    return () => {
+      document.removeEventListener('click', unlock)
+      document.removeEventListener('keydown', unlock)
+      document.removeEventListener('touchstart', unlock)
+    }
+  }, [])
+
   // Короткий beep через WebAudio (синус 800Hz, ~150ms, gain 0.1).
   // Бинарник mp3 не добавляем, чтобы не раздувать репозиторий.
   const playBeep = useCallback(() => {
@@ -104,6 +137,9 @@ export function UnreadNotifier() {
       const preview = msg.body.length > 120 ? msg.body.slice(0, 117) + '…' : msg.body
       const title = `Новое сообщение от ${who}`
 
+      // eslint-disable-next-line no-console
+      console.debug('[UnreadNotifier] incoming', { deal_id: msg.deal_id, who, preview })
+
       pushToast(title, preview)
       playBeep()
 
@@ -131,7 +167,7 @@ export function UnreadNotifier() {
   if (toasts.length === 0) return null
 
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
       {toasts.map((t) => (
         <div
           key={t.id}
