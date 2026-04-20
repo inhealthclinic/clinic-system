@@ -2933,8 +2933,8 @@ function DealModal({
             </button>
           )}
 
-          {/* Бейдж непрочитанных — клик открывает попап */}
-          <div className="relative">
+          {/* Бейдж непрочитанных — клик открывает попап (прижат вправо) */}
+          <div className="relative ml-auto">
             <button
               onClick={() => setShowUnreadPopup(v => !v)}
               className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors"
@@ -2956,7 +2956,7 @@ function DealModal({
 
             {/* Попап со списком непрочитанных */}
             {showUnreadPopup && (
-              <div className="absolute bottom-full mb-2 left-0 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
+              <div className="absolute bottom-full mb-2 right-0 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
                 <div className="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between">
                   <span className="text-sm font-semibold text-gray-800">Непрочитанные</span>
                   <button onClick={() => setShowUnreadPopup(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
