@@ -41,6 +41,8 @@ export interface IncomingDealMessage {
 interface Options {
   /** Вызывается при каждом INSERT direction='in'. */
   onIncoming?: (msg: IncomingDealMessage) => void
+  /** Интервал polling-fallback (мс). По умолчанию 8000. Ставим 0 для отключения. */
+  pollIntervalMs?: number
 }
 
 export function useUnreadDealMessages(opts: Options = {}) {
@@ -122,6 +124,68 @@ export function useUnreadDealMessages(opts: Options = {}) {
       supabase.removeChannel(channel)
     }
   }, [clinicId, supabase, refetch, instanceId])
+
+  // ─────────────────────────────────────────────────────────────
+  // Polling fallback.
+  //
+  // Реалтайм через wss://*.supabase.co/realtime/... часто режется
+  // VPN-расширениями, корпоративными прокси и локальными провайдерами.
+  // Без него тост/звук не срабатывают, а бейджик не обновляется.
+  // Поэтому каждые `pollIntervalMs` мс (по умолчанию 8 сек):
+  //   • refetch() — обновляем счётчик непрочитанных
+  //   • выбираем новые incoming-сообщения через обычный HTTP REST
+  //     и вызываем onIncoming для тех id, что ещё не показывали.
+  // Дедуплицируем по Set<id>, чтобы realtime + polling не задваивали тост.
+  // ─────────────────────────────────────────────────────────────
+  const seenIdsRef = useRef<Set<string>>(new Set())
+  const lastSeenAtRef = useRef<string>(new Date().toISOString())
+
+  useEffect(() => {
+    if (!clinicId) return
+    const interval = opts.pollIntervalMs ?? 8000
+    if (interval <= 0) return
+
+    let stopped = false
+
+    const tick = async () => {
+      if (stopped) return
+      // 1) Обновим бейджик
+      refetch()
+
+      // 2) Если есть подписчик — поищем новые incoming
+      if (!onIncomingRef.current) return
+      const since = lastSeenAtRef.current
+      const { data } = await supabase
+        .from('deal_messages')
+        .select('id, deal_id, clinic_id, direction, channel, body, external_sender, created_at')
+        .eq('clinic_id', clinicId)
+        .eq('direction', 'in')
+        .gt('created_at', since)
+        .order('created_at', { ascending: true })
+        .limit(20)
+
+      if (stopped) return
+
+      if (data && data.length > 0) {
+        for (const row of data) {
+          if (!seenIdsRef.current.has(row.id)) {
+            seenIdsRef.current.add(row.id)
+            onIncomingRef.current?.(row as IncomingDealMessage)
+          }
+        }
+        lastSeenAtRef.current = data[data.length - 1].created_at
+      } else {
+        // Новых нет — просто двигаем окно вперёд, чтобы не накапливалось.
+        lastSeenAtRef.current = new Date().toISOString()
+      }
+    }
+
+    const id = setInterval(tick, interval)
+    return () => {
+      stopped = true
+      clearInterval(id)
+    }
+  }, [clinicId, supabase, refetch, opts.pollIntervalMs])
 
   return { count, refetch }
 }
