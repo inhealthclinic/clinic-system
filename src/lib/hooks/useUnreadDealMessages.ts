@@ -21,7 +21,7 @@
 //     доступ всё равно на RLS, но фильтр экономит трафик.
 // ─────────────────────────────────────────────────────────────
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
@@ -47,6 +47,14 @@ export function useUnreadDealMessages(opts: Options = {}) {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id ?? null
+  // Уникальный суффикс для имени Realtime-канала: хук может быть
+  // смонтирован несколько раз на одной странице (Sidebar ради бейджика +
+  // UnreadNotifier ради тостов). Если два канала имеют одинаковое имя,
+  // supabase-js отдаёт закешированный subscribed-канал — на него .on()
+  // бросает "cannot add postgres_changes callbacks after subscribe()"
+  // и весь клиентский JS крашится. useId даёт стабильный уникальный id
+  // для каждого инстанса хука.
+  const instanceId = useId()
 
   const [count, setCount] = useState(0)
 
@@ -78,7 +86,7 @@ export function useUnreadDealMessages(opts: Options = {}) {
     // Типы postgres_changes в @supabase/supabase-js строгие, но сигнатура
     // .on() — overload, и перегрузка для 'postgres_changes' принимает
     // PostgresChangesFilter. Делаем через any, чтобы не тянуть private-типы.
-    const ch = supabase.channel(`unread-deal-messages:${clinicId}`)
+    const ch = supabase.channel(`unread-deal-messages:${clinicId}:${instanceId}`)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(ch as any).on(
       'postgres_changes',
@@ -113,7 +121,7 @@ export function useUnreadDealMessages(opts: Options = {}) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [clinicId, supabase, refetch])
+  }, [clinicId, supabase, refetch, instanceId])
 
   return { count, refetch }
 }
