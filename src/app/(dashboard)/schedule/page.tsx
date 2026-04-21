@@ -1012,7 +1012,10 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
 
   // Lab integration
   const [labOrderId, setLabOrderId] = useState<string | null>(null)
+  const [labOrderStatus, setLabOrderStatus] = useState<string | null>(null)
+  const [labOrderItemNames, setLabOrderItemNames] = useState<string[]>([])
   const [transferringLab, setTransferringLab] = useState(false)
+  const [addingToLab, setAddingToLab] = useState(false)
   const [labPickerOpen, setLabPickerOpen] = useState(false)
   const [nuanceOpen, setNuanceOpen]       = useState(false)
   const [cardOpen, setCardOpen]           = useState(false)
@@ -1060,17 +1063,22 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       const [{ data: svcs }, { data: pmts }, { data: lab }] = await Promise.all([
         supabase.from('visit_services').select('*').eq('visit_id', v.id).order('created_at'),
         supabase.from('payments').select('*').eq('visit_id', v.id).order('paid_at'),
-        supabase.from('lab_orders').select('id').eq('visit_id', v.id).maybeSingle(),
+        supabase.from('lab_orders').select('id, status, lab_order_items(name)').eq('visit_id', v.id).maybeSingle(),
       ])
       setVisitServices((svcs ?? []) as VisitServiceRow[])
       setVisitPayments((pmts ?? []) as VisitPaymentRow[])
-      setLabOrderId(lab?.id ?? null)
+      const labData = lab as { id: string; status: string; lab_order_items: { name: string }[] } | null
+      setLabOrderId(labData?.id ?? null)
+      setLabOrderStatus(labData?.status ?? null)
+      setLabOrderItemNames(labData?.lab_order_items?.map(i => i.name.toLowerCase()) ?? [])
     } else {
       setVisitId(null)
       setVisitTotals({ total_price: 0, total_paid: 0, payment_status: 'unpaid' })
       setVisitServices([])
       setVisitPayments([])
       setLabOrderId(null)
+      setLabOrderStatus(null)
+      setLabOrderItemNames([])
     }
     setFinLoading(false)
   }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1537,7 +1545,46 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     }
 
     setLabOrderId(order.id)
+    setLabOrderStatus('ordered')
+    setLabOrderItemNames(labRows.map(r => r.name.toLowerCase()))
     setTransferringLab(false)
+  }
+
+  // ── Add new lab services to existing order ─────────────────
+  const addToLabOrder = async () => {
+    if (!labOrderId || addingToLab) return
+    const labRows = visitServices.filter(s => s.is_lab)
+    // Find services not yet in the lab order (by name, case-insensitive)
+    const newRows = labRows.filter(r => !labOrderItemNames.includes(r.name.toLowerCase()))
+    if (newRows.length === 0) return
+    setAddingToLab(true)
+
+    const names = Array.from(new Set(newRows.map(r => r.name.toLowerCase())))
+    const { data: tpl } = await supabase
+      .from('lab_test_templates')
+      .select('id, name')
+      .eq('clinic_id', clinicId)
+      .eq('is_active', true)
+    const tplByName = new Map<string, string>()
+    for (const t of (tpl ?? []) as { id: string; name: string }[]) {
+      if (names.includes(t.name.toLowerCase())) tplByName.set(t.name.toLowerCase(), t.id)
+    }
+
+    const items: Array<{ order_id: string; template_id: string | null; name: string; price: number; status: string }> = []
+    for (const r of newRows) {
+      const tid = tplByName.get(r.name.toLowerCase()) ?? null
+      const qty = Math.max(1, r.quantity)
+      for (let i = 0; i < qty; i++) {
+        items.push({ order_id: labOrderId, template_id: tid, name: r.name, price: Number(r.price_at_booking), status: 'pending' })
+      }
+    }
+    const { error } = await supabase.from('lab_order_items').insert(items)
+    if (error) {
+      alert('Не удалось добавить анализы: ' + error.message)
+    } else {
+      setLabOrderItemNames(prev => [...prev, ...newRows.map(r => r.name.toLowerCase())])
+    }
+    setAddingToLab(false)
   }
 
   return (
@@ -1891,15 +1938,31 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
               )}
             </>
           )}
-          {hasLab && labOrderId && (
-            <button
-              onClick={() => router.push(`/lab/${labOrderId}`)}
-              className="w-full flex items-center justify-center gap-2 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg py-2 text-sm font-medium transition-colors"
-            >
-              <span className="text-base leading-none">🧪</span>
-              Открыть заказ в лаборатории
-            </button>
-          )}
+          {hasLab && labOrderId && (() => {
+            const newLabSvcs = visitServices.filter(s => s.is_lab && !labOrderItemNames.includes(s.name.toLowerCase()))
+            const canAddMore = !['verified','delivered'].includes(labOrderStatus ?? '')
+            return (
+              <>
+                {newLabSvcs.length > 0 && canAddMore && (
+                  <button
+                    onClick={addToLabOrder}
+                    disabled={addingToLab}
+                    className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+                  >
+                    <span className="text-base leading-none">🧪</span>
+                    {addingToLab ? 'Добавление...' : `Добавить ${newLabSvcs.length} анализ${newLabSvcs.length > 1 ? 'а' : ''} в заказ`}
+                  </button>
+                )}
+                <button
+                  onClick={() => router.push(`/lab/${labOrderId}`)}
+                  className="w-full flex items-center justify-center gap-2 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg py-2 text-sm font-medium transition-colors"
+                >
+                  <span className="text-base leading-none">🧪</span>
+                  Открыть заказ в лаборатории
+                </button>
+              </>
+            )
+          })()}
           {visitType !== 'lab' && (
             <button
               onClick={handleOpenVisit}
