@@ -1538,10 +1538,16 @@ export default function LabPage() {
           ))}
         </div>
         <div className="flex-1" />
-        <Link href="/lab/qc"
+        <Link href="/inventory"
           className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
-          QC / Levey-Jennings
+          Реагенты и расходники
         </Link>
+        {(profile?.role?.slug === 'owner' || profile?.role?.slug === 'admin') && (
+          <Link href="/lab/qc"
+            className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
+            QC / Levey-Jennings
+          </Link>
+        )}
       </div>
 
       {/* Filters row */}
