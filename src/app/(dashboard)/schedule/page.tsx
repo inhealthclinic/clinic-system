@@ -3249,6 +3249,8 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState('')
   const [isVip, setIsVip] = useState(false)
+  const [isRegular, setIsRegular] = useState(false)
+  const [isRf, setIsRf] = useState(false)
   const [tagsStr, setTagsStr] = useState('')
   const [notes, setNotes] = useState('')
   const [preg, setPreg] = useState<'yes' | 'no' | 'unknown' | ''>('')
@@ -3283,7 +3285,11 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
           setEmail(d.email ?? '')
           setStatus(d.status ?? '')
           setIsVip(!!d.is_vip)
-          setTagsStr((d.tags ?? []).join(', '))
+          const tagList = d.tags ?? []
+          setIsRegular(tagList.includes('regular'))
+          setIsRf(tagList.includes('rf'))
+          // Остальные теги (кроме regular/rf) — редактируются через полную карточку
+          setTagsStr(tagList.filter(t => t !== 'regular' && t !== 'rf').join(', '))
           setNotes(d.notes ?? '')
           setPreg((d.pregnancy_status as 'yes' | 'no' | 'unknown' | null) ?? '')
           setPregWeeks(d.pregnancy_weeks != null ? String(d.pregnancy_weeks) : '')
@@ -3307,7 +3313,13 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
     if (!fullName.trim()) { alert('ФИО обязательно'); return }
     setSaving(true)
     const phones = phonesStr.split(',').map(s => s.trim()).filter(Boolean)
-    const tags = tagsStr.split(',').map(s => s.trim()).filter(Boolean)
+    const baseTags = tagsStr.split(',').map(s => s.trim()).filter(Boolean)
+      .filter(t => t !== 'regular' && t !== 'rf')
+    const tags = [
+      ...baseTags,
+      ...(isRegular ? ['regular'] : []),
+      ...(isRf      ? ['rf']      : []),
+    ]
     const pregWeeksNum = preg === 'yes' && pregWeeks.trim()
       ? Math.max(1, Math.min(42, parseInt(pregWeeks, 10) || 0)) || null
       : null
@@ -3372,12 +3384,24 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
               </Field>
 
-              <Field label="VIP">
-                <label className="flex items-center gap-2 py-2">
-                  <input type="checkbox" checked={isVip} onChange={e => setIsVip(e.target.checked)}
-                    className="w-4 h-4 accent-yellow-500" />
-                  <span className="text-sm text-gray-700">Отметить как VIP</span>
-                </label>
+              <Field label="Отметки">
+                <div className="flex items-center gap-4 py-2 flex-wrap">
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={isVip} onChange={e => setIsVip(e.target.checked)}
+                      className="w-4 h-4 accent-yellow-500" />
+                    <span className="text-sm text-gray-700">VIP</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={isRegular} onChange={e => setIsRegular(e.target.checked)}
+                      className="w-4 h-4 accent-blue-500" />
+                    <span className="text-sm text-gray-700">Постоянный пациент</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={isRf} onChange={e => setIsRf(e.target.checked)}
+                      className="w-4 h-4 accent-red-500" />
+                    <span className="text-sm text-gray-700">РФ</span>
+                  </label>
+                </div>
               </Field>
 
               {/* Demographics */}
