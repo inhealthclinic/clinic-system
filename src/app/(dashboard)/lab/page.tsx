@@ -1537,9 +1537,6 @@ export default function LabPage() {
             </button>
           ))}
         </div>
-        <span className="text-sm text-gray-400">
-          {visibleOrders.length}{visibleOrders.length !== orders.length ? ` / ${orders.length}` : ''} направлений
-        </span>
         <div className="flex-1" />
         <Link href="/lab/qc"
           className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
