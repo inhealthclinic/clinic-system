@@ -1599,6 +1599,20 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       alert('Не удалось добавить анализы: ' + error.message)
     } else {
       setLabOrderItemNames(prev => [...prev, ...newRows.map(r => r.name.toLowerCase())])
+      // Уведомляем лаборанта об обновлении заказа
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('lab:order-created', {
+          detail: {
+            id:                    labOrderId + '-add-' + Date.now(),
+            clinic_id:             clinicId,
+            patient_id:            appt.patient_id ?? null,
+            patient_name_snapshot: patDemo?.full_name ?? null,
+            order_number:          null,
+            status:                'ordered',
+            created_at:            new Date().toISOString(),
+          },
+        }))
+      }
     }
     setAddingToLab(false)
   }
