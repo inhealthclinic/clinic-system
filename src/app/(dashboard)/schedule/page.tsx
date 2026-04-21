@@ -2307,90 +2307,97 @@ function LabResultsModal({ orderId, patientName, onClose }: {
   const hasResults = order?.items.some(i => i.result_value != null || i.result_text != null)
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        {/* Шапка */}
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+    <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-3" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+
+        {/* ── Шапка ── */}
+        <div className="px-6 py-4 border-b border-gray-100 flex items-start justify-between gap-4 flex-shrink-0">
           <div>
-            <div className="font-semibold text-gray-900">Анализы</div>
-            <div className="text-xs text-gray-500 mt-0.5">{patientName}</div>
+            <div className="text-base font-bold text-gray-900 flex items-center gap-2">
+              <span>🧪</span> Результаты анализов
+            </div>
+            <div className="text-sm text-gray-500 mt-0.5">{patientName}</div>
           </div>
-          <div className="flex items-center gap-2">
-            {hasResults && (
-              <button onClick={handlePrint}
-                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
-                Печать / PDF
-              </button>
-            )}
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none w-7 h-7 flex items-center justify-center">×</button>
-          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none mt-0.5 flex-shrink-0">×</button>
         </div>
 
         {loading ? (
-          <div className="flex-1 flex items-center justify-center py-12 text-sm text-gray-400">Загрузка…</div>
+          <div className="flex-1 flex items-center justify-center py-16 text-sm text-gray-400">Загрузка…</div>
         ) : !order ? (
-          <div className="flex-1 flex items-center justify-center py-12 text-sm text-gray-400">Заказ не найден</div>
+          <div className="flex-1 flex items-center justify-center py-16 text-sm text-gray-400">Заказ не найден</div>
         ) : (
           <>
-            {/* Прогресс статуса */}
-            <div className="px-5 py-4 border-b border-gray-100">
-              <div className="flex items-center gap-1 flex-wrap">
+            {/* ── Статус + мета ── */}
+            <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/60 flex-shrink-0">
+              {/* Прогресс-бар */}
+              <div className="flex items-center gap-0 mb-3 overflow-x-auto pb-0.5">
                 {LAB_STATUS_STEPS.map((s, i) => {
                   const done = i < stepIdx
                   const active = i === stepIdx
                   return (
-                    <div key={s.key} className="flex items-center gap-1">
-                      <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-                        active ? 'bg-purple-600 text-white' :
+                    <div key={s.key} className="flex items-center shrink-0">
+                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${
+                        active ? 'bg-purple-600 text-white shadow-sm' :
                         done   ? 'bg-purple-100 text-purple-700' :
-                                 'bg-gray-100 text-gray-400'
-                      }`}>{s.label}</span>
+                                 'bg-white text-gray-400 border border-gray-200'
+                      }`}>
+                        {done && <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {s.label}
+                      </div>
                       {i < LAB_STATUS_STEPS.length - 1 && (
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={done || active ? 'text-purple-400' : 'text-gray-300'}>
-                          <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
+                        <div className={`w-5 h-px mx-0.5 ${i < stepIdx ? 'bg-purple-300' : 'bg-gray-200'}`} />
                       )}
                     </div>
                   )
                 })}
               </div>
-              {order.order_number && (
-                <div className="text-xs text-gray-400 mt-1.5">№ {order.order_number} · {new Date(order.ordered_at).toLocaleDateString('ru-RU')}</div>
-              )}
+              {/* Мета-строка */}
+              <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+                {order.order_number && <span className="font-medium text-gray-700">№ {order.order_number}</span>}
+                <span>{new Date(order.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+                {order.doctor && <span>Врач: {order.doctor.last_name} {order.doctor.first_name}</span>}
+                <span className={`ml-auto font-medium ${hasResults ? 'text-green-600' : 'text-orange-500'}`}>
+                  {hasResults
+                    ? `${order.items.filter(i => i.result_value != null || i.result_text != null).length} из ${order.items.length} готово`
+                    : 'Результаты ожидаются'}
+                </span>
+              </div>
             </div>
 
-            {/* Список анализов */}
+            {/* ── Таблица анализов ── */}
             <div className="flex-1 overflow-y-auto">
               {order.items.length === 0 ? (
-                <div className="py-8 text-center text-sm text-gray-400">Нет позиций в заказе</div>
+                <div className="py-12 text-center text-sm text-gray-400">Нет позиций в заказе</div>
               ) : (
                 <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100">
-                      <th className="text-left px-5 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Анализ</th>
-                      <th className="text-right px-5 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Результат</th>
-                      <th className="text-right px-3 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Норма</th>
+                  <thead className="sticky top-0 bg-white z-10">
+                    <tr className="border-b border-gray-200">
+                      <th className="text-left px-6 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider w-1/2">Анализ</th>
+                      <th className="text-center px-4 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Результат</th>
+                      <th className="text-center px-4 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Ед.</th>
+                      <th className="text-center px-6 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Норма</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {order.items.map(item => {
+                  <tbody className="divide-y divide-gray-50">
+                    {order.items.map((item, idx) => {
                       const val = item.result_value ?? item.result_text
                       const hasVal = val != null
+                      const flagCls = hasVal && item.flag ? FLAG_COLORS[item.flag] : ''
                       return (
-                        <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50">
-                          <td className="px-5 py-3 text-gray-800">{item.name}</td>
-                          <td className="px-5 py-3 text-right">
+                        <tr key={item.id} className={`${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/40'} hover:bg-purple-50/30 transition-colors`}>
+                          <td className="px-6 py-3.5 text-gray-800 font-medium">{item.name}</td>
+                          <td className="px-4 py-3.5 text-center">
                             {hasVal ? (
-                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-medium ${FLAG_COLORS[item.flag ?? 'normal'] ?? 'text-gray-700 bg-gray-50 border-gray-200'}`}>
-                                {item.flag && item.flag !== 'normal' && <span>{FLAG_LABEL[item.flag]}</span>}
-                                {String(val)} {item.unit_snapshot ?? ''}
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-bold ${flagCls || 'text-gray-700 bg-gray-50 border-gray-200'}`}>
+                                {item.flag && item.flag !== 'normal' && <span className="text-[10px]">{FLAG_LABEL[item.flag]}</span>}
+                                {String(val)}
                               </span>
                             ) : (
-                              <span className="text-gray-300 text-xs">ожидается</span>
+                              <span className="text-gray-300 text-xs italic">ожидается</span>
                             )}
                           </td>
-                          <td className="px-3 py-3 text-right text-xs text-gray-400">
+                          <td className="px-4 py-3.5 text-center text-xs text-gray-400">{item.unit_snapshot ?? '—'}</td>
+                          <td className="px-6 py-3.5 text-center text-xs text-gray-400">
                             {item.reference_min != null || item.reference_max != null
                               ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
                               : '—'}
@@ -2401,6 +2408,22 @@ function LabResultsModal({ orderId, patientName, onClose }: {
                   </tbody>
                 </table>
               )}
+            </div>
+
+            {/* ── Футер с кнопкой скачать ── */}
+            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3 flex-shrink-0 bg-gray-50/60">
+              <div className="text-xs text-gray-400">
+                {order.items.filter(i => i.result_value != null || i.result_text != null).length > 0
+                  ? 'Только готовые результаты попадают в PDF'
+                  : 'Результаты ещё не внесены лаборантом'}
+              </div>
+              <button
+                onClick={handlePrint}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
+                Скачать / Печать
+              </button>
             </div>
           </>
         )}
