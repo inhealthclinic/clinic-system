@@ -1502,6 +1502,8 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       visit_id:   vid,
       status:     'ordered',
       created_by: profile?.id ?? null,
+      // Проба считается взятой в момент отправки в лабораторию
+      sample_taken_at: new Date().toISOString(),
       // Demographic snapshot — frozen for historical accuracy
       patient_name_snapshot:       patDemo?.full_name ?? null,
       sex_snapshot:                patDemo?.gender ?? null,
@@ -2217,6 +2219,8 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
         <LabResultsModal
           orderId={labOrderId}
           patientName={patDemo?.full_name ?? appt.patient?.full_name ?? ''}
+          patientGender={patDemo?.gender ?? null}
+          patientBirthDate={patDemo?.birth_date ?? null}
           onClose={() => setLabResultsOpen(false)}
         />
       )}
@@ -2244,9 +2248,11 @@ const FLAG_LABEL: Record<string, string> = {
   high: '↑', low: '↓', critical: '!!', normal: 'N',
 }
 
-function LabResultsModal({ orderId, patientName, onClose }: {
+function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate, onClose }: {
   orderId: string
   patientName: string
+  patientGender?: 'male' | 'female' | 'other' | null
+  patientBirthDate?: string | null
   onClose: () => void
 }) {
   const supabase = useMemo(() => createClient(), [])
@@ -2288,11 +2294,12 @@ function LabResultsModal({ orderId, patientName, onClose }: {
 
     const pName = order.patient_name_snapshot ?? patientName
     const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
-    const birthDate = rawPatient?.birth_date
-      ? new Date(rawPatient.birth_date).toLocaleDateString('ru-RU')
+    const bdRaw = rawPatient?.birth_date ?? patientBirthDate
+    const birthDate = bdRaw
+      ? new Date(bdRaw).toLocaleDateString('ru-RU')
       : '—'
-    const genderRaw = order.sex_snapshot ?? rawPatient?.gender
-    const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : '—'
+    const genderRaw = order.sex_snapshot ?? rawPatient?.gender ?? patientGender
+    const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? '—' : '—'
     const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
     const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
     const sampleDate = order.sample_taken_at
@@ -2476,10 +2483,11 @@ tbody tr:hover{background:#f0f6ff}
             <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
               {(() => {
                 const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
-                const birthDate = rawPatient?.birth_date
-                  ? new Date(rawPatient.birth_date).toLocaleDateString('ru-RU')
+                const bdRaw = rawPatient?.birth_date ?? patientBirthDate
+                const birthDate = bdRaw
+                  ? new Date(bdRaw).toLocaleDateString('ru-RU')
                   : '—'
-                const genderRaw = order.sex_snapshot ?? rawPatient?.gender
+                const genderRaw = order.sex_snapshot ?? rawPatient?.gender ?? patientGender
                 const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : '—'
                 const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
                 const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
