@@ -93,7 +93,12 @@ function calcFlag(
   value: number,
   refMin: number | null | undefined,
   refMax: number | null | undefined,
-): 'normal' | 'low' | 'high' {
+  critLow?: number | null,
+  critHigh?: number | null,
+): 'normal' | 'low' | 'high' | 'critical' {
+  // Панические пределы приоритетнее обычных
+  if (critLow != null && value < critLow) return 'critical'
+  if (critHigh != null && value > critHigh) return 'critical'
   if (refMin != null && value < refMin) return 'low'
   if (refMax != null && value > refMax) return 'high'
   return 'normal'
@@ -112,6 +117,8 @@ interface RefRange {
   max_value: number | null
   text: string | null
   unit: string | null
+  critical_low?: number | null
+  critical_high?: number | null
 }
 
 function ageFromBirth(birthDate: string | null | undefined): number | null {
@@ -459,6 +466,8 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     defaultMin: number | null
     defaultMax: number | null
     defaultText: string | null
+    defaultCritLow: number | null
+    defaultCritHigh: number | null
     ranges: RefRange[]
   }>>({})
 
@@ -490,7 +499,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     if (svcIds.length > 0) {
       Promise.all([
         supabase.from('services')
-          .select('id, default_unit, reference_min, reference_max, reference_text')
+          .select('id, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
           .in('id', svcIds),
         supabase.from('reference_ranges')
           .select('*')
@@ -501,18 +510,21 @@ function OrderDrawer({ order, onClose, onUpdated }: {
           id: string; default_unit: string | null;
           reference_min: number | null; reference_max: number | null;
           reference_text: string | null;
+          critical_low: number | null; critical_high: number | null;
         }>) {
           m[r.id] = {
             defaultUnit: r.default_unit,
             defaultMin: r.reference_min,
             defaultMax: r.reference_max,
             defaultText: r.reference_text,
+            defaultCritLow: r.critical_low,
+            defaultCritHigh: r.critical_high,
             ranges: [],
           }
         }
         for (const r of (rngRes.data ?? []) as RefRange[]) {
           if (!m[r.service_id]) {
-            m[r.service_id] = { defaultUnit: null, defaultMin: null, defaultMax: null, defaultText: null, ranges: [] }
+            m[r.service_id] = { defaultUnit: null, defaultMin: null, defaultMax: null, defaultText: null, defaultCritLow: null, defaultCritHigh: null, ranges: [] }
           }
           m[r.service_id].ranges.push(r)
         }
@@ -528,6 +540,8 @@ function OrderDrawer({ order, onClose, onUpdated }: {
       ref_min: number | null
       ref_max: number | null
       ref_text: string | null
+      crit_low: number | null
+      crit_high: number | null
       label: string | null  // null = default (no specific range matched)
     }> = {}
     for (const [sid, d] of Object.entries(svcData)) {
@@ -538,6 +552,9 @@ function OrderDrawer({ order, onClose, onUpdated }: {
           ref_min: picked.min_value,
           ref_max: picked.max_value,
           ref_text: picked.text ?? d.defaultText,
+          // Если в группе нет паник-порогов — берём дефолтные на услугу
+          crit_low: picked.critical_low ?? d.defaultCritLow,
+          crit_high: picked.critical_high ?? d.defaultCritHigh,
           label: describeRange(picked),
         }
       } else {
@@ -546,6 +563,8 @@ function OrderDrawer({ order, onClose, onUpdated }: {
           ref_min: d.defaultMin,
           ref_max: d.defaultMax,
           ref_text: d.defaultText,
+          crit_low: d.defaultCritLow,
+          crit_high: d.defaultCritHigh,
           label: null,
         }
       }
@@ -703,6 +722,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
           return supabase.from('lab_order_items').update({
             result_value: null, result_text: null, flag: null,
             unit_snapshot: null, reference_min: null, reference_max: null,
+            critical_low: null, critical_high: null,
             result_entered_at: null, result_entered_by: null,
           }).eq('id', item.id)
         }
@@ -713,7 +733,9 @@ function OrderDrawer({ order, onClose, onUpdated }: {
         const refMax = refs?.ref_max ?? null
         const refText = refs?.ref_text ?? null
         const unit = refs?.unit ?? null
-        const flag = isNum ? calcFlag(num, refMin, refMax) : null
+        const critLow = refs?.crit_low ?? null
+        const critHigh = refs?.crit_high ?? null
+        const flag = isNum ? calcFlag(num, refMin, refMax, critLow, critHigh) : null
 
         return supabase.from('lab_order_items').update({
           result_value:      isNum ? num : null,
@@ -722,6 +744,8 @@ function OrderDrawer({ order, onClose, onUpdated }: {
           reference_min:     refMin,
           reference_max:     refMax,
           reference_text:    refText,
+          critical_low:      critLow,
+          critical_high:     critHigh,
           flag,
           completed_at:      now,
           status:            'done',
@@ -780,6 +804,25 @@ function OrderDrawer({ order, onClose, onUpdated }: {
               </span>
             )}
           </div>
+
+          {/* Critical alert banner */}
+          {(() => {
+            const crit = (order.items ?? []).filter(i => i.flag === 'critical')
+            if (crit.length === 0) return null
+            return (
+              <div className="border-2 border-red-400 bg-red-50 rounded-lg p-3 flex items-start gap-3">
+                <span className="text-red-600 text-xl leading-none">‼</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-red-800">
+                    Критические значения — требуется срочное уведомление лечащего врача
+                  </p>
+                  <p className="text-xs text-red-700 mt-1">
+                    {crit.map(i => i.name).join(', ')}
+                  </p>
+                </div>
+              </div>
+            )
+          })()}
 
           {/* Info */}
           <div className="space-y-2 text-sm">
@@ -881,7 +924,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                   const num = Number(raw.replace(',', '.'))
                   const isNum = !isNaN(num) && raw.trim() !== ''
                   const liveFlag = isNum
-                    ? calcFlag(num, refs?.ref_min, refs?.ref_max)
+                    ? calcFlag(num, refs?.ref_min, refs?.ref_max, refs?.crit_low, refs?.crit_high)
                     : null
                   const refRange =
                     refs?.ref_min != null || refs?.ref_max != null
