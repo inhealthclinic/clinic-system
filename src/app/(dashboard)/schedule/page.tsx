@@ -3372,23 +3372,13 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
               </Field>
 
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Статус">
-                  <select value={status} onChange={e => setStatus(e.target.value)}
-                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
-                    {Object.entries(PATIENT_STATUS_LABEL).map(([k, v]) => (
-                      <option key={k} value={k}>{v}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="VIP">
-                  <label className="flex items-center gap-2 py-2">
-                    <input type="checkbox" checked={isVip} onChange={e => setIsVip(e.target.checked)}
-                      className="w-4 h-4 accent-yellow-500" />
-                    <span className="text-sm text-gray-700">Отметить как VIP</span>
-                  </label>
-                </Field>
-              </div>
+              <Field label="VIP">
+                <label className="flex items-center gap-2 py-2">
+                  <input type="checkbox" checked={isVip} onChange={e => setIsVip(e.target.checked)}
+                    className="w-4 h-4 accent-yellow-500" />
+                  <span className="text-sm text-gray-700">Отметить как VIP</span>
+                </label>
+              </Field>
 
               {/* Demographics */}
               <div className="border-t border-gray-100 pt-3">
