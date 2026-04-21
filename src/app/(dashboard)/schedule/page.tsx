@@ -2259,6 +2259,13 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
   const supabase = useMemo(() => createClient(), [])
   const { isOwner, isAdmin } = usePermissions()
   const [reverting, setReverting] = useState(false)
+  // Активное направление в модалке может меняться — пользователь выбирает
+  // более раннее направление того же пациента из выпадающего списка.
+  const [activeOrderId, setActiveOrderId] = useState(orderId)
+  useEffect(() => { setActiveOrderId(orderId) }, [orderId])
+  const [history, setHistory] = useState<Array<{
+    id: string; ordered_at: string; order_number: string | null
+  }>>([])
   const [order, setOrder] = useState<{
     status: string
     order_number: string | null
@@ -2284,10 +2291,11 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    (async () => {
+    setLoading(true)
+    ;(async () => {
       const { data } = await supabase.from('lab_orders')
         .select('status, patient_id, order_number, ordered_at, sample_taken_at, verified_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
-        .eq('id', orderId)
+        .eq('id', activeOrderId)
         .single()
       if (!data) { setLoading(false); return }
       // Тянем пациента отдельно — join может не отдать запись (RLS, soft-delete)
@@ -2299,11 +2307,21 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
           .eq('id', pid)
           .maybeSingle()
         if (p) patient = p as { birth_date?: string | null; gender?: string | null }
+        // История других направлений того же пациента — для выпадашки
+        // переключения. Показываем только те, куда уже внесены результаты
+        // (status >= ready), отсортировано от новых к старым.
+        const { data: hist } = await supabase.from('lab_orders')
+          .select('id, ordered_at, order_number')
+          .eq('patient_id', pid)
+          .in('status', ['ready', 'verified', 'delivered'])
+          .order('ordered_at', { ascending: false })
+          .limit(50)
+        setHistory((hist ?? []) as Array<{ id: string; ordered_at: string; order_number: string | null }>)
       }
       setOrder({ ...(data as unknown as Record<string, unknown>), patient } as unknown as typeof order)
       setLoading(false)
     })()
-  }, [orderId, supabase])
+  }, [activeOrderId, supabase])
 
   const handlePrint = () => {
     const w = window.open('', '_blank', 'width=900,height=700')
@@ -2487,7 +2505,28 @@ tbody tr:hover{background:#f0f6ff}
               {/* Мета-строка */}
               <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
                 {order.order_number && <span className="font-medium text-gray-700">№ {order.order_number}</span>}
-                <span>{new Date(order.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+                {/* Выпадашка «предыдущие сдачи» — видна если у пациента есть
+                    ещё хотя бы одно направление с результатами. Текущее тоже
+                    в списке (подсвечивается как выбранное). */}
+                {history.length > 1 ? (
+                  <label className="flex items-center gap-1.5">
+                    <span className="text-gray-400">Дата сдачи:</span>
+                    <select
+                      value={activeOrderId}
+                      onChange={(e) => setActiveOrderId(e.target.value)}
+                      className="border border-gray-200 rounded-md px-2 py-1 text-xs bg-white text-gray-700 outline-none focus:ring-2 focus:ring-purple-400 cursor-pointer"
+                    >
+                      {history.map(h => (
+                        <option key={h.id} value={h.id}>
+                          {new Date(h.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
+                          {h.order_number ? `  •  ${h.order_number}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <span>{new Date(order.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+                )}
                 {order.doctor && <span>Врач: {order.doctor.last_name} {order.doctor.first_name}</span>}
                 <span className={`ml-auto font-medium ${hasResults ? 'text-green-600' : 'text-orange-500'}`}>
                   {hasResults
