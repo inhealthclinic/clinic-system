@@ -1016,6 +1016,7 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
   const [labOrderItemNames, setLabOrderItemNames] = useState<string[]>([])
   const [transferringLab, setTransferringLab] = useState(false)
   const [addingToLab, setAddingToLab] = useState(false)
+  const [labResultsOpen, setLabResultsOpen] = useState(false)
   const [labPickerOpen, setLabPickerOpen] = useState(false)
   const [nuanceOpen, setNuanceOpen]       = useState(false)
   const [cardOpen, setCardOpen]           = useState(false)
@@ -1984,11 +1985,11 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
                   </button>
                 )}
                 <button
-                  onClick={() => router.push(`/lab/${labOrderId}`)}
+                  onClick={() => setLabResultsOpen(true)}
                   className="w-full flex items-center justify-center gap-2 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg py-2 text-sm font-medium transition-colors"
                 >
                   <span className="text-base leading-none">🧪</span>
-                  Открыть заказ в лаборатории
+                  Результаты анализов
                 </button>
               </>
             )
@@ -2212,7 +2213,199 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           }}
         />
       )}
+      {labResultsOpen && labOrderId && (
+        <LabResultsModal
+          orderId={labOrderId}
+          patientName={patDemo?.full_name ?? appt.patient?.full_name ?? ''}
+          onClose={() => setLabResultsOpen(false)}
+        />
+      )}
     </>
+  )
+}
+
+// ─── LabResultsModal ──────────────────────────────────────────────────────────
+const LAB_STATUS_STEPS = [
+  { key: 'ordered',      label: 'Новый' },
+  { key: 'agreed',       label: 'Согласован' },
+  { key: 'sample_taken', label: 'Взят образец' },
+  { key: 'in_progress',  label: 'В работе' },
+  { key: 'ready',        label: 'Готов' },
+  { key: 'verified',     label: 'Верифицирован' },
+]
+
+const FLAG_COLORS: Record<string, string> = {
+  high:     'text-orange-600 bg-orange-50 border-orange-200',
+  low:      'text-blue-600 bg-blue-50 border-blue-200',
+  critical: 'text-red-600 bg-red-50 border-red-200',
+  normal:   'text-green-600 bg-green-50 border-green-200',
+}
+const FLAG_LABEL: Record<string, string> = {
+  high: '↑', low: '↓', critical: '!!', normal: 'N',
+}
+
+function LabResultsModal({ orderId, patientName, onClose }: {
+  orderId: string
+  patientName: string
+  onClose: () => void
+}) {
+  const supabase = useMemo(() => createClient(), [])
+  const [order, setOrder] = useState<{
+    status: string
+    order_number: string | null
+    ordered_at: string
+    doctor?: { first_name: string; last_name: string } | null
+    items: Array<{
+      id: string; name: string; price: number | null
+      result_value?: number | string | null
+      result_text?: string | null
+      unit_snapshot?: string | null
+      reference_min?: number | null
+      reference_max?: number | null
+      flag?: string | null
+    }>
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    supabase.from('lab_orders')
+      .select('status, order_number, ordered_at, doctor:doctors(first_name,last_name), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,flag)')
+      .eq('id', orderId)
+      .single()
+      .then(({ data }) => { setOrder(data as typeof order); setLoading(false) })
+  }, [orderId, supabase])
+
+  const handlePrint = () => {
+    const w = window.open('', '_blank', 'width=800,height=600')
+    if (!w || !order) return
+    const stepIdx = LAB_STATUS_STEPS.findIndex(s => s.key === order.status)
+    const rows = order.items.map(item => {
+      const val = item.result_value ?? item.result_text
+      const flagMark = item.flag && item.flag !== 'normal' ? ` (${FLAG_LABEL[item.flag] ?? item.flag})` : ''
+      const ref = item.reference_min != null || item.reference_max != null
+        ? `${item.reference_min ?? ''}–${item.reference_max ?? ''} ${item.unit_snapshot ?? ''}`
+        : (item.unit_snapshot ?? '')
+      return `<tr>
+        <td style="padding:6px 10px;border-bottom:1px solid #eee">${item.name}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eee;font-weight:${item.flag && item.flag !== 'normal' ? 'bold' : 'normal'};color:${item.flag === 'high' || item.flag === 'critical' ? '#c2410c' : item.flag === 'low' ? '#1d4ed8' : '#111'}">${val != null ? String(val) + flagMark : '—'}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #eee;color:#6b7280">${ref}</td>
+      </tr>`
+    }).join('')
+    w.document.write(`<!DOCTYPE html><html><head><title>Анализы — ${patientName}</title>
+    <style>body{font-family:Arial,sans-serif;padding:24px;color:#111}h2{margin:0 0 4px}p{margin:0 0 16px;color:#6b7280;font-size:13px}table{width:100%;border-collapse:collapse}th{text-align:left;padding:8px 10px;background:#f3f4f6;font-size:12px;text-transform:uppercase;letter-spacing:.05em}@media print{body{padding:0}}</style>
+    </head><body>
+    <h2>Результаты анализов</h2>
+    <p>${patientName} · ${new Date(order.ordered_at).toLocaleDateString('ru-RU')} · Статус: ${LAB_STATUS_STEPS[stepIdx]?.label ?? order.status}</p>
+    <table><thead><tr><th>Анализ</th><th>Результат</th><th>Референс</th></tr></thead><tbody>${rows}</tbody></table>
+    </body></html>`)
+    w.document.close()
+    w.focus()
+    setTimeout(() => { w.print() }, 400)
+  }
+
+  const stepIdx = LAB_STATUS_STEPS.findIndex(s => s.key === order?.status)
+  const hasResults = order?.items.some(i => i.result_value != null || i.result_text != null)
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Шапка */}
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div>
+            <div className="font-semibold text-gray-900">Анализы</div>
+            <div className="text-xs text-gray-500 mt-0.5">{patientName}</div>
+          </div>
+          <div className="flex items-center gap-2">
+            {hasResults && (
+              <button onClick={handlePrint}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
+                Печать / PDF
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none w-7 h-7 flex items-center justify-center">×</button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex-1 flex items-center justify-center py-12 text-sm text-gray-400">Загрузка…</div>
+        ) : !order ? (
+          <div className="flex-1 flex items-center justify-center py-12 text-sm text-gray-400">Заказ не найден</div>
+        ) : (
+          <>
+            {/* Прогресс статуса */}
+            <div className="px-5 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-1 flex-wrap">
+                {LAB_STATUS_STEPS.map((s, i) => {
+                  const done = i < stepIdx
+                  const active = i === stepIdx
+                  return (
+                    <div key={s.key} className="flex items-center gap-1">
+                      <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                        active ? 'bg-purple-600 text-white' :
+                        done   ? 'bg-purple-100 text-purple-700' :
+                                 'bg-gray-100 text-gray-400'
+                      }`}>{s.label}</span>
+                      {i < LAB_STATUS_STEPS.length - 1 && (
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={done || active ? 'text-purple-400' : 'text-gray-300'}>
+                          <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              {order.order_number && (
+                <div className="text-xs text-gray-400 mt-1.5">№ {order.order_number} · {new Date(order.ordered_at).toLocaleDateString('ru-RU')}</div>
+              )}
+            </div>
+
+            {/* Список анализов */}
+            <div className="flex-1 overflow-y-auto">
+              {order.items.length === 0 ? (
+                <div className="py-8 text-center text-sm text-gray-400">Нет позиций в заказе</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-100">
+                      <th className="text-left px-5 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Анализ</th>
+                      <th className="text-right px-5 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Результат</th>
+                      <th className="text-right px-3 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Норма</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {order.items.map(item => {
+                      const val = item.result_value ?? item.result_text
+                      const hasVal = val != null
+                      return (
+                        <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50">
+                          <td className="px-5 py-3 text-gray-800">{item.name}</td>
+                          <td className="px-5 py-3 text-right">
+                            {hasVal ? (
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-medium ${FLAG_COLORS[item.flag ?? 'normal'] ?? 'text-gray-700 bg-gray-50 border-gray-200'}`}>
+                                {item.flag && item.flag !== 'normal' && <span>{FLAG_LABEL[item.flag]}</span>}
+                                {String(val)} {item.unit_snapshot ?? ''}
+                              </span>
+                            ) : (
+                              <span className="text-gray-300 text-xs">ожидается</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3 text-right text-xs text-gray-400">
+                            {item.reference_min != null || item.reference_max != null
+                              ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
+                              : '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
