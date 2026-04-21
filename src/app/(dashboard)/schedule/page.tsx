@@ -2308,11 +2308,12 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
 
     const pName = order.patient_name_snapshot ?? patientName
     const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
-    const bdRaw = rawPatient?.birth_date ?? patientBirthDate
+    // Приоритет: живые данные карточки пациента → prop → замороженный snapshot
+    const bdRaw = rawPatient?.birth_date ?? patientBirthDate ?? null
     const birthDate = bdRaw
       ? new Date(bdRaw).toLocaleDateString('ru-RU')
       : '—'
-    const genderRaw = order.sex_snapshot ?? rawPatient?.gender ?? patientGender
+    const genderRaw = rawPatient?.gender ?? patientGender ?? order.sex_snapshot
     const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? 'Др.' : '—'
     const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
     const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
@@ -2497,11 +2498,12 @@ tbody tr:hover{background:#f0f6ff}
             <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
               {(() => {
                 const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
-                const bdRaw = rawPatient?.birth_date ?? patientBirthDate
+                // Приоритет: живые данные карточки пациента → prop → замороженный snapshot
+                const bdRaw = rawPatient?.birth_date ?? patientBirthDate ?? null
                 const birthDate = bdRaw
                   ? new Date(bdRaw).toLocaleDateString('ru-RU')
                   : '—'
-                const genderRaw = order.sex_snapshot ?? rawPatient?.gender ?? patientGender
+                const genderRaw = rawPatient?.gender ?? patientGender ?? order.sex_snapshot
                 const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? 'Др.' : '—'
                 const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
                 const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
