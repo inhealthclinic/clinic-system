@@ -2313,7 +2313,7 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
       ? new Date(bdRaw).toLocaleDateString('ru-RU')
       : '—'
     const genderRaw = order.sex_snapshot ?? rawPatient?.gender ?? patientGender
-    const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? '—' : '—'
+    const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? 'Др.' : '—'
     const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
     const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
     const sampleDate = order.sample_taken_at
@@ -2502,7 +2502,7 @@ tbody tr:hover{background:#f0f6ff}
                   ? new Date(bdRaw).toLocaleDateString('ru-RU')
                   : '—'
                 const genderRaw = order.sex_snapshot ?? rawPatient?.gender ?? patientGender
-                const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : '—'
+                const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? 'Др.' : '—'
                 const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
                 const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
                 const sampleDate = order.sample_taken_at
