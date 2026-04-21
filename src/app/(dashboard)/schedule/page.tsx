@@ -3903,7 +3903,38 @@ export default function SchedulePage() {
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
-  const [selected, setSelected] = useState<Appointment | null>(null)
+  const [selected, setSelectedState] = useState<Appointment | null>(null)
+
+  // Обёртка: одновременно ставит state и синхронизирует URL (?appointment=<id>),
+  // чтобы при обновлении страницы модалка восстанавливалась.
+  const setSelected = (a: Appointment | null) => {
+    setSelectedState(a)
+    if (typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    if (a) url.searchParams.set('appointment', a.id)
+    else url.searchParams.delete('appointment')
+    window.history.replaceState(null, '', url.toString())
+  }
+
+  // При монтировании: если в URL есть ?appointment=<id> — подтянуть запись и открыть.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const id = new URL(window.location.href).searchParams.get('appointment')
+    if (!id) return
+    ;(async () => {
+      const { data } = await supabase
+        .from('appointments')
+        .select('*, patient:patients(id, full_name, phones), doctor:doctors(id, first_name, last_name, color)')
+        .eq('id', id)
+        .maybeSingle()
+      if (data) {
+        setSelectedState(data as Appointment)
+        // Перевести календарь на дату записи, чтобы контекст совпадал.
+        if ((data as Appointment).date) setDate((data as Appointment).date)
+      }
+    })()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
