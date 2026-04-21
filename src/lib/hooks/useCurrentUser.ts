@@ -7,13 +7,13 @@ import { useAuthStore } from '@/lib/stores/authStore'
 /**
  * Восстанавливает сессию Supabase при загрузке страницы.
  *
- * Важно:
- *   1) Сначала получаем сессию через getSession() (читает из cookie/storage).
- *   2) СРАЗУ снимаем isLoading — layout не должен ждать профиль, иначе
- *      при медленной сети страница висит на «Загрузка…».
- *   3) Профиль догружается фоном.
- *   4) Safety-таймаут 5с на случай, если getSession по какой-то причине
- *      не резолвится (редко, но бывает) — чтобы layout мог принять решение.
+ * Быстрая стратегия:
+ *   1) Если в persisted-кеше (localStorage) уже есть user — СРАЗУ снимаем
+ *      isLoading, страница рендерится мгновенно. Supabase параллельно
+ *      проверит сессию и при необходимости скорректирует state.
+ *   2) Если кеша нет — ждём getSession() (обычно < 50 мс), потом снимаем
+ *      лоадер. Safety-таймаут 5с на всякий случай.
+ *   3) Профиль всегда догружается фоном, не блокирует рендер.
  */
 export function useCurrentUser() {
   const { user, profile, isLoading, setUser, setProfile, setLoading } = useAuthStore()
@@ -35,7 +35,12 @@ export function useCurrentUser() {
       if (!cancelled) setProfile(data ?? null)
     }
 
-    // Safety: если getSession завис, через 5с всё равно снимем лоадер.
+    // Мгновенный рендер: если в persisted-сторе уже есть user — не ждём сеть.
+    const cached = useAuthStore.getState().user
+    if (cached) {
+      setLoading(false)
+    }
+
     const safety = setTimeout(() => {
       if (!cancelled) setLoading(false)
     }, 5000)
@@ -46,7 +51,6 @@ export function useCurrentUser() {
         if (cancelled) return
         const u = session?.user ?? null
         setUser(u)
-        // Снимаем лоадер СРАЗУ — профиль не обязателен для рендера layout.
         setLoading(false)
         clearTimeout(safety)
         if (u) {
