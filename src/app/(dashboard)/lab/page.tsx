@@ -16,6 +16,8 @@ interface LabItem {
   reference_min?: number | null
   reference_max?: number | null
   reference_text?: string | null
+  critical_low?: number | null
+  critical_high?: number | null
   flag?: 'normal' | 'low' | 'high' | 'critical' | null
   result_entered_at?: string | null
   result_entered_by?: string | null
@@ -429,6 +431,11 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     comment: string | null
   }>>([])
   const [results, setResults]     = useState<Record<string, string>>({})
+  // Per-item overrides: laborant может править нормы прямо во вкладке лаборатории
+  const [overrides, setOverrides] = useState<Record<string, {
+    ref_min: string; ref_max: string; crit_low: string; crit_high: string
+  }>>({})
+  const [refsEditing, setRefsEditing] = useState<Record<string, boolean>>({})
 
   // Patient demographics from snapshot (or live fallback)
   const patSex = useMemo(() => mapSex(order.sex_snapshot), [order.sex_snapshot])
@@ -474,11 +481,19 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   // Pre-fill existing results; load patient + service refs + reference_ranges
   useEffect(() => {
     const init: Record<string, string> = {}
+    const initOv: Record<string, { ref_min: string; ref_max: string; crit_low: string; crit_high: string }> = {}
     order.items?.forEach(item => {
       if (item.result_value != null) init[item.id] = String(item.result_value)
       else if (item.result_text) init[item.id] = item.result_text
+      initOv[item.id] = {
+        ref_min:   item.reference_min  != null ? String(item.reference_min)  : '',
+        ref_max:   item.reference_max  != null ? String(item.reference_max)  : '',
+        crit_low:  item.critical_low   != null ? String(item.critical_low)   : '',
+        crit_high: item.critical_high  != null ? String(item.critical_high)  : '',
+      }
     })
     setResults(init)
+    setOverrides(initOv)
 
     // Fallback: for legacy orders without snapshot, fetch live patient
     if (order.sex_snapshot == null || order.age_snapshot == null) {
@@ -709,6 +724,32 @@ function OrderDrawer({ order, onClose, onUpdated }: {
     onUpdated()
   }
 
+  // Эффективные нормы: ручной override с инпутов в дровере перекрывает svcRefs
+  const effectiveRefs = (item: LabItem) => {
+    const base = item.service_id ? svcRefs[item.service_id] : null
+    const ov = overrides[item.id]
+    const parseNum = (s: string | undefined): number | null => {
+      if (s == null || s.trim() === '') return null
+      const n = Number(s.replace(',', '.'))
+      return isNaN(n) ? null : n
+    }
+    const ovMin  = parseNum(ov?.ref_min)
+    const ovMax  = parseNum(ov?.ref_max)
+    const ovCL   = parseNum(ov?.crit_low)
+    const ovCH   = parseNum(ov?.crit_high)
+    const hasOv  = !!ov && (ov.ref_min !== '' || ov.ref_max !== '' || ov.crit_low !== '' || ov.crit_high !== '')
+    return {
+      unit:      base?.unit ?? item.unit_snapshot ?? null,
+      ref_min:   ovMin  ?? base?.ref_min  ?? null,
+      ref_max:   ovMax  ?? base?.ref_max  ?? null,
+      ref_text:  base?.ref_text ?? item.reference_text ?? null,
+      crit_low:  ovCL   ?? base?.crit_low  ?? null,
+      crit_high: ovCH   ?? base?.crit_high ?? null,
+      label:     base?.label ?? null,
+      overridden: hasOv,
+    }
+  }
+
   const saveResults = async () => {
     setSaveRes(true)
     const now = new Date().toISOString()
@@ -728,13 +769,13 @@ function OrderDrawer({ order, onClose, onUpdated }: {
         }
         const num = Number(raw.replace(',', '.'))
         const isNum = !isNaN(num) && raw !== ''
-        const refs = item.service_id ? svcRefs[item.service_id] : null
-        const refMin = refs?.ref_min ?? null
-        const refMax = refs?.ref_max ?? null
-        const refText = refs?.ref_text ?? null
-        const unit = refs?.unit ?? null
-        const critLow = refs?.crit_low ?? null
-        const critHigh = refs?.crit_high ?? null
+        const refs = effectiveRefs(item)
+        const refMin = refs.ref_min
+        const refMax = refs.ref_max
+        const refText = refs.ref_text
+        const unit = refs.unit
+        const critLow = refs.crit_low
+        const critHigh = refs.crit_high
         const flag = isNum ? calcFlag(num, refMin, refMax, critLow, critHigh) : null
 
         return supabase.from('lab_order_items').update({
@@ -919,17 +960,25 @@ function OrderDrawer({ order, onClose, onUpdated }: {
               </div>
               <div className="space-y-2">
                 {order.items!.map(item => {
-                  const refs = item.service_id ? svcRefs[item.service_id] : null
+                  const refs = effectiveRefs(item)
                   const raw = results[item.id] ?? ''
                   const num = Number(raw.replace(',', '.'))
                   const isNum = !isNaN(num) && raw.trim() !== ''
                   const liveFlag = isNum
-                    ? calcFlag(num, refs?.ref_min, refs?.ref_max, refs?.crit_low, refs?.crit_high)
+                    ? calcFlag(num, refs.ref_min, refs.ref_max, refs.crit_low, refs.crit_high)
                     : null
                   const refRange =
-                    refs?.ref_min != null || refs?.ref_max != null
+                    refs.ref_min != null || refs.ref_max != null
                       ? `${refs.ref_min ?? '—'} – ${refs.ref_max ?? '—'}`
-                      : refs?.ref_text ?? '—'
+                      : refs.ref_text ?? '—'
+                  const critRange =
+                    refs.crit_low != null || refs.crit_high != null
+                      ? `< ${refs.crit_low ?? '—'} / > ${refs.crit_high ?? '—'}`
+                      : null
+                  const ov = overrides[item.id] ?? { ref_min: '', ref_max: '', crit_low: '', crit_high: '' }
+                  const isEditingRefs = !!refsEditing[item.id]
+                  const setOv = (patch: Partial<typeof ov>) =>
+                    setOverrides(prev => ({ ...prev, [item.id]: { ...ov, ...patch } }))
                   const itemVerified = !!item.verified_at
                   const itemDraft    = !itemVerified && !!item.result_entered_at
                   const itemRO       = locked || itemVerified
@@ -973,7 +1022,7 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                           title={itemVerified ? 'Результат верифицирован — редактирование запрещено' : undefined}
                           className={`flex-1 border border-gray-200 rounded-md px-2.5 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none ${itemRO ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}`}
                         />
-                        {refs?.unit && (
+                        {refs.unit && (
                           <span className="text-xs text-gray-500 whitespace-nowrap">{refs.unit}</span>
                         )}
                         {liveFlag && (
@@ -982,14 +1031,75 @@ function OrderDrawer({ order, onClose, onUpdated }: {
                           </span>
                         )}
                       </div>
-                      <p className="text-[10px] text-gray-400 mt-1">
-                        Норма: {refRange}
-                        {refs?.label && (
-                          <span className="ml-2 inline-block px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
-                            {refs.label}
-                          </span>
+                      <div className="flex items-center justify-between gap-2 mt-1">
+                        <p className="text-[10px] text-gray-400">
+                          Норма: {refRange}
+                          {critRange && (
+                            <span className="ml-2 text-red-500">Паник: {critRange}</span>
+                          )}
+                          {refs.label && (
+                            <span className="ml-2 inline-block px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                              {refs.label}
+                            </span>
+                          )}
+                          {refs.overridden && (
+                            <span className="ml-2 inline-block px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">
+                              ручн.
+                            </span>
+                          )}
+                        </p>
+                        {!itemRO && (
+                          <button
+                            type="button"
+                            onClick={() => setRefsEditing(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                            className="text-[10px] text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-1.5 py-0.5 rounded whitespace-nowrap">
+                            {isEditingRefs ? 'Скрыть' : '✎ нормы'}
+                          </button>
                         )}
-                      </p>
+                      </div>
+                      {isEditingRefs && !itemRO && (
+                        <div className="mt-1.5 pt-1.5 border-t border-gray-200/60 grid grid-cols-2 gap-1.5">
+                          <label className="text-[10px] text-gray-500 flex flex-col gap-0.5">
+                            Норма min
+                            <input
+                              type="text" inputMode="decimal"
+                              value={ov.ref_min}
+                              onChange={e => setOv({ ref_min: e.target.value })}
+                              className="border border-gray-200 rounded px-1.5 py-1 text-xs bg-white"
+                            />
+                          </label>
+                          <label className="text-[10px] text-gray-500 flex flex-col gap-0.5">
+                            Норма max
+                            <input
+                              type="text" inputMode="decimal"
+                              value={ov.ref_max}
+                              onChange={e => setOv({ ref_max: e.target.value })}
+                              className="border border-gray-200 rounded px-1.5 py-1 text-xs bg-white"
+                            />
+                          </label>
+                          <label className="text-[10px] text-red-600 flex flex-col gap-0.5">
+                            Паник low
+                            <input
+                              type="text" inputMode="decimal"
+                              value={ov.crit_low}
+                              onChange={e => setOv({ crit_low: e.target.value })}
+                              className="border border-red-200 rounded px-1.5 py-1 text-xs bg-white"
+                            />
+                          </label>
+                          <label className="text-[10px] text-red-600 flex flex-col gap-0.5">
+                            Паник high
+                            <input
+                              type="text" inputMode="decimal"
+                              value={ov.crit_high}
+                              onChange={e => setOv({ crit_high: e.target.value })}
+                              className="border border-red-200 rounded px-1.5 py-1 text-xs bg-white"
+                            />
+                          </label>
+                          <p className="col-span-2 text-[10px] text-gray-400 italic">
+                            Применяется при сохранении результата. Пусто = взять из настроек услуги.
+                          </p>
+                        </div>
+                      )}
                       {(itemDraft || itemVerified) && (
                         <div className="mt-1.5 pt-1.5 border-t border-gray-200/60 text-[10px] text-gray-500 space-y-0.5">
                           {item.result_entered_at && (
@@ -1538,7 +1648,7 @@ export default function LabPage() {
     setLoading(true)
     let q = supabase
       .from('lab_orders')
-      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag,result_entered_at,result_entered_by,verified_at,verified_by), samples:lab_samples(id,sample_type,collected_at,status)')
+      .select('*, patient:patients(id,full_name), doctor:doctors(id,first_name,last_name), items:lab_order_items(id,name,price,service_id,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,critical_low,critical_high,flag,result_entered_at,result_entered_by,verified_at,verified_by), samples:lab_samples(id,sample_type,collected_at,status)')
       .order('ordered_at', { ascending: false })
       .limit(200)
     if (filter === 'active') q = q.in('status', ['ordered','agreed','paid','sample_taken','in_progress'])
