@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { usePermissions } from '@/lib/hooks/usePermissions'
 import type { Appointment, Doctor } from '@/types'
 import {
   DEFAULT_APPT_TYPES,
@@ -2256,6 +2257,8 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
   onClose: () => void
 }) {
   const supabase = useMemo(() => createClient(), [])
+  const { isOwner, isAdmin } = usePermissions()
+  const [reverting, setReverting] = useState(false)
   const [order, setOrder] = useState<{
     status: string
     order_number: string | null
@@ -2623,13 +2626,42 @@ tbody tr:hover{background:#f0f6ff}
                   ? 'Только готовые результаты попадают в PDF'
                   : 'Результаты ещё не внесены лаборантом'}
               </div>
-              <button
-                onClick={handlePrint}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
-                Скачать / Печать
-              </button>
+              <div className="flex items-center gap-2">
+                {/* Кнопка «Вернуть в работу» — только owner/admin, только для
+                    направлений со статусом ready/verified без результатов.
+                    Нужна чтобы починить направления, закрытые ошибочно. */}
+                {(isOwner || isAdmin)
+                  && (order.status === 'ready' || order.status === 'verified')
+                  && order.items.filter(i => i.result_value != null || i.result_text != null).length === 0
+                  && (
+                  <button
+                    disabled={reverting}
+                    onClick={async () => {
+                      if (!window.confirm('Вернуть направление в статус «В работе»? Лаборант сможет внести результаты заново.')) return
+                      setReverting(true)
+                      await supabase.from('lab_orders').update({
+                        status: 'in_progress',
+                        verified_at: null,
+                        verified_by: null,
+                      }).eq('id', orderId)
+                      setReverting(false)
+                      onClose()
+                    }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-orange-200 text-orange-700 hover:bg-orange-50 text-xs font-medium transition-colors disabled:opacity-50"
+                    title="Вернуть в работу (owner/admin)"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M3 3v5h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    {reverting ? '...' : 'Вернуть в работу'}
+                  </button>
+                )}
+                <button
+                  onClick={handlePrint}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
+                  Скачать / Печать
+                </button>
+              </div>
             </div>
           </>
         )}
