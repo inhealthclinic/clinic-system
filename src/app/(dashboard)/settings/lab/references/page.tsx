@@ -14,6 +14,8 @@ interface Service {
   reference_min: number | null
   reference_max: number | null
   reference_text: string | null
+  critical_low: number | null
+  critical_high: number | null
 }
 
 interface RefRange {
@@ -86,7 +88,7 @@ export default function LabReferencesPage() {
     setLoading(true)
     const { data } = await supabase
       .from('services')
-      .select('id, name, category, is_lab, default_unit, reference_min, reference_max, reference_text')
+      .select('id, name, category, is_lab, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
       .eq('clinic_id', clinicId)
       .eq('is_lab', true)
       .eq('is_active', true)
@@ -118,6 +120,8 @@ export default function LabReferencesPage() {
       reference_min:  selected.reference_min,
       reference_max:  selected.reference_max,
       reference_text: selected.reference_text,
+      critical_low:   selected.critical_low,
+      critical_high:  selected.critical_high,
     }).eq('id', selected.id)
     setSaving(false)
     if (err) setError(err.message)
@@ -280,6 +284,35 @@ export default function LabReferencesPage() {
                     placeholder="отриц., &lt;1:10…" />
                 </div>
               </div>
+              {/* Critical (panic) values */}
+              <div className="mt-4 pt-4 border-t border-red-100">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-base">‼</span>
+                  <div>
+                    <h4 className="text-xs font-semibold text-red-700">Критические (паник-) значения</h4>
+                    <p className="text-[11px] text-gray-400">При выходе за эти пределы лаборанту и врачу показывается алерт</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={lbl}>Critical low</label>
+                    <input type="number" step="any" className={inp}
+                      value={selected.critical_low ?? ''}
+                      onChange={e => setServices(prev => prev.map(s =>
+                        s.id === selected.id ? { ...s, critical_low: e.target.value === '' ? null : Number(e.target.value) } : s))}
+                      placeholder="напр., 2.0" />
+                  </div>
+                  <div>
+                    <label className={lbl}>Critical high</label>
+                    <input type="number" step="any" className={inp}
+                      value={selected.critical_high ?? ''}
+                      onChange={e => setServices(prev => prev.map(s =>
+                        s.id === selected.id ? { ...s, critical_high: e.target.value === '' ? null : Number(e.target.value) } : s))}
+                      placeholder="напр., 10.0" />
+                  </div>
+                </div>
+              </div>
+
               <div className="flex items-center justify-end gap-2 mt-3">
                 {error && <p className="text-xs text-red-600 flex-1">{error}</p>}
                 <button onClick={saveDefault} disabled={saving}
