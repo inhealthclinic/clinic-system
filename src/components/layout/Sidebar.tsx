@@ -5,12 +5,16 @@ import { usePathname } from 'next/navigation'
 import { useAuthStore } from '@/lib/stores/authStore'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
+import { useUnreadDealMessages } from '@/lib/hooks/useUnreadDealMessages'
+import { useLabPendingOrders } from '@/lib/hooks/useLabPendingOrders'
 
 interface NavItem {
   label: string
   href: string
   icon: React.ReactNode
   dividerBefore?: boolean
+  /** Ключ для бейджика. */
+  badgeKey?: 'crm-unread' | 'lab-pending'
 }
 
 const NAV: NavItem[] = [
@@ -60,6 +64,7 @@ const NAV: NavItem[] = [
   {
     label: 'CRM',
     href: '/crm',
+    badgeKey: 'crm-unread',
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
@@ -79,6 +84,7 @@ const NAV: NavItem[] = [
   {
     label: 'Лаборатория',
     href: '/lab',
+    badgeKey: 'lab-pending',
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M9 3h6M10 3v7l-4 9h12l-4-9V3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -135,6 +141,10 @@ export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname()
   const { profile, reset } = useAuthStore()
   const router = useRouter()
+  // Бейджик «непрочитанные входящие по моим сделкам» на пункте CRM.
+  const { count: crmUnread } = useUnreadDealMessages()
+  // Бейджик «новые заказы в лабораторию» на пункте Лаборатория.
+  const { count: labPending } = useLabPendingOrders()
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/'
@@ -193,7 +203,23 @@ export function Sidebar({ onClose }: SidebarProps) {
                 <span className={isActive(item.href) ? 'text-blue-600' : 'text-gray-400'}>
                   {item.icon}
                 </span>
-                {item.label}
+                <span className="flex-1">{item.label}</span>
+                {item.badgeKey === 'crm-unread' && crmUnread > 0 && (
+                  <span
+                    className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-semibold leading-none"
+                    aria-label={`${crmUnread} непрочитанных сообщений`}
+                  >
+                    {crmUnread > 99 ? '99+' : crmUnread}
+                  </span>
+                )}
+                {item.badgeKey === 'lab-pending' && labPending > 0 && (
+                  <span
+                    className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-purple-500 text-white text-[11px] font-semibold leading-none"
+                    aria-label={`${labPending} новых анализов`}
+                  >
+                    {labPending > 99 ? '99+' : labPending}
+                  </span>
+                )}
               </Link>
             </div>
           ))}

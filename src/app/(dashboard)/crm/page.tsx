@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -127,6 +128,8 @@ export default function CRMKanbanPage() {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id
+  const router = useRouter()
+  const searchParams = useSearchParams()
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
@@ -217,8 +220,29 @@ export default function CRMKanbanPage() {
   // pending loss prompt
   const [lossPending, setLossPending] = useState<{ deal: DealRow; stageId: string } | null>(null)
 
-  // selected deal
+  // selected deal — persisted in ?deal=<id> query param
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null)
+  const pendingDealId = useRef<string | null>(searchParams.get('deal'))
+
+  const openDeal = useCallback((d: DealRow) => {
+    setSelectedDeal(d)
+    if (d.id) router.replace(`?deal=${d.id}`, { scroll: false })
+  }, [router])
+
+  const closeDeal = useCallback(() => {
+    setSelectedDeal(null)
+    router.replace('?', { scroll: false })
+  }, [router])
+
+  // On initial load, restore selected deal from URL
+  useEffect(() => {
+    if (!pendingDealId.current || deals.length === 0) return
+    const d = deals.find(x => x.id === pendingDealId.current)
+    if (d) {
+      setSelectedDeal(d)
+      pendingDealId.current = null
+    }
+  }, [deals])
 
   const load = useCallback(async () => {
     if (!clinicId) return
@@ -611,7 +635,7 @@ export default function CRMKanbanPage() {
         </div>
 
         <button
-          onClick={() => setSelectedDeal({
+          onClick={() => openDeal({
             id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
             pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
             stage: activeStages[0]?.code ?? null, funnel: activePipeline?.code ?? 'leads',
@@ -765,7 +789,7 @@ export default function CRMKanbanPage() {
                 </div>
                 <div className="p-2 space-y-2 min-h-[40px] max-h-[calc(100vh-240px)] overflow-y-auto">
                   {cards.map(d => (
-                    <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => setSelectedDeal(d)} />
+                    <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
                   ))}
                   {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
                 </div>
@@ -827,7 +851,7 @@ export default function CRMKanbanPage() {
                             return n
                           })
                         } else {
-                          setSelectedDeal(d)
+                          openDeal(d)
                         }
                       }}
                       className={`cursor-pointer ${isChecked ? 'bg-blue-50' : 'hover:bg-blue-50/40'}`}
@@ -935,8 +959,8 @@ export default function CRMKanbanPage() {
           reasons={reasons}
           apptTypes={apptTypes}
           allTags={Array.from(new Set(deals.flatMap(d => d.tags ?? []))).sort((a, b) => a.localeCompare(b, 'ru'))}
-          onClose={() => setSelectedDeal(null)}
-          onSaved={() => { setSelectedDeal(null); load() }}
+          onClose={() => closeDeal()}
+          onSaved={(wasNew) => { if (wasNew) closeDeal(); load() }}
         />
       )}
 
@@ -966,7 +990,7 @@ export default function CRMKanbanPage() {
       {showDupesModal && (
         <DuplicatesModal
           deals={deals}
-          onOpenDeal={(d) => { setShowDupesModal(false); setSelectedDeal(d) }}
+          onOpenDeal={(d) => { setShowDupesModal(false); openDeal(d) }}
           onClose={() => setShowDupesModal(false)}
         />
       )}
@@ -1226,18 +1250,75 @@ function DealModal({
   apptTypes: ApptType[]
   allTags: string[]
   onClose: () => void
-  onSaved: () => void
+  onSaved: (wasNew: boolean) => void
 }) {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
+  // Счётчик + список непрочитанных по ВСЕМ сделкам клиники
+  interface UnreadItem {
+    id: string
+    deal_id: string
+    deal_name: string | null
+    body: string
+    external_sender: string | null
+    created_at: string
+  }
+  const [totalUnread, setTotalUnread] = useState(0)
+  const [unreadItems, setUnreadItems] = useState<UnreadItem[]>([])
+  const [showUnreadPopup, setShowUnreadPopup] = useState(false)
+  const [unreadSearch, setUnreadSearch] = useState('')
+  const [unreadMenuOpen, setUnreadMenuOpen] = useState(false)
+  const [unreadSort, setUnreadSort] = useState<'newest' | 'unread' | 'favorites'>('newest')
+  const [unreadMuted, setUnreadMuted] = useState(false)
+  const [unreadBulkMode, setUnreadBulkMode] = useState(false)
+  const [unreadSelected, setUnreadSelected] = useState<Set<string>>(new Set())
+  const dealClinicId = deal.clinic_id
+  useEffect(() => {
+    if (!dealClinicId) return
+    const fetchUnread = async () => {
+      const { data } = await supabase
+        .from('deal_messages')
+        .select('id, deal_id, body, external_sender, created_at, deal:deals(name)')
+        .eq('clinic_id', dealClinicId)
+        .eq('direction', 'in')
+        .is('read_at', null)
+        .order('created_at', { ascending: false })
+        .limit(30)
+      const items = (data ?? []).map((m: Record<string, unknown>) => ({
+        id: m.id as string,
+        deal_id: m.deal_id as string,
+        deal_name: (m.deal as { name?: string | null } | null)?.name ?? null,
+        body: m.body as string,
+        external_sender: m.external_sender as string | null,
+        created_at: m.created_at as string,
+      }))
+      setUnreadItems(items)
+      setTotalUnread(items.length)
+    }
+    fetchUnread()
+    const interval = setInterval(fetchUnread, 8000)
+    return () => clearInterval(interval)
+  }, [dealClinicId, supabase])
+
   const [form, setForm] = useState<DealRow>({
     ...deal,
     // Старые сделки могут прийти без custom_fields — нормализуем.
     custom_fields: deal.custom_fields ?? {},
   })
   const [saving, setSaving] = useState(false)
+
+  // Кнопка «Сохранить» появляется только при наличии изменений
+  const DIRTY_KEYS: (keyof DealRow)[] = [
+    'name','patient_id','pipeline_id','stage_id','responsible_user_id',
+    'source_id','amount','preferred_doctor_id','appointment_type',
+    'loss_reason_id','contact_phone','contact_city','notes','tags','custom_fields',
+  ]
+  const isDirty = isNew || DIRTY_KEYS.some(k => {
+    const a = form[k], b = deal[k]
+    return JSON.stringify(a) !== JSON.stringify(b)
+  })
   // Доступ к «Хронологии» (аудит-лог событий по сделке) — только у админа.
   const isAdmin = profile?.role?.slug === 'admin'
   const [activeTab, setActiveTab] = useState<'chat' | 'timeline' | 'tasks'>('chat')
@@ -1251,6 +1332,10 @@ function DealModal({
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [comments, setComments] = useState<CommentRow[]>([])
   const [messages, setMessages] = useState<MessageRow[]>([])
+  const chatEndRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
   const [search, setSearch] = useState('')
   const [msgDraft, setMsgDraft] = useState('')
   const msgChannel: MessageRow['channel'] = 'whatsapp'
@@ -1261,6 +1346,7 @@ function DealModal({
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
   const [sendingPrepay, setSendingPrepay] = useState(false)
+  const [sending, setSending] = useState(false)
   // Статус WhatsApp-интеграции (Green API). null = ещё не проверяли.
   const [waConnected, setWaConnected] = useState<boolean | null>(null)
   // amoCRM-стиль: меню «…» в шапке карточки (удаление и т.п.).
@@ -1359,6 +1445,102 @@ function DealModal({
   }, [deal.id, isNew, supabase])
 
   useEffect(() => { loadRelated() }, [loadRelated])
+
+  // Realtime: подписка на deal_messages для текущей открытой сделки.
+  // Пока модалка открыта — любые INSERT/UPDATE по этой сделке
+  // немедленно попадают в список без reload-а страницы.
+  useEffect(() => {
+    if (isNew || !deal.id) return
+    const ch = supabase.channel(`deal-messages:${deal.id}`)
+    // Приводим к any: перегрузка .on('postgres_changes', …) требует
+    // приватных типов из @supabase/realtime-js, а нам хватит рантайма.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(ch as any).on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'deal_messages',
+        filter: `deal_id=eq.${deal.id}`,
+      },
+      (payload: { new: MessageRow }) => {
+        const row = payload.new
+        setMessages(prev => {
+          // Дедуп на случай, если строку уже подставил оптимистичный setState
+          if (prev.some(m => m.id === row.id)) return prev
+          return [...prev, row]
+        })
+        // Входящее — сразу помечаем прочитанным, т.к. карточка открыта
+        if (row.direction === 'in') {
+          supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ).on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'deal_messages',
+        filter: `deal_id=eq.${deal.id}`,
+      },
+      (payload: { new: MessageRow }) => {
+        const row = payload.new
+        setMessages(prev => prev.map(m => (m.id === row.id ? { ...m, ...row } : m)))
+      }
+    )
+    ch.subscribe()
+
+    return () => {
+      supabase.removeChannel(ch)
+    }
+  }, [deal.id, isNew, supabase])
+
+  // Polling fallback для чата в открытой сделке.
+  // wss://*.supabase.co часто блокируется VPN/прокси, и realtime-подписка
+  // выше не работает. Каждые 5 сек добираем сообщения этой сделки новее
+  // max(created_at) из уже загруженных и мержим в state с дедупом по id.
+  useEffect(() => {
+    if (isNew || !deal.id) return
+    let stopped = false
+    const id = setInterval(async () => {
+      if (stopped) return
+      // Определяем «с какого момента» искать новые. Берём max(created_at)
+      // из текущего state через функциональный setMessages, чтобы не
+      // лопатить deps и не ретриггерить интервал при каждом изменении.
+      let since: string | null = null
+      setMessages(prev => {
+        if (prev.length > 0) {
+          since = prev[prev.length - 1].created_at
+        }
+        return prev
+      })
+      const query = supabase
+        .from('deal_messages')
+        .select('*')
+        .eq('deal_id', deal.id)
+        .order('created_at', { ascending: true })
+        .limit(50)
+      const { data } = since
+        ? await query.gt('created_at', since)
+        : await query
+      if (stopped || !data || data.length === 0) return
+      setMessages(prev => {
+        const known = new Set(prev.map(m => m.id))
+        const toAdd = (data as MessageRow[]).filter(m => !known.has(m.id))
+        if (toAdd.length === 0) return prev
+        // Если появилось новое входящее — помечаем прочитанным
+        if (toAdd.some(m => m.direction === 'in')) {
+          supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+        }
+        return [...prev, ...toAdd]
+      })
+    }, 5000)
+    return () => {
+      stopped = true
+      clearInterval(id)
+    }
+  }, [deal.id, isNew, supabase])
 
   // Загрузка конфигов полей по клинике сделки.
   useEffect(() => {
@@ -1502,7 +1684,7 @@ function DealModal({
       : await supabase.from('deals').update(payload).eq('id', form.id)
     setSaving(false)
     if (error) { alert('Ошибка: ' + error.message); return }
-    onSaved()
+    onSaved(isNew)
   }
 
   async function removeDeal() {
@@ -1510,7 +1692,7 @@ function DealModal({
     if (!confirm('Удалить сделку? Она будет помечена удалённой (deleted_at).')) return
     const { error } = await supabase.from('deals').update({ deleted_at: new Date().toISOString() }).eq('id', form.id)
     if (error) { alert(error.message); return }
-    onSaved()
+    onSaved(true) // удаление — закрываем модалку
   }
 
   async function addComment() {
@@ -1529,17 +1711,27 @@ function DealModal({
 
   async function sendMessage() {
     const body = msgDraft.trim()
-    if (!body || isNew) return
-    // API-роут: инсёртит + дергает Green-API и проставляет статус
-    const res = await fetch(`/api/deals/${form.id}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body, channel: msgChannel }),
-    })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
+    if (!body || isNew || sending) return
+    // Оптимистично очищаем черновик сразу — не ждём ответа API
     setMsgDraft('')
-    loadRelated()
+    setSending(true)
+    try {
+      // API-роут: инсёртит + дергает Green-API и проставляет статус
+      const res = await fetch(`/api/deals/${form.id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, channel: msgChannel }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); setMsgDraft(body); return }
+      // Дедуп по id: если Realtime позже принесёт ту же строку, выкинет её.
+      const m = json.message as MessageRow | undefined
+      if (m) {
+        setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+      }
+    } finally {
+      setSending(false)
+    }
   }
 
   async function sendPrepayRequest() {
@@ -1555,7 +1747,10 @@ function DealModal({
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
-      loadRelated()
+      const m = json.message as MessageRow | undefined
+      if (m) {
+        setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+      }
     } finally {
       setSendingPrepay(false)
     }
@@ -1563,38 +1758,47 @@ function DealModal({
 
   async function submitComposer() {
     const body = msgDraft.trim()
-    if (!body || isNew) return
+    if (!body || isNew || sending) return
 
     if (composerMode === 'chat') {
       await sendMessage()
       return
     }
-    if (composerMode === 'note') {
-      // Примечание — внутреннее сообщение (channel='internal'), клиенту не уходит.
-      const res = await fetch(`/api/deals/${form.id}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body, channel: 'internal' }),
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); return }
-      setMsgDraft('')
-      loadRelated()
-      return
-    }
-    if (composerMode === 'task') {
-      const { error } = await supabase.from('deal_tasks').insert({
-        deal_id: form.id,
-        clinic_id: form.clinic_id,
-        title: body,
-        due_at: composerTaskDue ? new Date(composerTaskDue).toISOString() : null,
-        assignee_id: composerTaskAssignee || profile?.id || null,
-        created_by: profile?.id ?? null,
-      })
-      if (error) { alert(error.message); return }
-      setMsgDraft(''); setComposerTaskDue(''); setComposerTaskAssignee('')
-      loadRelated()
-      return
+    setSending(true)
+    try {
+      if (composerMode === 'note') {
+        // Примечание — внутреннее сообщение (channel='internal'), клиенту не уходит.
+        setMsgDraft('')
+        const res = await fetch(`/api/deals/${form.id}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body, channel: 'internal' }),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); setMsgDraft(body); return }
+        const m = json.message as MessageRow | undefined
+        if (m) {
+          setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+        }
+        return
+      }
+      if (composerMode === 'task') {
+        setMsgDraft('')
+        const { error } = await supabase.from('deal_tasks').insert({
+          deal_id: form.id,
+          clinic_id: form.clinic_id,
+          title: body,
+          due_at: composerTaskDue ? new Date(composerTaskDue).toISOString() : null,
+          assignee_id: composerTaskAssignee || profile?.id || null,
+          created_by: profile?.id ?? null,
+        })
+        if (error) { alert(error.message); setMsgDraft(body); return }
+        setComposerTaskDue(''); setComposerTaskAssignee('')
+        loadRelated()
+        return
+      }
+    } finally {
+      setSending(false)
     }
   }
 
@@ -1697,9 +1901,190 @@ function DealModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
       <div
-        className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden"
+        className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden relative"
         onClick={e => e.stopPropagation()}
       >
+        {/* Боковая панель непрочитанных — выезжает слева */}
+        {showUnreadPopup && (
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white border-r border-gray-200 shadow-xl z-40 flex flex-col">
+            {/* Шапка */}
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between shrink-0">
+              <span className="text-sm font-semibold text-gray-800">Непрочитанные {totalUnread > 0 && <span className="ml-1 text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">{totalUnread}</span>}</span>
+              <button onClick={() => setShowUnreadPopup(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            </div>
+            {/* Поиск + меню */}
+            <div className="px-3 py-2 border-b border-gray-100 shrink-0 flex items-center gap-2">
+              <div className="relative flex-1">
+                <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2"/>
+                  <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                <input
+                  type="text"
+                  value={unreadSearch}
+                  onChange={e => setUnreadSearch(e.target.value)}
+                  placeholder="Поиск…"
+                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-200 rounded-md outline-none focus:border-blue-400"
+                />
+              </div>
+              {/* Меню сортировки */}
+              <div className="relative shrink-0">
+                <button
+                  onClick={() => setUnreadMenuOpen(v => !v)}
+                  className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500"
+                  title="Ещё"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>
+                  </svg>
+                </button>
+                {unreadMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 w-52 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1 text-xs">
+                    {/* Действия */}
+                    <button onClick={() => { setUnreadBulkMode(v => !v); setUnreadMenuOpen(false) }}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2.5 text-gray-700">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.8"/><rect x="3" y="10" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.8"/><rect x="3" y="15" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.8"/><path d="M10 7h11M10 12h11M10 17h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                      Массовые действия
+                    </button>
+                    <button onClick={() => { setUnreadMuted(v => !v); setUnreadMenuOpen(false) }}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2.5 text-gray-700">
+                      {unreadMuted
+                        ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2v6h4l5 4V5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M23 9l-6 6M17 9l6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                        : <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2v6h4l5 4V5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                      }
+                      {unreadMuted ? 'Включить звук' : 'Отключить звук'}
+                    </button>
+                    <div className="my-1 border-t border-gray-100" />
+                    {/* Сортировка */}
+                    <div className="px-3 py-1.5 text-gray-400 text-[10px] uppercase tracking-wider">Сортировка</div>
+                    {(['newest','unread','favorites'] as const).map(opt => (
+                      <button key={opt}
+                        onClick={() => { setUnreadSort(opt); setUnreadMenuOpen(false) }}
+                        className={`w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 ${unreadSort === opt ? 'text-blue-600 font-medium' : 'text-gray-700'}`}
+                      >
+                        {unreadSort === opt && <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {opt === 'newest' ? 'Сначала новые' : opt === 'unread' ? 'Сначала непрочитанные' : 'Избранные'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Панель массовых действий */}
+            {unreadBulkMode && (
+              <div className="px-3 py-2 border-b border-gray-200 bg-white shrink-0">
+                <div className="flex items-center gap-1.5">
+                  {/* Прочитать */}
+                  <button
+                    disabled={unreadSelected.size === 0}
+                    onClick={async () => {
+                      await supabase.from('deal_messages')
+                        .update({ read_at: new Date().toISOString() })
+                        .in('id', Array.from(unreadSelected))
+                      setUnreadSelected(new Set())
+                      setUnreadBulkMode(false)
+                    }}
+                    className="flex items-center gap-1 text-xs px-2 py-1.5 rounded border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Прочитать
+                  </button>
+                  {/* Удалить */}
+                  <button
+                    disabled={unreadSelected.size === 0}
+                    onClick={async () => {
+                      if (!confirm(`Удалить ${unreadSelected.size} сообщений?`)) return
+                      await supabase.from('deal_messages')
+                        .delete()
+                        .in('id', Array.from(unreadSelected))
+                      setUnreadSelected(new Set())
+                      setUnreadBulkMode(false)
+                    }}
+                    className="flex items-center gap-1 text-xs px-2 py-1.5 rounded border border-gray-200 text-red-500 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                    Удалить
+                  </button>
+                  <div className="flex-1" />
+                  {/* × — выход из bulk-режима */}
+                  <button
+                    onClick={() => { setUnreadSelected(new Set()); setUnreadBulkMode(false) }}
+                    className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 text-base leading-none"
+                    title="Отмена"
+                  >×</button>
+                  {/* □ — выбрать всё / снять выбор */}
+                  {(() => {
+                    const allIds = unreadItems.map(m => m.id)
+                    const allSelected = allIds.length > 0 && allIds.every(id => unreadSelected.has(id))
+                    return (
+                      <button
+                        onClick={() => {
+                          if (allSelected) {
+                            setUnreadSelected(new Set())
+                          } else {
+                            setUnreadSelected(new Set(allIds))
+                          }
+                        }}
+                        className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500"
+                        title={allSelected ? 'Снять выбор' : 'Выбрать все'}
+                      >
+                        {allSelected
+                          ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="2" fill="currentColor" className="text-blue-500"/><path d="M8 12l3 3 5-5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          : <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="2"/></svg>
+                        }
+                      </button>
+                    )
+                  })()}
+                </div>
+                {unreadSelected.size > 0 && (
+                  <div className="mt-1 text-[10px] text-gray-400">{unreadSelected.size} выбрано</div>
+                )}
+              </div>
+            )}
+
+            {/* Список */}
+            {unreadItems.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center text-sm text-gray-400">Всё прочитано</div>
+            ) : (
+              <ul className="flex-1 overflow-y-auto divide-y divide-gray-100">
+                {unreadItems
+                  .filter(m => !unreadSearch || (m.deal_name ?? '').toLowerCase().includes(unreadSearch.toLowerCase()) || m.body.toLowerCase().includes(unreadSearch.toLowerCase()) || (m.external_sender ?? '').toLowerCase().includes(unreadSearch.toLowerCase()))
+                  .map(m => {
+                    const isSelected = unreadSelected.has(m.id)
+                    return (
+                  <li key={m.id}
+                    className={`px-3 py-3 hover:bg-blue-50 cursor-pointer transition-colors flex items-start gap-2 ${isSelected ? 'bg-blue-50' : ''}`}
+                    onClick={() => {
+                      if (unreadBulkMode) {
+                        setUnreadSelected(prev => { const n = new Set(prev); n.has(m.id) ? n.delete(m.id) : n.add(m.id); return n })
+                      } else {
+                        setShowUnreadPopup(false); onSaved(false)
+                      }
+                    }}>
+                    {unreadBulkMode && (
+                      <input type="checkbox" checked={isSelected} readOnly className="mt-0.5 shrink-0 accent-blue-600" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-0.5">
+                        <span className="text-xs font-semibold text-gray-900 truncate">
+                          {m.deal_name ?? `#${m.deal_id.slice(0, 8)}`}
+                        </span>
+                        <span className="text-[10px] text-gray-400 shrink-0">
+                          {new Date(m.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 truncate">
+                        {m.external_sender && <span className="text-gray-400 mr-1">{m.external_sender}:</span>}
+                        {m.body}
+                      </div>
+                    </div>
+                  </li>
+                    )
+                  })}
+              </ul>
+            )}
+          </div>
+        )}
         {/* Header */}
         <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -2171,51 +2556,6 @@ function DealModal({
              * скроллится сам, если разрастётся; tabs-карточка занимает всё
              * оставшееся место по высоте, чтобы композер всегда был у футера. */}
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="p-5 pb-0 space-y-4 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '40%' }}>
-              {/* Linked appointments */}
-              {!isNew && appointments.length > 0 && (
-                <div className="bg-white border border-gray-200 rounded-lg">
-                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
-                    Приёмы ({appointments.length})
-                  </div>
-                  <div className="divide-y divide-gray-100">
-                    {appointments.map(a => (
-                      <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 text-sm">
-                        <div className="text-gray-500 w-32 shrink-0">
-                          {a.date} · {a.time_start?.slice(0,5)}
-                        </div>
-                        <div className="flex-1 text-gray-700">
-                          {a.doctor ? `${a.doctor.first_name} ${a.doctor.last_name ?? ''}` : '—'}
-                          {a.service && <span className="text-gray-500"> · {a.service.name}</span>}
-                        </div>
-                        <span className="text-xs text-gray-400 shrink-0">{a.status}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Lab orders */}
-              {!isNew && labOrders.length > 0 && (
-                <div className="bg-white border border-gray-200 rounded-lg">
-                  <div className="px-4 py-2.5 border-b border-gray-100 text-sm font-medium text-gray-900">
-                    Лабораторные заказы ({labOrders.length})
-                  </div>
-                  <div className="divide-y divide-gray-100">
-                    {labOrders.map(o => (
-                      <div key={o.id} className="px-4 py-2 flex items-center gap-3 text-sm">
-                        <Link href={`/lab/${o.id}`} className="text-blue-600 hover:underline">
-                          #{o.id.slice(0, 8)}
-                        </Link>
-                        <span className="text-gray-500">{new Date(o.created_at).toLocaleDateString('ru-RU')}</span>
-                        <span className="ml-auto text-xs text-gray-400">{o.status}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
             {/* Tabs + чат: растягиваемся на оставшуюся высоту, композер прилипает к низу */}
             <div className="flex-1 min-h-0 p-5 pt-4 flex flex-col overflow-hidden">
               {/* Tabs: chat / timeline / tasks */}
@@ -2259,21 +2599,49 @@ function DealModal({
                       {/* Messages list */}
                       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
                         {(() => {
-                          const filtered = messages.filter(m =>
-                            !search || m.body.toLowerCase().includes(search.toLowerCase())
-                          )
-                          if (filtered.length === 0) {
+                          const q = search.toLowerCase()
+                          // Системные события (кроме дублирующих message_in/out)
+                          const SKIP_KINDS = new Set(['message_in', 'message_out'])
+                          const evItems = events
+                            .filter(e => !SKIP_KINDS.has(e.kind))
+                            .filter(e => !q || (EVENT_LABEL[e.kind] ?? e.kind).toLowerCase().includes(q) || renderEventBody(e).toLowerCase().includes(q))
+                            .map(e => ({ type: 'event' as const, ts: e.created_at, e }))
+                          const msgItems = messages
+                            .filter(m => !q || m.body.toLowerCase().includes(q))
+                            .map(m => ({ type: 'msg' as const, ts: m.created_at, m }))
+                          const combined = [...evItems, ...msgItems].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0)
+
+                          if (combined.length === 0) {
                             return (
                               <div className="text-sm text-gray-400 py-8 text-center">
                                 {search ? 'Ничего не найдено' : 'Пока нет сообщений'}
                               </div>
                             )
                           }
-                          return filtered.map(m => {
+                          return combined.map(item => {
+                            // Системное событие — центрированная серая строка
+                            if (item.type === 'event') {
+                              const e = item.e
+                              const label = EVENT_LABEL[e.kind] ?? e.kind
+                              const body = renderEventBody(e)
+                              return (
+                                <div key={`ev-${e.id}`} className="flex items-center gap-2 my-1">
+                                  <div className="flex-1 h-px bg-gray-200" />
+                                  <div className="text-[11px] text-gray-500 whitespace-nowrap max-w-[80%] text-center">
+                                    <span className="font-medium text-gray-700">{label}</span>
+                                    {body && <span className="text-gray-500"> — {body}</span>}
+                                    {e.actor_name && <span className="text-gray-400"> · {e.actor_name}</span>}
+                                    <span className="text-gray-400 ml-1">{new Date(e.created_at).toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</span>
+                                  </div>
+                                  <div className="flex-1 h-px bg-gray-200" />
+                                </div>
+                              )
+                            }
+                            const m = item.m
                             // Примечание — внутреннее, центрированное, мягкое жёлтое
                             if (m.channel === 'internal') {
                               return (
-                                <div key={m.id} className="flex justify-center">
+                                <div key={`msg-${m.id}`} className="flex justify-center">
                                   <div className="max-w-[85%] rounded-md px-3 py-2 text-sm bg-amber-100 text-gray-900">
                                     <div className="flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider text-gray-600">
                                       <span>📝 Примечание · только для команды</span>
@@ -2291,7 +2659,7 @@ function DealModal({
                             }
                             // Обычное сообщение — входящее (серое) / исходящее (синее)
                             return (
-                              <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                              <div key={`msg-${m.id}`} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
                                   m.direction === 'out'
                                     ? 'bg-blue-600 text-white'
@@ -2324,6 +2692,7 @@ function DealModal({
                             )
                           })
                         })()}
+                        <div ref={chatEndRef} />
                       </div>
 
                       {/* Composer (amoCRM-style: Чат / Примечание / Задача) */}
@@ -2560,10 +2929,11 @@ function DealModal({
                           />
                           <button
                             onClick={submitComposer}
-                            disabled={!msgDraft.trim()}
+                            disabled={!msgDraft.trim() || sending}
                             className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
                           >
-                            {composerMode === 'chat' ? 'Отправить' :
+                            {sending ? '…' :
+                             composerMode === 'chat' ? 'Отправить' :
                              composerMode === 'note' ? 'Сохранить' :
                              'Поставить'}
                           </button>
@@ -2742,16 +3112,33 @@ function DealModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 bg-white border-t border-gray-200 flex items-center justify-end">
-          <div className="flex gap-2">
-            <button onClick={onClose} className="px-4 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">
-              Отмена
-            </button>
+        <div className="px-6 py-4 bg-white border-t border-gray-200 flex items-center gap-4 relative">
+          {isDirty && (
             <button onClick={save} disabled={saving}
-              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
+              className="px-5 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md">
               {saving ? 'Сохраняем…' : 'Сохранить'}
             </button>
-          </div>
+          )}
+
+          {/* Бейдж непрочитанных — слева, открывает боковую панель */}
+          <button
+            onClick={() => setShowUnreadPopup(v => !v)}
+            className={`flex items-center gap-2 px-3 py-2 rounded-md transition-colors ${showUnreadPopup ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-100 text-gray-600'}`}
+          >
+            <span className="relative flex items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              {totalUnread > 0 && (
+                <span className="absolute -top-2 -right-2 min-w-[17px] h-[17px] px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </span>
+              )}
+            </span>
+            <span className="text-sm">
+              {totalUnread > 0 ? `${totalUnread} непрочитанных` : 'Нет новых'}
+            </span>
+          </button>
         </div>
       </div>
 

@@ -33,6 +33,8 @@ interface LabOrder {
   notes: string | null
   ordered_at: string
   sample_taken_at: string | null
+  verified_at?: string | null
+  verified_by?: string | null
   // Snapshot (filled at creation time)
   patient_name_snapshot?: string | null
   sex_snapshot?: 'male' | 'female' | 'other' | null
@@ -554,16 +556,38 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const advance = async () => {
     const next = NEXT_STATUS[order.status]
     if (!next) return
-    // Safety: verifying an order copies items to patient_lab_results. Warn if
-    // some items still have no result entered.
-    if (next.status === 'verified') {
-      const items = order.items ?? []
+    const items = order.items ?? []
+    // Safety: переход в Готов / Верифицирован — проверяем, что результаты
+    // реально внесены. Отдельно предлагаем дозаписать «набранное, но не
+    // сохранённое» содержимое из состояния results (чтобы лаборант не терял
+    // уже введённые цифры, если забыл нажать «Сохранить»).
+    if (next.status === 'ready' || next.status === 'verified') {
+      // Есть ли набранные, но ещё не сохранённые в БД значения?
+      const unsaved = items.filter(i => {
+        if (i.verified_at) return false
+        const raw = (results[i.id] ?? '').trim()
+        if (!raw) return false
+        const dbRaw =
+          i.result_value != null ? String(i.result_value).replace('.', ',')
+          : (i.result_text ?? '')
+        return raw !== dbRaw
+      })
+      if (unsaved.length > 0) {
+        // Автосейв без лишнего диалога — лаборанту не нужно ловить модалки
+        await saveResults()
+      }
+      // После возможного сохранения — проверяем, что хоть где-то есть результат
       const empty = items.filter(i => {
         const raw = (results[i.id] ?? '').trim()
         const hasDb = i.result_value != null || (i.result_text && i.result_text.length > 0)
         return !raw && !hasDb
       })
-      if (empty.length > 0) {
+      if (empty.length === items.length && items.length > 0) {
+        const ok = window.confirm(
+          `Ни один результат ещё не внесён.\n\nВсё равно отметить направление как «${next.label ?? next.status}»?`
+        )
+        if (!ok) return
+      } else if (empty.length > 0 && next.status === 'verified') {
         const names = empty.map(i => i.name).join(', ')
         const ok = window.confirm(
           `У ${empty.length} из ${items.length} анализов нет результата:\n${names}\n\nВсё равно верифицировать? В историю пациента попадут только заполненные.`
@@ -591,7 +615,13 @@ function OrderDrawer({ order, onClose, onUpdated }: {
         ))
       }
     }
-    await supabase.from('lab_orders').update({ status: next.status }).eq('id', order.id)
+    const orderPatch: Record<string, unknown> = { status: next.status }
+    // Штампуем дату готовности при первом переходе в ready/verified
+    if ((next.status === 'ready' || next.status === 'verified') && !order.verified_at) {
+      orderPatch.verified_at = now
+      orderPatch.verified_by = profile?.id ?? null
+    }
+    await supabase.from('lab_orders').update(orderPatch).eq('id', order.id)
     setSaving(false)
     onUpdated()
     onClose()
@@ -1003,6 +1033,43 @@ function OrderDrawer({ order, onClose, onUpdated }: {
               ✓ Результаты сохранены в историю пациента
             </p>
           )}
+          {/* Owner/admin fix: вернуть ошибочно закрытое направление в работу.
+              Видно только если статус ready/verified И ни одного результата. */}
+          {(() => {
+            const role = profile?.role?.slug
+            const canRevert = role === 'owner' || role === 'admin'
+            const isReadyLike = order.status === 'ready' || order.status === 'verified'
+            const hasAnyResult = (order.items ?? []).some(
+              i => i.result_value != null || (i.result_text && i.result_text.length > 0)
+            )
+            if (!canRevert || !isReadyLike || hasAnyResult) return null
+            return (
+              <button
+                disabled={saving}
+                onClick={async () => {
+                  if (!window.confirm('Вернуть направление в статус «В работе»? Лаборант сможет внести результаты заново.')) return
+                  setSaving(true)
+                  await supabase.from('lab_orders').update({
+                    status: 'in_progress',
+                    verified_at: null,
+                    verified_by: null,
+                  }).eq('id', order.id)
+                  // снять verified_at/by и с items, если там что-то было
+                  await supabase.from('lab_order_items').update({
+                    verified_at: null,
+                    verified_by: null,
+                  }).eq('order_id', order.id)
+                  setSaving(false)
+                  onUpdated()
+                  onClose()
+                }}
+                className="w-full py-2 rounded-lg text-xs font-medium border border-orange-200 text-orange-700 hover:bg-orange-50 transition-colors disabled:opacity-60"
+                title="Доступно только owner/admin"
+              >
+                ↩ Вернуть в работу
+              </button>
+            )
+          })()}
         </div>
       </div>
 

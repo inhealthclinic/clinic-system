@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { usePermissions } from '@/lib/hooks/usePermissions'
 import type { Appointment, Doctor } from '@/types'
 import {
   DEFAULT_APPT_TYPES,
@@ -1012,7 +1013,11 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
 
   // Lab integration
   const [labOrderId, setLabOrderId] = useState<string | null>(null)
+  const [labOrderStatus, setLabOrderStatus] = useState<string | null>(null)
+  const [labOrderItemNames, setLabOrderItemNames] = useState<string[]>([])
   const [transferringLab, setTransferringLab] = useState(false)
+  const [addingToLab, setAddingToLab] = useState(false)
+  const [labResultsOpen, setLabResultsOpen] = useState(false)
   const [labPickerOpen, setLabPickerOpen] = useState(false)
   const [nuanceOpen, setNuanceOpen]       = useState(false)
   const [cardOpen, setCardOpen]           = useState(false)
@@ -1060,17 +1065,22 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       const [{ data: svcs }, { data: pmts }, { data: lab }] = await Promise.all([
         supabase.from('visit_services').select('*').eq('visit_id', v.id).order('created_at'),
         supabase.from('payments').select('*').eq('visit_id', v.id).order('paid_at'),
-        supabase.from('lab_orders').select('id').eq('visit_id', v.id).maybeSingle(),
+        supabase.from('lab_orders').select('id, status, lab_order_items(name)').eq('visit_id', v.id).maybeSingle(),
       ])
       setVisitServices((svcs ?? []) as VisitServiceRow[])
       setVisitPayments((pmts ?? []) as VisitPaymentRow[])
-      setLabOrderId(lab?.id ?? null)
+      const labData = lab as { id: string; status: string; lab_order_items: { name: string }[] } | null
+      setLabOrderId(labData?.id ?? null)
+      setLabOrderStatus(labData?.status ?? null)
+      setLabOrderItemNames(labData?.lab_order_items?.map(i => i.name.toLowerCase()) ?? [])
     } else {
       setVisitId(null)
       setVisitTotals({ total_price: 0, total_paid: 0, payment_status: 'unpaid' })
       setVisitServices([])
       setVisitPayments([])
       setLabOrderId(null)
+      setLabOrderStatus(null)
+      setLabOrderItemNames([])
     }
     setFinLoading(false)
   }, [appt.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1493,6 +1503,8 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
       visit_id:   vid,
       status:     'ordered',
       created_by: profile?.id ?? null,
+      // Проба считается взятой в момент отправки в лабораторию
+      sample_taken_at: new Date().toISOString(),
       // Demographic snapshot — frozen for historical accuracy
       patient_name_snapshot:       patDemo?.full_name ?? null,
       sex_snapshot:                patDemo?.gender ?? null,
@@ -1537,7 +1549,76 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     }
 
     setLabOrderId(order.id)
+    setLabOrderStatus('ordered')
+    setLabOrderItemNames(labRows.map(r => r.name.toLowerCase()))
     setTransferringLab(false)
+
+    // Немедленно уведомляем LabNotifier через CustomEvent — пока AudioContext
+    // ещё активен от клика пользователя (не ждём Realtime/polling 8 сек)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('lab:order-created', {
+        detail: {
+          id:                    order.id,
+          clinic_id:             clinicId,
+          patient_id:            appt.patient_id ?? null,
+          patient_name_snapshot: patDemo?.full_name ?? null,
+          order_number:          null,
+          status:                'ordered',
+          created_at:            new Date().toISOString(),
+        },
+      }))
+    }
+  }
+
+  // ── Add new lab services to existing order ─────────────────
+  const addToLabOrder = async () => {
+    if (!labOrderId || addingToLab) return
+    const labRows = visitServices.filter(s => s.is_lab)
+    // Find services not yet in the lab order (by name, case-insensitive)
+    const newRows = labRows.filter(r => !labOrderItemNames.includes(r.name.toLowerCase()))
+    if (newRows.length === 0) return
+    setAddingToLab(true)
+
+    const names = Array.from(new Set(newRows.map(r => r.name.toLowerCase())))
+    const { data: tpl } = await supabase
+      .from('lab_test_templates')
+      .select('id, name')
+      .eq('clinic_id', clinicId)
+      .eq('is_active', true)
+    const tplByName = new Map<string, string>()
+    for (const t of (tpl ?? []) as { id: string; name: string }[]) {
+      if (names.includes(t.name.toLowerCase())) tplByName.set(t.name.toLowerCase(), t.id)
+    }
+
+    const items: Array<{ order_id: string; template_id: string | null; name: string; price: number; status: string }> = []
+    for (const r of newRows) {
+      const tid = tplByName.get(r.name.toLowerCase()) ?? null
+      const qty = Math.max(1, r.quantity)
+      for (let i = 0; i < qty; i++) {
+        items.push({ order_id: labOrderId, template_id: tid, name: r.name, price: Number(r.price_at_booking), status: 'pending' })
+      }
+    }
+    const { error } = await supabase.from('lab_order_items').insert(items)
+    if (error) {
+      alert('Не удалось добавить анализы: ' + error.message)
+    } else {
+      setLabOrderItemNames(prev => [...prev, ...newRows.map(r => r.name.toLowerCase())])
+      // Уведомляем лаборанта об обновлении заказа
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('lab:order-created', {
+          detail: {
+            id:                    labOrderId + '-add-' + Date.now(),
+            clinic_id:             clinicId,
+            patient_id:            appt.patient_id ?? null,
+            patient_name_snapshot: patDemo?.full_name ?? null,
+            order_number:          null,
+            status:                'ordered',
+            created_at:            new Date().toISOString(),
+          },
+        }))
+      }
+    }
+    setAddingToLab(false)
   }
 
   return (
@@ -1891,15 +1972,31 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
               )}
             </>
           )}
-          {hasLab && labOrderId && (
-            <button
-              onClick={() => router.push(`/lab/${labOrderId}`)}
-              className="w-full flex items-center justify-center gap-2 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg py-2 text-sm font-medium transition-colors"
-            >
-              <span className="text-base leading-none">🧪</span>
-              Открыть заказ в лаборатории
-            </button>
-          )}
+          {hasLab && labOrderId && (() => {
+            const newLabSvcs = visitServices.filter(s => s.is_lab && !labOrderItemNames.includes(s.name.toLowerCase()))
+            const canAddMore = !['verified','delivered'].includes(labOrderStatus ?? '')
+            return (
+              <>
+                {newLabSvcs.length > 0 && canAddMore && (
+                  <button
+                    onClick={addToLabOrder}
+                    disabled={addingToLab}
+                    className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors"
+                  >
+                    <span className="text-base leading-none">🧪</span>
+                    {addingToLab ? 'Добавление...' : `Добавить ${newLabSvcs.length} анализ${newLabSvcs.length > 1 ? 'а' : ''} в заказ`}
+                  </button>
+                )}
+                <button
+                  onClick={() => setLabResultsOpen(true)}
+                  className="w-full flex items-center justify-center gap-2 border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg py-2 text-sm font-medium transition-colors"
+                >
+                  <span className="text-base leading-none">🧪</span>
+                  Результаты анализов
+                </button>
+              </>
+            )
+          })()}
           {visitType !== 'lab' && (
             <button
               onClick={handleOpenVisit}
@@ -2119,7 +2216,457 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
           }}
         />
       )}
+      {labResultsOpen && labOrderId && (
+        <LabResultsModal
+          orderId={labOrderId}
+          patientName={patDemo?.full_name ?? appt.patient?.full_name ?? ''}
+          patientGender={patDemo?.gender ?? null}
+          patientBirthDate={patDemo?.birth_date ?? null}
+          onClose={() => setLabResultsOpen(false)}
+        />
+      )}
     </>
+  )
+}
+
+// ─── LabResultsModal ──────────────────────────────────────────────────────────
+const LAB_STATUS_STEPS = [
+  { key: 'ordered',      label: 'Новый' },
+  { key: 'agreed',       label: 'Согласован' },
+  { key: 'sample_taken', label: 'Взят образец' },
+  { key: 'in_progress',  label: 'В работе' },
+  { key: 'ready',        label: 'Готов' },
+  { key: 'verified',     label: 'Верифицирован' },
+]
+
+const FLAG_COLORS: Record<string, string> = {
+  high:     'text-orange-600 bg-orange-50 border-orange-200',
+  low:      'text-blue-600 bg-blue-50 border-blue-200',
+  critical: 'text-red-600 bg-red-50 border-red-200',
+  normal:   'text-green-600 bg-green-50 border-green-200',
+}
+const FLAG_LABEL: Record<string, string> = {
+  high: '↑', low: '↓', critical: '!!', normal: 'N',
+}
+
+function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate, onClose }: {
+  orderId: string
+  patientName: string
+  patientGender?: 'male' | 'female' | 'other' | null
+  patientBirthDate?: string | null
+  onClose: () => void
+}) {
+  const supabase = useMemo(() => createClient(), [])
+  const { isOwner, isAdmin } = usePermissions()
+  const [reverting, setReverting] = useState(false)
+  const [order, setOrder] = useState<{
+    status: string
+    order_number: string | null
+    ordered_at: string
+    sample_taken_at?: string | null
+    verified_at?: string | null
+    sex_snapshot?: string | null
+    age_snapshot?: number | null
+    patient_name_snapshot?: string | null
+    doctor?: { first_name: string; last_name: string } | null
+    patient?: { birth_date?: string | null; gender?: string | null } | null
+    items: Array<{
+      id: string; name: string; price: number | null
+      result_value?: number | string | null
+      result_text?: string | null
+      unit_snapshot?: string | null
+      reference_min?: number | null
+      reference_max?: number | null
+      reference_text?: string | null
+      flag?: string | null
+    }>
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('lab_orders')
+        .select('status, patient_id, order_number, ordered_at, sample_taken_at, verified_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
+        .eq('id', orderId)
+        .single()
+      if (!data) { setLoading(false); return }
+      // Тянем пациента отдельно — join может не отдать запись (RLS, soft-delete)
+      let patient: { birth_date?: string | null; gender?: string | null } | null = null
+      const pid = (data as unknown as { patient_id?: string | null }).patient_id
+      if (pid) {
+        const { data: p } = await supabase.from('patients')
+          .select('birth_date, gender')
+          .eq('id', pid)
+          .maybeSingle()
+        if (p) patient = p as { birth_date?: string | null; gender?: string | null }
+      }
+      setOrder({ ...(data as unknown as Record<string, unknown>), patient } as unknown as typeof order)
+      setLoading(false)
+    })()
+  }, [orderId, supabase])
+
+  const handlePrint = () => {
+    const w = window.open('', '_blank', 'width=900,height=700')
+    if (!w || !order) return
+
+    const pName = order.patient_name_snapshot ?? patientName
+    const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
+    // Приоритет: живые данные карточки пациента → prop → замороженный snapshot
+    const bdRaw = rawPatient?.birth_date ?? patientBirthDate ?? null
+    const birthDate = bdRaw
+      ? new Date(bdRaw).toLocaleDateString('ru-RU')
+      : '—'
+    const genderRaw = rawPatient?.gender ?? patientGender ?? order.sex_snapshot
+    const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? 'Др.' : '—'
+    const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
+    const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
+    const sampleDate = order.sample_taken_at
+      ? new Date(order.sample_taken_at).toLocaleDateString('ru-RU')
+      : new Date(order.ordered_at).toLocaleDateString('ru-RU')
+    const printDate = order.verified_at
+      ? new Date(order.verified_at).toLocaleDateString('ru-RU')
+      : '—'
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+
+    const flagColor = (f?: string | null) => {
+      if (f === 'high' || f === 'critical') return '#c2410c'
+      if (f === 'low') return '#1d4ed8'
+      return '#1a5fa8'
+    }
+    const flagArrow = (f?: string | null) => {
+      if (f === 'high' || f === 'critical') return '↑&nbsp;'
+      if (f === 'low') return '↓&nbsp;'
+      return ''
+    }
+
+    const rows = order.items.map(item => {
+      const val = item.result_value ?? item.result_text
+      const ref = item.reference_min != null || item.reference_max != null
+        ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
+        : (item.reference_text ?? '—')
+      const valCell = val != null
+        ? `<span style="color:${flagColor(item.flag)};font-weight:${item.flag && item.flag !== 'normal' ? 'bold' : 'normal'}">${flagArrow(item.flag)}${String(val)}</span>`
+        : '<span style="color:#aaa">—</span>'
+      return `<tr>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;color:#1a5fa8">${item.name}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;text-align:center">${valCell}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;text-align:center;color:#1a5fa8">${item.unit_snapshot ?? '—'}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;text-align:center;color:#1a5fa8">${ref}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;color:#aaa"></td>
+      </tr>`
+    }).join('')
+
+    w.document.write(`<!DOCTYPE html><html lang="ru"><head>
+<meta charset="utf-8">
+<title>Результаты анализов — ${pName}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:11px;color:#1a5fa8;padding:20px 24px}
+.header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:6px;margin-bottom:4px}
+.logo-box{display:flex;flex-direction:column;align-items:flex-start}
+.logo-symbol{font-size:28px;line-height:1;color:#1a5fa8}
+.logo-name{font-size:15px;font-weight:bold;color:#1a5fa8;letter-spacing:1px}
+.logo-sub{font-size:8px;letter-spacing:3px;text-transform:uppercase;color:#1a5fa8}
+.title{font-size:14px;font-weight:bold;color:#1a5fa8;text-align:center;align-self:center}
+.clinic-info{text-align:right;font-size:10px;color:#1a5fa8;line-height:1.5}
+.divider{border:none;border-top:1.5px solid #1a5fa8;margin:4px 0 6px}
+.patient-block{font-size:11px;color:#1a5fa8;margin-bottom:6px;line-height:1.8}
+.patient-block strong{font-weight:bold}
+table{width:100%;border-collapse:collapse;margin-top:2px}
+thead tr th{background:#d0e4f5;padding:5px 8px;font-size:10px;font-weight:bold;color:#1a5fa8;border:1px solid #b0c8e8;text-align:center}
+thead tr th:first-child{text-align:left}
+.group-row td{background:#d0e4f5;font-weight:bold;padding:4px 8px;color:#1a5fa8;font-size:11px}
+tbody tr:hover{background:#f0f6ff}
+.footer{margin-top:20px;font-size:10px;color:#333;border-top:1px solid #b0c8e8;padding-top:8px}
+.footer .approver{color:#1a5fa8;font-weight:bold;margin-bottom:2px}
+.footer .disclaimer{font-weight:bold;margin-top:4px;color:#333}
+@media print{body{padding:10px 14px}@page{margin:10mm}}
+</style>
+</head><body>
+<div class="header">
+  <div class="logo-box">
+    <div class="logo-symbol">⊗</div>
+    <div class="logo-name">in health</div>
+    <div class="logo-sub">laboratory</div>
+  </div>
+  <div class="title">Результаты анализов</div>
+  <div class="clinic-info">
+    ТОО "IN HEALTH AKTAU"<br>
+    Казахстан, Актау, 31Б-ЖК ROSE<br>
+    8708 919 38 51<br>
+    inhealthkzz@gmail.com
+  </div>
+</div>
+<hr class="divider">
+<div class="patient-block">
+  <strong>ФИО: ${pName}</strong>&nbsp;&nbsp;&nbsp;Пол: ${gender}&nbsp;&nbsp;&nbsp;Дата рождения: ${birthDate}<br>
+  Врач: ${doctorName}<br>
+  Проба взята: ${sampleDate}
+</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:40%;text-align:left">Исследование</th>
+      <th>Результат</th>
+      <th>Ед. изм.</th>
+      <th>Референсные значения</th>
+      <th>Комментарий</th>
+    </tr>
+  </thead>
+  <tbody>
+    ${rows}
+  </tbody>
+</table>
+<div class="footer">
+  <div style="display:flex;justify-content:space-between;align-items:flex-end">
+    <div>
+      <div class="approver" style="display:flex;align-items:center;gap:8px">
+        <span>Одобрил: Бекниязова К.Х.</span>
+        <img src="${origin}/lab-signature.png" alt="подпись" style="height:36px;margin-left:4px"/>
+      </div>
+      <div>Дата готовности результата: ${printDate}</div>
+      <div class="disclaimer">Результаты исследований не являются диагнозом, необходима консультация специалиста.</div>
+    </div>
+    <img src="${origin}/lab-stamp.png" alt="печать" style="height:96px;width:auto;opacity:0.9"/>
+  </div>
+</div>
+</body></html>`)
+    w.document.close()
+    w.focus()
+    setTimeout(() => { w.print() }, 500)
+  }
+
+  const stepIdx = LAB_STATUS_STEPS.findIndex(s => s.key === order?.status)
+  const hasResults = order?.items.some(i => i.result_value != null || i.result_text != null)
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-3" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+
+        {/* ── Шапка ── */}
+        <div className="px-6 py-4 border-b border-gray-100 flex items-start justify-between gap-4 flex-shrink-0">
+          <div>
+            <div className="text-base font-bold text-gray-900 flex items-center gap-2">
+              <span>🧪</span> Результаты анализов
+            </div>
+            <div className="text-sm text-gray-500 mt-0.5">{patientName}</div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none mt-0.5 flex-shrink-0">×</button>
+        </div>
+
+        {loading ? (
+          <div className="flex-1 flex items-center justify-center py-16 text-sm text-gray-400">Загрузка…</div>
+        ) : !order ? (
+          <div className="flex-1 flex items-center justify-center py-16 text-sm text-gray-400">Заказ не найден</div>
+        ) : (
+          <>
+            {/* ── Статус + мета ── */}
+            <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/60 flex-shrink-0">
+              {/* Прогресс-бар */}
+              <div className="flex items-center gap-0 mb-3 overflow-x-auto pb-0.5">
+                {LAB_STATUS_STEPS.map((s, i) => {
+                  const done = i < stepIdx
+                  const active = i === stepIdx
+                  return (
+                    <div key={s.key} className="flex items-center shrink-0">
+                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${
+                        active ? 'bg-purple-600 text-white shadow-sm' :
+                        done   ? 'bg-purple-100 text-purple-700' :
+                                 'bg-white text-gray-400 border border-gray-200'
+                      }`}>
+                        {done && <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        {s.label}
+                      </div>
+                      {i < LAB_STATUS_STEPS.length - 1 && (
+                        <div className={`w-5 h-px mx-0.5 ${i < stepIdx ? 'bg-purple-300' : 'bg-gray-200'}`} />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Мета-строка */}
+              <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+                {order.order_number && <span className="font-medium text-gray-700">№ {order.order_number}</span>}
+                <span>{new Date(order.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+                {order.doctor && <span>Врач: {order.doctor.last_name} {order.doctor.first_name}</span>}
+                <span className={`ml-auto font-medium ${hasResults ? 'text-green-600' : 'text-orange-500'}`}>
+                  {hasResults
+                    ? `${order.items.filter(i => i.result_value != null || i.result_text != null).length} из ${order.items.length} готово`
+                    : 'Результаты ожидаются'}
+                </span>
+              </div>
+            </div>
+
+            {/* ── Предпросмотр бланка (как будет в PDF) ── */}
+            <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
+              {(() => {
+                const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
+                // Приоритет: живые данные карточки пациента → prop → замороженный snapshot
+                const bdRaw = rawPatient?.birth_date ?? patientBirthDate ?? null
+                const birthDate = bdRaw
+                  ? new Date(bdRaw).toLocaleDateString('ru-RU')
+                  : '—'
+                const genderRaw = rawPatient?.gender ?? patientGender ?? order.sex_snapshot
+                const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? 'Др.' : '—'
+                const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
+                const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
+                const sampleDate = order.sample_taken_at
+                  ? new Date(order.sample_taken_at).toLocaleDateString('ru-RU')
+                  : new Date(order.ordered_at).toLocaleDateString('ru-RU')
+                const pName = order.patient_name_snapshot ?? patientName
+                const flagColor = (f?: string | null) =>
+                  f === 'high' || f === 'critical' ? '#c2410c' : f === 'low' ? '#1d4ed8' : '#1a5fa8'
+                const flagArrow = (f?: string | null) =>
+                  f === 'high' || f === 'critical' ? '↑ ' : f === 'low' ? '↓ ' : ''
+
+                return (
+                  <div className="bg-white shadow-md mx-auto" style={{ maxWidth: 720, fontFamily: 'Arial, sans-serif', color: '#1a5fa8', padding: '20px 24px' }}>
+                    {/* Header */}
+                    <div className="flex justify-between items-start pb-1.5">
+                      <div className="flex flex-col items-start">
+                        <div style={{ fontSize: 28, lineHeight: 1, color: '#1a5fa8' }}>⊗</div>
+                        <div style={{ fontSize: 15, fontWeight: 'bold', letterSpacing: 1 }}>in health</div>
+                        <div style={{ fontSize: 8, letterSpacing: 3, textTransform: 'uppercase' }}>laboratory</div>
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 'bold', alignSelf: 'center' }}>Результаты анализов</div>
+                      <div style={{ fontSize: 10, textAlign: 'right', lineHeight: 1.5 }}>
+                        ТОО &quot;IN HEALTH AKTAU&quot;<br />
+                        Казахстан, Актау, 31Б-ЖК ROSE<br />
+                        8708 919 38 51<br />
+                        inhealthkzz@gmail.com
+                      </div>
+                    </div>
+                    <hr style={{ border: 'none', borderTop: '1.5px solid #1a5fa8', margin: '4px 0 6px' }} />
+                    {/* Patient block */}
+                    <div style={{ fontSize: 11, lineHeight: 1.8, marginBottom: 6 }}>
+                      <strong>ФИО: {pName}</strong>&nbsp;&nbsp;&nbsp;Пол: {gender}&nbsp;&nbsp;&nbsp;Дата рождения: {birthDate}<br />
+                      Врач: {doctorName}<br />
+                      Проба взята: {sampleDate}
+                    </div>
+                    {/* Table */}
+                    {order.items.length === 0 ? (
+                      <div className="py-8 text-center" style={{ color: '#aaa', fontSize: 11 }}>Нет позиций в заказе</div>
+                    ) : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 2, fontSize: 11 }}>
+                        <thead>
+                          <tr>
+                            {['Исследование','Результат','Ед. изм.','Референсные значения','Комментарий'].map((h, i) => (
+                              <th key={h} style={{
+                                background: '#d0e4f5', padding: '5px 8px', fontSize: 10, fontWeight: 'bold',
+                                border: '1px solid #b0c8e8', textAlign: i === 0 ? 'left' : 'center',
+                                width: i === 0 ? '38%' : undefined,
+                              }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {order.items.map(item => {
+                            const val = item.result_value ?? item.result_text
+                            const ref = item.reference_min != null || item.reference_max != null
+                              ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
+                              : (item.reference_text ?? '—')
+                            const cellStyle: React.CSSProperties = {
+                              padding: '4px 8px', borderBottom: '1px dashed #b0c8e8', color: '#1a5fa8',
+                            }
+                            return (
+                              <tr key={item.id}>
+                                <td style={cellStyle}>{item.name}</td>
+                                <td style={{ ...cellStyle, textAlign: 'center' }}>
+                                  {val != null ? (
+                                    <span style={{
+                                      color: flagColor(item.flag),
+                                      fontWeight: item.flag && item.flag !== 'normal' ? 'bold' : 'normal',
+                                    }}>
+                                      {flagArrow(item.flag)}{String(val)}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: '#aaa' }}>—</span>
+                                  )}
+                                </td>
+                                <td style={{ ...cellStyle, textAlign: 'center' }}>{item.unit_snapshot ?? '—'}</td>
+                                <td style={{ ...cellStyle, textAlign: 'center' }}>{ref}</td>
+                                <td style={{ ...cellStyle, color: '#aaa' }}></td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                    {/* Footer */}
+                    <div style={{ marginTop: 20, fontSize: 10, color: '#333', borderTop: '1px solid #b0c8e8', paddingTop: 8 }}>
+                      <div className="flex justify-between items-end">
+                        <div style={{ position: 'relative' }}>
+                          <div style={{ color: '#1a5fa8', fontWeight: 'bold', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span>Одобрил: Бекниязова К.Х.</span>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src="/lab-signature.png" alt="подпись" style={{ height: 36, marginLeft: 4 }} />
+                          </div>
+                          <div>
+                            Дата готовности результата: {order.verified_at
+                              ? new Date(order.verified_at).toLocaleDateString('ru-RU')
+                              : '—'}
+                          </div>
+                          <div style={{ fontWeight: 'bold', marginTop: 4 }}>
+                            Результаты исследований не являются диагнозом, необходима консультация специалиста.
+                          </div>
+                        </div>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src="/lab-stamp.png" alt="печать" style={{ height: 96, width: 'auto', opacity: 0.85 }} />
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+
+            {/* ── Футер с кнопкой скачать ── */}
+            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3 flex-shrink-0 bg-gray-50/60">
+              <div className="text-xs text-gray-400">
+                {order.items.filter(i => i.result_value != null || i.result_text != null).length > 0
+                  ? 'Только готовые результаты попадают в PDF'
+                  : 'Результаты ещё не внесены лаборантом'}
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Кнопка «Вернуть в работу» — только owner/admin, только для
+                    направлений со статусом ready/verified без результатов.
+                    Нужна чтобы починить направления, закрытые ошибочно. */}
+                {(isOwner || isAdmin)
+                  && (order.status === 'ready' || order.status === 'verified')
+                  && order.items.filter(i => i.result_value != null || i.result_text != null).length === 0
+                  && (
+                  <button
+                    disabled={reverting}
+                    onClick={async () => {
+                      if (!window.confirm('Вернуть направление в статус «В работе»? Лаборант сможет внести результаты заново.')) return
+                      setReverting(true)
+                      await supabase.from('lab_orders').update({
+                        status: 'in_progress',
+                        verified_at: null,
+                        verified_by: null,
+                      }).eq('id', orderId)
+                      setReverting(false)
+                      onClose()
+                    }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-orange-200 text-orange-700 hover:bg-orange-50 text-xs font-medium transition-colors disabled:opacity-50"
+                    title="Вернуть в работу (owner/admin)"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M3 3v5h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    {reverting ? '...' : 'Вернуть в работу'}
+                  </button>
+                )}
+                <button
+                  onClick={handlePrint}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
+                  Скачать / Печать
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -2734,6 +3281,8 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState('')
   const [isVip, setIsVip] = useState(false)
+  const [isRegular, setIsRegular] = useState(false)
+  const [isRf, setIsRf] = useState(false)
   const [tagsStr, setTagsStr] = useState('')
   const [notes, setNotes] = useState('')
   const [preg, setPreg] = useState<'yes' | 'no' | 'unknown' | ''>('')
@@ -2768,7 +3317,11 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
           setEmail(d.email ?? '')
           setStatus(d.status ?? '')
           setIsVip(!!d.is_vip)
-          setTagsStr((d.tags ?? []).join(', '))
+          const tagList = d.tags ?? []
+          setIsRegular(tagList.includes('regular'))
+          setIsRf(tagList.includes('rf'))
+          // Остальные теги (кроме regular/rf) — редактируются через полную карточку
+          setTagsStr(tagList.filter(t => t !== 'regular' && t !== 'rf').join(', '))
           setNotes(d.notes ?? '')
           setPreg((d.pregnancy_status as 'yes' | 'no' | 'unknown' | null) ?? '')
           setPregWeeks(d.pregnancy_weeks != null ? String(d.pregnancy_weeks) : '')
@@ -2792,7 +3345,13 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
     if (!fullName.trim()) { alert('ФИО обязательно'); return }
     setSaving(true)
     const phones = phonesStr.split(',').map(s => s.trim()).filter(Boolean)
-    const tags = tagsStr.split(',').map(s => s.trim()).filter(Boolean)
+    const baseTags = tagsStr.split(',').map(s => s.trim()).filter(Boolean)
+      .filter(t => t !== 'regular' && t !== 'rf')
+    const tags = [
+      ...baseTags,
+      ...(isRegular ? ['regular'] : []),
+      ...(isRf      ? ['rf']      : []),
+    ]
     const pregWeeksNum = preg === 'yes' && pregWeeks.trim()
       ? Math.max(1, Math.min(42, parseInt(pregWeeks, 10) || 0)) || null
       : null
@@ -2829,7 +3388,7 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
   return (
     <>
       <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(720px,calc(100vw-24px))] max-h-[calc(100vh-40px)] bg-white rounded-2xl shadow-2xl z-[61] flex flex-col overflow-hidden">
+      <div className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(720px,calc(100vw-24px))] max-h-[calc(100vh-40px)] rounded-2xl shadow-2xl z-[61] flex flex-col overflow-hidden ${isRf ? 'bg-rose-50 ring-2 ring-rose-200' : 'bg-white'}`}>
 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
@@ -2837,6 +3396,7 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
             <p className="text-base font-semibold text-gray-900">
               Карта пациента
               {isVip && <span className="ml-2 text-xs font-bold text-yellow-600">VIP</span>}
+              {isRf && <span className="ml-2 inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">РФ</span>}
             </p>
             {p?.patient_number && <p className="text-xs text-gray-400 mt-0.5">№ {p.patient_number}</p>}
           </div>
@@ -2857,23 +3417,25 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
               </Field>
 
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Статус">
-                  <select value={status} onChange={e => setStatus(e.target.value)}
-                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
-                    {Object.entries(PATIENT_STATUS_LABEL).map(([k, v]) => (
-                      <option key={k} value={k}>{v}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="VIP">
-                  <label className="flex items-center gap-2 py-2">
+              <Field label="Отметки">
+                <div className="flex items-center gap-4 py-2 flex-wrap">
+                  <label className="flex items-center gap-2">
                     <input type="checkbox" checked={isVip} onChange={e => setIsVip(e.target.checked)}
                       className="w-4 h-4 accent-yellow-500" />
-                    <span className="text-sm text-gray-700">Отметить как VIP</span>
+                    <span className="text-sm text-gray-700">VIP</span>
                   </label>
-                </Field>
-              </div>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={isRegular} onChange={e => setIsRegular(e.target.checked)}
+                      className="w-4 h-4 accent-blue-500" />
+                    <span className="text-sm text-gray-700">Постоянный пациент</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={isRf} onChange={e => setIsRf(e.target.checked)}
+                      className="w-4 h-4 accent-red-500" />
+                    <span className="text-sm text-gray-700">РФ</span>
+                  </label>
+                </div>
+              </Field>
 
               {/* Demographics */}
               <div className="border-t border-gray-100 pt-3">
@@ -2912,8 +3474,8 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
                 </div>
               </div>
 
-              {/* Lab nuances */}
-              <div className="border-t border-gray-100 pt-3 space-y-3">
+              {/* Lab nuances — нейтральный фон даже для РФ-пациентов */}
+              <div className={`border-t border-gray-100 pt-3 space-y-3 ${isRf ? 'bg-white -mx-5 px-5 py-4 rounded-none' : ''}`}>
                 <p className="text-xs font-semibold text-gray-500">ЛАБОРАТОРНЫЕ НЮАНСЫ</p>
 
                 {/* Fasting + meds (universal) */}
