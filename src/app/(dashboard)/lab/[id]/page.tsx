@@ -690,10 +690,22 @@ export default function LabOrderPage() {
     })
   }
 
+  const hasAnyResults = (): boolean => {
+    if (!order) return false
+    const items = order.items ?? []
+    return items.some(i => (i.result?.length ?? 0) > 0 || i.status === 'completed')
+  }
+
   const advanceStatus = async () => {
     if (!order) return
     const next = NEXT_STATUS[order.status]
     if (!next) return
+    if ((next.status === 'ready' || next.status === 'verified') && !hasAnyResults()) {
+      const ok = window.confirm(
+        `Ни один результат ещё не внесён.\n\nВсё равно отметить направление как «${next.label}»?`
+      )
+      if (!ok) return
+    }
     setAdvancing(true)
     const patch: Record<string, unknown> = { status: next.status }
     if ((next.status === 'ready' || next.status === 'verified') && !order.verified_at) {
@@ -710,6 +722,12 @@ export default function LabOrderPage() {
 
   const markReady = async () => {
     if (!order) return
+    if (!hasAnyResults()) {
+      const ok = window.confirm(
+        'Ни один результат ещё не внесён.\n\nВсё равно отметить направление как «Готов»?'
+      )
+      if (!ok) return
+    }
     setAdvancing(true)
     const patch: Record<string, unknown> = { status: 'ready' }
     if (!order.verified_at) {

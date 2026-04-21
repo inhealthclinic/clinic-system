@@ -556,16 +556,38 @@ function OrderDrawer({ order, onClose, onUpdated }: {
   const advance = async () => {
     const next = NEXT_STATUS[order.status]
     if (!next) return
-    // Safety: verifying an order copies items to patient_lab_results. Warn if
-    // some items still have no result entered.
-    if (next.status === 'verified') {
-      const items = order.items ?? []
+    const items = order.items ?? []
+    // Safety: переход в Готов / Верифицирован — проверяем, что результаты
+    // реально внесены. Отдельно предлагаем дозаписать «набранное, но не
+    // сохранённое» содержимое из состояния results (чтобы лаборант не терял
+    // уже введённые цифры, если забыл нажать «Сохранить»).
+    if (next.status === 'ready' || next.status === 'verified') {
+      // Есть ли набранные, но ещё не сохранённые в БД значения?
+      const unsaved = items.filter(i => {
+        if (i.verified_at) return false
+        const raw = (results[i.id] ?? '').trim()
+        if (!raw) return false
+        const dbRaw =
+          i.result_value != null ? String(i.result_value).replace('.', ',')
+          : (i.result_text ?? '')
+        return raw !== dbRaw
+      })
+      if (unsaved.length > 0) {
+        // Автосейв без лишнего диалога — лаборанту не нужно ловить модалки
+        await saveResults()
+      }
+      // После возможного сохранения — проверяем, что хоть где-то есть результат
       const empty = items.filter(i => {
         const raw = (results[i.id] ?? '').trim()
         const hasDb = i.result_value != null || (i.result_text && i.result_text.length > 0)
         return !raw && !hasDb
       })
-      if (empty.length > 0) {
+      if (empty.length === items.length && items.length > 0) {
+        const ok = window.confirm(
+          `Ни один результат ещё не внесён.\n\nВсё равно отметить направление как «${next.label ?? next.status}»?`
+        )
+        if (!ok) return
+      } else if (empty.length > 0 && next.status === 'verified') {
         const names = empty.map(i => i.name).join(', ')
         const ok = window.confirm(
           `У ${empty.length} из ${items.length} анализов нет результата:\n${names}\n\nВсё равно верифицировать? В историю пациента попадут только заполненные.`
