@@ -6,6 +6,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
 import { CommandPalette } from '@/components/CommandPalette'
 import { UnreadNotifier } from '@/components/layout/UnreadNotifier'
+import { LabNotifier } from '@/components/layout/LabNotifier'
 import { useCurrentUser } from '@/lib/hooks/useCurrentUser'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -45,6 +46,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <CommandPalette />
       {/* Тосты + звук + Notifications для входящих сообщений по «моим» сделкам */}
       <UnreadNotifier />
+      {/* Тосты для новых заказов в лабораторию */}
+      <LabNotifier />
       {/* Desktop sidebar */}
       <div className="hidden lg:flex flex-shrink-0">
         <Sidebar />
