@@ -2502,9 +2502,6 @@ ${blocks}
     setTimeout(() => { w.print() }, 500)
   }
 
-  // Обёртка, совместимая со старым onClick={handlePrint}
-  const handlePrint = () => { void openPrintWindow() }
-
   // ─── Состояние для панели мультипечати ───────────────────────────
   // Выбор до уровня анализов: храним id всех выбранных lab_order_items.
   // Принадлежность к заказу смотрится через history[].items.
@@ -2808,20 +2805,11 @@ ${blocks}
                     {reverting ? '...' : 'Вернуть в работу'}
                   </button>
                 )}
-                {/* Кнопка выборочной печати — если у пациента есть хотя бы
-                    2 анализа в истории (в одном заказе или в разных). */}
-                {totalItemsInHistory > 1 && (
-                  <button
-                    onClick={openMultiPanel}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 text-xs font-medium transition-colors"
-                    title="Выбрать отдельные анализы для печати"
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M9 11l3 3L22 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    Выбрать анализы
-                  </button>
-                )}
+                {/* Единая кнопка: открывает панель выбора анализов,
+                    откуда можно и распечатать, и сохранить PDF (через
+                    диалог печати браузера → "Сохранить как PDF"). */}
                 <button
-                  onClick={handlePrint}
+                  onClick={openMultiPanel}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors"
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
@@ -2837,8 +2825,8 @@ ${blocks}
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
                 <div>
-                  <div className="text-sm font-semibold text-gray-900">Выберите анализы для печати</div>
-                  <div className="text-[11px] text-gray-400 mt-0.5">Можно отметить весь лист или отдельные строки</div>
+                  <div className="text-sm font-semibold text-gray-900">Печать результатов</div>
+                  <div className="text-[11px] text-gray-400 mt-0.5">Отметьте нужные анализы — можно весь лист или отдельные строки. В диалоге печати выберите «Сохранить как PDF», чтобы получить файл.</div>
                 </div>
                 <button onClick={() => setMultiOpen(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
               </div>
@@ -2914,9 +2902,10 @@ ${blocks}
                 <button
                   onClick={printSelected}
                   disabled={selItems.size === 0}
-                  className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  🖨 Распечатать ({selItems.size})
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="6" y="14" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.8"/></svg>
+                  Печать / PDF ({selItems.size})
                 </button>
               </div>
             </div>
