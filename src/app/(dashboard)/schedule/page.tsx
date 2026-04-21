@@ -2298,6 +2298,7 @@ function LabResultsModal({ orderId, patientName, onClose }: {
       ? new Date(order.sample_taken_at).toLocaleDateString('ru-RU')
       : new Date(order.ordered_at).toLocaleDateString('ru-RU')
     const printDate = new Date().toLocaleDateString('ru-RU')
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
 
     const flagColor = (f?: string | null) => {
       if (f === 'high' || f === 'critical') return '#c2410c'
@@ -2391,15 +2392,14 @@ tbody tr:hover{background:#f0f6ff}
 <div class="footer">
   <div style="display:flex;justify-content:space-between;align-items:flex-end">
     <div>
-      <div class="approver">Одобрил: ___________________________</div>
+      <div class="approver" style="display:flex;align-items:center;gap:8px">
+        <span>Одобрил: Бекниязова К.Х.</span>
+        <img src="${origin}/lab-signature.png" alt="подпись" style="height:36px;margin-left:4px"/>
+      </div>
       <div>Дата печати результата: ${printDate}</div>
       <div class="disclaimer">Результаты исследований не являются диагнозом, необходима консультация специалиста.</div>
     </div>
-    <div style="text-align:right;font-size:10px;color:#1a5fa8;border:1px solid #b0c8e8;padding:6px 12px;border-radius:4px">
-      Анализдер үшін<br>
-      Для анализов<br>
-      <span style="font-size:18px">___</span>
-    </div>
+    <img src="${origin}/lab-stamp.png" alt="печать" style="height:96px;width:auto;opacity:0.9"/>
   </div>
 </div>
 </body></html>`)
@@ -2565,23 +2565,19 @@ tbody tr:hover{background:#f0f6ff}
                     {/* Footer */}
                     <div style={{ marginTop: 20, fontSize: 10, color: '#333', borderTop: '1px solid #b0c8e8', paddingTop: 8 }}>
                       <div className="flex justify-between items-end">
-                        <div>
-                          <div style={{ color: '#1a5fa8', fontWeight: 'bold', marginBottom: 2 }}>
-                            Одобрил: ___________________________
+                        <div style={{ position: 'relative' }}>
+                          <div style={{ color: '#1a5fa8', fontWeight: 'bold', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span>Одобрил: Бекниязова К.Х.</span>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src="/lab-signature.png" alt="подпись" style={{ height: 36, marginLeft: 4 }} />
                           </div>
                           <div>Дата печати результата: {new Date().toLocaleDateString('ru-RU')}</div>
                           <div style={{ fontWeight: 'bold', marginTop: 4 }}>
                             Результаты исследований не являются диагнозом, необходима консультация специалиста.
                           </div>
                         </div>
-                        <div style={{
-                          textAlign: 'right', fontSize: 10, color: '#1a5fa8',
-                          border: '1px solid #b0c8e8', padding: '6px 12px', borderRadius: 4,
-                        }}>
-                          Анализдер үшін<br />
-                          Для анализов<br />
-                          <span style={{ fontSize: 18 }}>___</span>
-                        </div>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src="/lab-stamp.png" alt="печать" style={{ height: 96, width: 'auto', opacity: 0.85 }} />
                       </div>
                     </div>
                   </div>
