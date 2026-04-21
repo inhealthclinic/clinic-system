@@ -12,6 +12,7 @@ interface Reagent {
   code: string | null
   unit: string
   min_stock: number
+  category: string | null
   is_active: boolean
   created_at: string
 }
@@ -23,9 +24,27 @@ interface Consumable {
   code: string | null
   unit: string
   min_stock: number
+  category: string | null
   is_active: boolean
   created_at: string
 }
+
+/** Категории реагентов / расходников — совпадают с группами оборудования лаборатории. */
+const REAGENT_CATEGORIES = [
+  'ИФА',
+  'Биохимия',
+  'Коагулограмма',
+  'Гематология',
+  'Экспресс',
+  'Общий анализ мочи',
+] as const
+const CONSUMABLE_CATEGORIES = [
+  'Забор крови',
+  'Пробирки',
+  'Перчатки / маски',
+  'Шприцы / иглы',
+  'Прочее',
+] as const
 
 interface Batch {
   id: string
@@ -202,10 +221,12 @@ function AddItemModal({ clinicId, itemType, onClose, onSaved }: {
   const [code, setCode]         = useState('')
   const [unit, setUnit]         = useState('шт')
   const [minStock, setMinStock] = useState('')
+  const [category, setCategory] = useState<string>('')
   const [saving, setSaving]     = useState(false)
   const [error, setError]       = useState('')
 
   const table = itemType === 'reagent' ? 'reagents' : 'consumables'
+  const categories = itemType === 'reagent' ? REAGENT_CATEGORIES : CONSUMABLE_CATEGORIES
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -217,6 +238,7 @@ function AddItemModal({ clinicId, itemType, onClose, onSaved }: {
       code:      code.trim() || null,
       unit,
       min_stock: parseFloat(minStock) || 0,
+      category:  category.trim() || null,
     })
     if (err) { setError(err.message); setSaving(false); return }
     onSaved(); onClose()
@@ -235,6 +257,13 @@ function AddItemModal({ clinicId, itemType, onClose, onSaved }: {
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1.5">Название *</label>
             <input className={INP} value={name} onChange={e => setName(e.target.value)} autoFocus placeholder="Например: Физраствор 0.9%" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Группа</label>
+            <select className={INP} value={category} onChange={e => setCategory(e.target.value)}>
+              <option value="">— не указана —</option>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1.5">Код / артикул</label>
@@ -563,7 +592,7 @@ function ItemBatchRow({ item, itemType, clinicId, batches, userId, onBatchAdded 
         />
       )}
       <tr>
-        <td colSpan={6} className="px-5 pb-4 pt-0 bg-gray-50/50">
+        <td colSpan={7} className="px-5 pb-4 pt-0 bg-gray-50/50">
           <div className="ml-4 border-l-2 border-blue-100 pl-4">
             <div className="flex items-center justify-between mb-2 mt-2">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Партии</p>
@@ -628,6 +657,7 @@ function ItemsTab({ clinicId, userId, itemType }: {
   const [loading, setLoading]   = useState(true)
   const [expandedId, setExpanded] = useState<string | null>(null)
   const [showAdd, setShowAdd]   = useState(false)
+  const [categoryFilter, setCategoryFilter] = useState<string>('all')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -686,9 +716,34 @@ function ItemsTab({ clinicId, userId, itemType }: {
         )
       })()}
 
+      {/* Category filter tabs */}
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {(() => {
+          const present = Array.from(new Set(items.map(i => i.category).filter(Boolean) as string[]))
+          const known = itemType === 'reagent' ? REAGENT_CATEGORIES : CONSUMABLE_CATEGORIES
+          const all = [...new Set([...known, ...present])]
+          const tabs: Array<{ key: string; label: string }> = [
+            { key: 'all', label: 'Все' },
+            ...all.map(c => ({ key: c, label: c })),
+            { key: '__none__', label: 'Без группы' },
+          ]
+          return tabs.map(t => (
+            <button key={t.key} onClick={() => setCategoryFilter(t.key)}
+              className={[
+                'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                categoryFilter === t.key
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50',
+              ].join(' ')}>
+              {t.label}
+            </button>
+          ))
+        })()}
+      </div>
+
       <div className="flex items-center justify-between mb-4">
         <p className="text-sm text-gray-400">
-          {loading ? 'Загрузка...' : `${items.length} позиций`}
+          {loading ? 'Загрузка...' : `${items.filter(i => categoryFilter === 'all' ? true : categoryFilter === '__none__' ? !i.category : i.category === categoryFilter).length} позиций`}
         </p>
         <div className="flex gap-2">
           <button
@@ -717,6 +772,7 @@ function ItemsTab({ clinicId, userId, itemType }: {
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Название</th>
+                <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Группа</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Код</th>
                 <th className="text-left text-xs font-medium text-gray-400 px-5 py-3">Ед.</th>
                 <th className="text-right text-xs font-medium text-gray-400 px-5 py-3">Мин. остаток</th>
@@ -725,7 +781,9 @@ function ItemsTab({ clinicId, userId, itemType }: {
               </tr>
             </thead>
             <tbody>
-              {items.map(item => {
+              {items
+                .filter(i => categoryFilter === 'all' ? true : categoryFilter === '__none__' ? !i.category : i.category === categoryFilter)
+                .map(item => {
                 const stock = currentStock(item.id)
                 const { label, cls } = stockStatus(stock, item.min_stock)
                 const expanded = expandedId === item.id
@@ -743,6 +801,11 @@ function ItemsTab({ clinicId, userId, itemType }: {
                           <span className={`text-gray-300 text-xs transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
                           <span className="text-sm font-medium text-gray-900">{item.name}</span>
                         </div>
+                      </td>
+                      <td className="px-5 py-3.5 text-xs text-gray-500">
+                        {item.category ? (
+                          <span className="inline-block bg-gray-100 text-gray-700 rounded-full px-2 py-0.5">{item.category}</span>
+                        ) : <span className="text-gray-300">—</span>}
                       </td>
                       <td className="px-5 py-3.5 text-xs font-mono text-gray-400">{item.code ?? '—'}</td>
                       <td className="px-5 py-3.5 text-sm text-gray-500">{item.unit}</td>
