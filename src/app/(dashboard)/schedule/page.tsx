@@ -2265,6 +2265,7 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
   useEffect(() => { setActiveOrderId(orderId) }, [orderId])
   const [history, setHistory] = useState<Array<{
     id: string; ordered_at: string; order_number: string | null
+    items: Array<{ id: string; name: string }>
   }>>([])
   const [order, setOrder] = useState<{
     status: string
@@ -2311,12 +2312,15 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
         // переключения. Показываем только те, куда уже внесены результаты
         // (status >= ready), отсортировано от новых к старым.
         const { data: hist } = await supabase.from('lab_orders')
-          .select('id, ordered_at, order_number')
+          .select('id, ordered_at, order_number, items:lab_order_items(id,name)')
           .eq('patient_id', pid)
           .in('status', ['ready', 'verified', 'delivered'])
           .order('ordered_at', { ascending: false })
           .limit(50)
-        setHistory((hist ?? []) as Array<{ id: string; ordered_at: string; order_number: string | null }>)
+        setHistory((hist ?? []) as Array<{
+          id: string; ordered_at: string; order_number: string | null
+          items: Array<{ id: string; name: string }>
+        }>)
       }
       setOrder({ ...(data as unknown as Record<string, unknown>), patient } as unknown as typeof order)
       setLoading(false)
@@ -2344,8 +2348,10 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
     return { ...(data as unknown as Record<string, unknown>), patient } as unknown as PrintableOrder
   }, [supabase])
 
-  // Собирает HTML-фрагмент одного бланка (без <html>/<head>/<body>)
-  const buildOrderBlock = (o: PrintableOrder, origin: string, isFirst: boolean) => {
+  // Собирает HTML-фрагмент одного бланка (без <html>/<head>/<body>).
+  // itemFilter — опциональный набор id анализов; если задан, в бланк
+  // попадут только они. Если null/undefined — все элементы заказа.
+  const buildOrderBlock = (o: PrintableOrder, origin: string, isFirst: boolean, itemFilter?: Set<string> | null) => {
     const pName = o.patient_name_snapshot ?? patientName
     const rawPatient = Array.isArray(o.patient) ? o.patient[0] : o.patient
     const bdRaw = rawPatient?.birth_date ?? patientBirthDate ?? null
@@ -2370,7 +2376,10 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
       if (f === 'low') return '↓&nbsp;'
       return ''
     }
-    const rows = o.items.map(item => {
+    const visibleItems = itemFilter && itemFilter.size > 0
+      ? o.items.filter(i => itemFilter.has(i.id))
+      : o.items
+    const rows = visibleItems.map(item => {
       const val = item.result_value ?? item.result_text
       const ref = item.reference_min != null || item.reference_max != null
         ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
@@ -2437,27 +2446,31 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
 </section>`
   }
 
-  // Открывает окно печати для списка заказов (если пуст — текущего)
-  const openPrintWindow = async (ids?: string[]) => {
-    const list = (ids && ids.length > 0) ? ids : [activeOrderId]
-    const orders: PrintableOrder[] = []
-    for (const id of list) {
-      if (id === activeOrderId && order) {
-        orders.push(order)
-      } else {
-        const o = await fetchOrderForPrint(id)
-        if (o) orders.push(o)
-      }
+  // Открывает окно печати.
+  //   selection — Map<orderId, Set<itemId>>: пустой Set значит «все анализы
+  //     этого заказа». Если selection не задан — печатаем текущий заказ целиком.
+  const openPrintWindow = async (selection?: Map<string, Set<string>>) => {
+    const entries: Array<[string, Set<string>]> = selection && selection.size > 0
+      ? Array.from(selection.entries())
+      : [[activeOrderId, new Set()]]
+    // Сохраняем порядок по дате: от новых к старым (по history)
+    const historyOrder = new Map(history.map((h, i) => [h.id, i]))
+    entries.sort((a, b) => (historyOrder.get(a[0]) ?? 999) - (historyOrder.get(b[0]) ?? 999))
+    const fetched: Array<{ o: PrintableOrder; filter: Set<string> | null }> = []
+    for (const [id, items] of entries) {
+      const o = (id === activeOrderId && order) ? order : await fetchOrderForPrint(id)
+      if (!o) continue
+      fetched.push({ o, filter: items.size > 0 ? items : null })
     }
-    if (orders.length === 0) return
+    if (fetched.length === 0) return
     const w = window.open('', '_blank', 'width=900,height=700')
     if (!w) return
     const origin = typeof window !== 'undefined' ? window.location.origin : ''
-    const pName = orders[0].patient_name_snapshot ?? patientName
-    const blocks = orders.map((o, i) => buildOrderBlock(o, origin, i === 0)).join('\n')
+    const pName = fetched[0].o.patient_name_snapshot ?? patientName
+    const blocks = fetched.map((x, i) => buildOrderBlock(x.o, origin, i === 0, x.filter)).join('\n')
     w.document.write(`<!DOCTYPE html><html lang="ru"><head>
 <meta charset="utf-8">
-<title>Результаты анализов — ${pName}${orders.length > 1 ? ` (${orders.length})` : ''}</title>
+<title>Результаты анализов — ${pName}${fetched.length > 1 ? ` (${fetched.length})` : ''}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Arial,sans-serif;font-size:11px;color:#1a5fa8}
@@ -2492,27 +2505,69 @@ ${blocks}
   // Обёртка, совместимая со старым onClick={handlePrint}
   const handlePrint = () => { void openPrintWindow() }
 
-  // Состояние для панели мультипечати
+  // ─── Состояние для панели мультипечати ───────────────────────────
+  // Выбор до уровня анализов: храним id всех выбранных lab_order_items.
+  // Принадлежность к заказу смотрится через history[].items.
   const [multiOpen, setMultiOpen] = useState(false)
-  const [multiSel, setMultiSel] = useState<Set<string>>(new Set())
-  // При открытии панели — подставляем текущий заказ как отмеченный
+  const [selItems, setSelItems] = useState<Set<string>>(new Set())
+  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set())
+
   const openMultiPanel = () => {
-    setMultiSel(new Set([activeOrderId]))
+    // По умолчанию — отметить все анализы текущего заказа, его же раскрыть
+    const curr = history.find(h => h.id === activeOrderId)
+    const init = new Set<string>()
+    if (curr) curr.items.forEach(i => init.add(i.id))
+    setSelItems(init)
+    setExpandedOrders(new Set(curr ? [curr.id] : []))
     setMultiOpen(true)
   }
-  const toggleMulti = (id: string) => {
-    setMultiSel(prev => {
+  const toggleItem = (id: string) => {
+    setSelItems(prev => {
       const n = new Set(prev)
       if (n.has(id)) n.delete(id); else n.add(id)
       return n
     })
   }
-  const printSelected = async () => {
-    const ids = history.filter(h => multiSel.has(h.id)).map(h => h.id)
-    if (ids.length === 0) return
-    setMultiOpen(false)
-    await openPrintWindow(ids)
+  const toggleOrder = (orderId: string) => {
+    const o = history.find(h => h.id === orderId)
+    if (!o) return
+    setSelItems(prev => {
+      const n = new Set(prev)
+      const allChecked = o.items.every(i => n.has(i.id))
+      if (allChecked) {
+        o.items.forEach(i => n.delete(i.id))
+      } else {
+        o.items.forEach(i => n.add(i.id))
+      }
+      return n
+    })
   }
+  const toggleExpand = (orderId: string) => {
+    setExpandedOrders(prev => {
+      const n = new Set(prev)
+      if (n.has(orderId)) n.delete(orderId); else n.add(orderId)
+      return n
+    })
+  }
+  const selectAllItems = () => {
+    const all = new Set<string>()
+    history.forEach(h => h.items.forEach(i => all.add(i.id)))
+    setSelItems(all)
+  }
+  const clearAllItems = () => setSelItems(new Set())
+  const printSelected = async () => {
+    // Группируем выбранные item-id по заказам
+    const selection = new Map<string, Set<string>>()
+    history.forEach(h => {
+      const picked = h.items.filter(i => selItems.has(i.id)).map(i => i.id)
+      if (picked.length > 0) selection.set(h.id, new Set(picked))
+    })
+    if (selection.size === 0) return
+    setMultiOpen(false)
+    await openPrintWindow(selection)
+  }
+  // Сколько всего анализов в истории (для счётчика N / M)
+  const totalItemsInHistory = history.reduce((s, h) => s + h.items.length, 0)
 
   const stepIdx = LAB_STATUS_STEPS.findIndex(s => s.key === order?.status)
   const hasResults = order?.items.some(i => i.result_value != null || i.result_text != null)
@@ -2753,16 +2808,16 @@ ${blocks}
                     {reverting ? '...' : 'Вернуть в работу'}
                   </button>
                 )}
-                {/* Кнопка мультипечати — только если есть история
-                    (больше одного направления того же пациента) */}
-                {history.length > 1 && (
+                {/* Кнопка выборочной печати — если у пациента есть хотя бы
+                    2 анализа в истории (в одном заказе или в разных). */}
+                {totalItemsInHistory > 1 && (
                   <button
                     onClick={openMultiPanel}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 text-xs font-medium transition-colors"
-                    title="Выбрать несколько направлений для печати"
+                    title="Выбрать отдельные анализы для печати"
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M8 7V3h12v12h-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="4" y="7" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.8"/></svg>
-                    Печать нескольких
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M9 11l3 3L22 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Выбрать анализы
                   </button>
                 )}
                 <button
@@ -2776,50 +2831,78 @@ ${blocks}
             </div>
           </>
         )}
-        {/* ── Панель выбора направлений для пачечной печати ── */}
+        {/* ── Панель выбора направлений/анализов для пачечной печати ── */}
         {multiOpen && (
-          <div className="absolute inset-0 z-[5] bg-black/30 flex items-end sm:items-center justify-center p-4" onClick={() => setMultiOpen(false)}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4" onClick={() => setMultiOpen(false)}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
-                <div className="text-sm font-semibold text-gray-900">Выберите направления для печати</div>
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Выберите анализы для печати</div>
+                  <div className="text-[11px] text-gray-400 mt-0.5">Можно отметить весь лист или отдельные строки</div>
+                </div>
                 <button onClick={() => setMultiOpen(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
               </div>
               <div className="px-5 py-2 border-b border-gray-100 flex items-center gap-3 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setMultiSel(new Set(history.map(h => h.id)))}
-                  className="text-purple-600 hover:text-purple-700 font-medium"
-                >Выбрать все</button>
-                <button
-                  type="button"
-                  onClick={() => setMultiSel(new Set())}
-                  className="text-gray-500 hover:text-gray-700"
-                >Снять выбор</button>
-                <span className="ml-auto text-gray-400">{multiSel.size} из {history.length}</span>
+                <button type="button" onClick={selectAllItems} className="text-purple-600 hover:text-purple-700 font-medium">Выбрать все</button>
+                <button type="button" onClick={clearAllItems} className="text-gray-500 hover:text-gray-700">Снять выбор</button>
+                <span className="ml-auto text-gray-400">{selItems.size} из {totalItemsInHistory}</span>
               </div>
               <div className="flex-1 overflow-y-auto px-2 py-2">
                 {history.map(h => {
-                  const checked = multiSel.has(h.id)
+                  const total = h.items.length
+                  const pickedCount = h.items.filter(i => selItems.has(i.id)).length
+                  const allChecked = total > 0 && pickedCount === total
+                  const someChecked = pickedCount > 0 && pickedCount < total
+                  const expanded = expandedOrders.has(h.id)
                   return (
-                    <label
-                      key={h.id}
-                      className={`flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer ${checked ? 'bg-purple-50' : 'hover:bg-gray-50'}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleMulti(h.id)}
-                        className="w-4 h-4 accent-purple-600 cursor-pointer"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm text-gray-900">
-                          {new Date(h.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
-                        </div>
-                        {h.order_number && (
-                          <div className="text-[11px] text-gray-400 font-mono">{h.order_number}</div>
-                        )}
+                    <div key={h.id} className="mb-1 border border-gray-100 rounded-md overflow-hidden">
+                      <div className={`flex items-center gap-2 px-3 py-2 ${allChecked ? 'bg-purple-50' : someChecked ? 'bg-purple-50/40' : 'bg-white'}`}>
+                        <input
+                          type="checkbox"
+                          checked={allChecked}
+                          ref={el => { if (el) el.indeterminate = someChecked }}
+                          onChange={() => toggleOrder(h.id)}
+                          className="w-4 h-4 accent-purple-600 cursor-pointer flex-shrink-0"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => toggleExpand(h.id)}
+                          className="flex-1 min-w-0 text-left flex items-center gap-2 hover:opacity-80"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={`text-gray-400 transition-transform ${expanded ? 'rotate-90' : ''} flex-shrink-0`}>
+                            <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-gray-900">
+                              {new Date(h.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
+                            </div>
+                            <div className="text-[11px] text-gray-400 font-mono">
+                              {h.order_number ?? '—'} · {pickedCount}/{total}
+                            </div>
+                          </div>
+                        </button>
                       </div>
-                    </label>
+                      {expanded && (
+                        <div className="border-t border-gray-100 bg-gray-50/40 py-1">
+                          {h.items.length === 0 ? (
+                            <div className="px-10 py-2 text-xs text-gray-400">В этом направлении нет анализов</div>
+                          ) : h.items.map(item => {
+                            const checked = selItems.has(item.id)
+                            return (
+                              <label key={item.id} className={`flex items-center gap-2 pl-10 pr-3 py-1.5 cursor-pointer ${checked ? 'bg-purple-50' : 'hover:bg-white'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleItem(item.id)}
+                                  className="w-3.5 h-3.5 accent-purple-600 cursor-pointer"
+                                />
+                                <span className="text-xs text-gray-700">{item.name}</span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
                   )
                 })}
               </div>
@@ -2830,10 +2913,10 @@ ${blocks}
                 >Отмена</button>
                 <button
                   onClick={printSelected}
-                  disabled={multiSel.size === 0}
+                  disabled={selItems.size === 0}
                   className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  🖨 Распечатать ({multiSel.size})
+                  🖨 Распечатать ({selItems.size})
                 </button>
               </div>
             </div>
