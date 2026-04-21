@@ -15,6 +15,12 @@ interface NavItem {
   dividerBefore?: boolean
   /** Ключ для бейджика. */
   badgeKey?: 'crm-unread' | 'lab-pending'
+  /**
+   * Ролевые ограничения: если массив задан — пункт виден только
+   * пользователям с одной из перечисленных ролей. owner всегда видит всё.
+   * Если не задан — пункт виден всем.
+   */
+  roles?: Array<'admin' | 'doctor' | 'nurse' | 'laborant' | 'cashier' | 'manager'>
 }
 
 const NAV: NavItem[] = [
@@ -33,6 +39,7 @@ const NAV: NavItem[] = [
   {
     label: 'Расписание',
     href: '/schedule',
+    roles: ['admin', 'doctor', 'nurse', 'manager'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <rect x="3" y="4" width="18" height="17" rx="2" stroke="currentColor" strokeWidth="1.5"/>
@@ -43,6 +50,7 @@ const NAV: NavItem[] = [
   {
     label: 'Визиты',
     href: '/visits',
+    roles: ['admin', 'doctor', 'nurse'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
@@ -54,6 +62,7 @@ const NAV: NavItem[] = [
   {
     label: 'Пациенты',
     href: '/patients',
+    roles: ['admin', 'doctor', 'nurse', 'manager', 'cashier'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.5"/>
@@ -65,6 +74,7 @@ const NAV: NavItem[] = [
     label: 'CRM',
     href: '/crm',
     badgeKey: 'crm-unread',
+    roles: ['admin', 'manager'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
@@ -75,6 +85,7 @@ const NAV: NavItem[] = [
   {
     label: 'Финансы',
     href: '/finance',
+    roles: ['admin', 'cashier'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
@@ -85,6 +96,7 @@ const NAV: NavItem[] = [
     label: 'Лаборатория',
     href: '/lab',
     badgeKey: 'lab-pending',
+    roles: ['admin', 'doctor', 'laborant', 'nurse'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M9 3h6M10 3v7l-4 9h12l-4-9V3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -104,6 +116,7 @@ const NAV: NavItem[] = [
   {
     label: 'Склад',
     href: '/inventory',
+    roles: ['admin', 'laborant', 'nurse'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" stroke="currentColor" strokeWidth="1.5"/>
@@ -114,6 +127,7 @@ const NAV: NavItem[] = [
   {
     label: 'Аналитика',
     href: '/analytics',
+    roles: ['admin'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M18 20V10M12 20V4M6 20v-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
@@ -124,6 +138,7 @@ const NAV: NavItem[] = [
     label: 'Настройки',
     href: '/settings/clinic',
     dividerBefore: true,
+    roles: ['admin'],
     icon: (
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" strokeWidth="1.5"/>
@@ -145,6 +160,14 @@ export function Sidebar({ onClose }: SidebarProps) {
   const { count: crmUnread } = useUnreadDealMessages()
   // Бейджик «новые заказы в лабораторию» на пункте Лаборатория.
   const { count: labPending } = useLabPendingOrders()
+
+  // owner видит всё; остальные — только пункты, где их роль перечислена в roles.
+  const roleSlug = profile?.role?.slug
+  const visibleNav = NAV.filter(item => {
+    if (!item.roles) return true
+    if (roleSlug === 'owner') return true
+    return roleSlug ? item.roles.includes(roleSlug as NonNullable<NavItem['roles']>[number]) : false
+  })
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/'
@@ -185,7 +208,7 @@ export function Sidebar({ onClose }: SidebarProps) {
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 overflow-y-auto">
         <div className="space-y-0.5">
-          {NAV.map((item) => (
+          {visibleNav.map((item) => (
             <div key={item.href}>
               {item.dividerBefore && (
                 <div className="my-2 border-t border-gray-100" />
