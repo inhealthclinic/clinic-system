@@ -1033,6 +1033,43 @@ function OrderDrawer({ order, onClose, onUpdated }: {
               ✓ Результаты сохранены в историю пациента
             </p>
           )}
+          {/* Owner/admin fix: вернуть ошибочно закрытое направление в работу.
+              Видно только если статус ready/verified И ни одного результата. */}
+          {(() => {
+            const role = profile?.role?.slug
+            const canRevert = role === 'owner' || role === 'admin'
+            const isReadyLike = order.status === 'ready' || order.status === 'verified'
+            const hasAnyResult = (order.items ?? []).some(
+              i => i.result_value != null || (i.result_text && i.result_text.length > 0)
+            )
+            if (!canRevert || !isReadyLike || hasAnyResult) return null
+            return (
+              <button
+                disabled={saving}
+                onClick={async () => {
+                  if (!window.confirm('Вернуть направление в статус «В работе»? Лаборант сможет внести результаты заново.')) return
+                  setSaving(true)
+                  await supabase.from('lab_orders').update({
+                    status: 'in_progress',
+                    verified_at: null,
+                    verified_by: null,
+                  }).eq('id', order.id)
+                  // снять verified_at/by и с items, если там что-то было
+                  await supabase.from('lab_order_items').update({
+                    verified_at: null,
+                    verified_by: null,
+                  }).eq('order_id', order.id)
+                  setSaving(false)
+                  onUpdated()
+                  onClose()
+                }}
+                className="w-full py-2 rounded-lg text-xs font-medium border border-orange-200 text-orange-700 hover:bg-orange-50 transition-colors disabled:opacity-60"
+                title="Доступно только owner/admin"
+              >
+                ↩ Вернуть в работу
+              </button>
+            )
+          })()}
         </div>
       </div>
 
