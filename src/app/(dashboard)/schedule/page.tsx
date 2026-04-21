@@ -2281,11 +2281,25 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.from('lab_orders')
-      .select('status, order_number, ordered_at, sample_taken_at, verified_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), patient:patients(birth_date,gender), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
-      .eq('id', orderId)
-      .single()
-      .then(({ data }) => { setOrder(data as typeof order); setLoading(false) })
+    (async () => {
+      const { data } = await supabase.from('lab_orders')
+        .select('status, patient_id, order_number, ordered_at, sample_taken_at, verified_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
+        .eq('id', orderId)
+        .single()
+      if (!data) { setLoading(false); return }
+      // Тянем пациента отдельно — join может не отдать запись (RLS, soft-delete)
+      let patient: { birth_date?: string | null; gender?: string | null } | null = null
+      const pid = (data as unknown as { patient_id?: string | null }).patient_id
+      if (pid) {
+        const { data: p } = await supabase.from('patients')
+          .select('birth_date, gender')
+          .eq('id', pid)
+          .maybeSingle()
+        if (p) patient = p as { birth_date?: string | null; gender?: string | null }
+      }
+      setOrder({ ...(data as unknown as Record<string, unknown>), patient } as unknown as typeof order)
+      setLoading(false)
+    })()
   }, [orderId, supabase])
 
   const handlePrint = () => {
