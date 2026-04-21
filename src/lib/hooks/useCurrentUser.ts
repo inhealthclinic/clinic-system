@@ -7,16 +7,13 @@ import { useAuthStore } from '@/lib/stores/authStore'
 /**
  * Восстанавливает сессию Supabase при загрузке страницы.
  *
- * Важно: Supabase SSR client хранит токен в cookies, поэтому при
- * обновлении страницы сессия ДОЛЖНА восстанавливаться без редиректа
- * на /login. Раньше тут стоял 3-секундный таймаут, который при медленной
- * сети мог ложно сбрасывать isLoading=false с user=null — и dashboard
- * layout выкидывал пользователя на логин. Теперь:
- *   1) getSession() читает токен из storage (обычно < 50 мс) и сразу
- *      ставит user + тянет профиль.
- *   2) onAuthStateChange слушает последующие события (refresh, signout).
- *   3) Таймаут убран — если сессии действительно нет, getSession вернёт
- *      null быстро.
+ * Важно:
+ *   1) Сначала получаем сессию через getSession() (читает из cookie/storage).
+ *   2) СРАЗУ снимаем isLoading — layout не должен ждать профиль, иначе
+ *      при медленной сети страница висит на «Загрузка…».
+ *   3) Профиль догружается фоном.
+ *   4) Safety-таймаут 5с на случай, если getSession по какой-то причине
+ *      не резолвится (редко, но бывает) — чтобы layout мог принять решение.
  */
 export function useCurrentUser() {
   const { user, profile, isLoading, setUser, setProfile, setLoading } = useAuthStore()
@@ -27,6 +24,7 @@ export function useCurrentUser() {
     initialized.current = true
 
     const supabase = createClient()
+    let cancelled = false
 
     const loadProfile = async (userId: string) => {
       const { data } = await supabase
@@ -34,20 +32,33 @@ export function useCurrentUser() {
         .select('*, role:roles(id, slug, name, color, max_discount_percent)')
         .eq('id', userId)
         .single()
-      setProfile(data ?? null)
+      if (!cancelled) setProfile(data ?? null)
     }
 
-    // 1) Синхронное чтение существующей сессии из storage/cookie
+    // Safety: если getSession завис, через 5с всё равно снимем лоадер.
+    const safety = setTimeout(() => {
+      if (!cancelled) setLoading(false)
+    }, 5000)
+
     ;(async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      const u = session?.user ?? null
-      setUser(u)
-      if (u) await loadProfile(u.id)
-      else setProfile(null)
-      setLoading(false)
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (cancelled) return
+        const u = session?.user ?? null
+        setUser(u)
+        // Снимаем лоадер СРАЗУ — профиль не обязателен для рендера layout.
+        setLoading(false)
+        clearTimeout(safety)
+        if (u) {
+          loadProfile(u.id).catch(() => {})
+        } else {
+          setProfile(null)
+        }
+      } catch {
+        if (!cancelled) setLoading(false)
+      }
     })()
 
-    // 2) Подписка на изменения авторизации (SIGNED_IN, TOKEN_REFRESHED, SIGNED_OUT)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         const u = session?.user ?? null
@@ -55,12 +66,14 @@ export function useCurrentUser() {
         if (event === 'SIGNED_OUT') {
           setProfile(null)
         } else if (u) {
-          await loadProfile(u.id)
+          loadProfile(u.id).catch(() => {})
         }
       }
     )
 
     return () => {
+      cancelled = true
+      clearTimeout(safety)
       subscription.unsubscribe()
     }
   }, [setUser, setProfile, setLoading])
