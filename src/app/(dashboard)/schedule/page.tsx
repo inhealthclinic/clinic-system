@@ -2254,7 +2254,12 @@ function LabResultsModal({ orderId, patientName, onClose }: {
     status: string
     order_number: string | null
     ordered_at: string
+    sample_taken_at?: string | null
+    sex_snapshot?: string | null
+    age_snapshot?: number | null
+    patient_name_snapshot?: string | null
     doctor?: { first_name: string; last_name: string } | null
+    patient?: { birth_date?: string | null; gender?: string | null } | null
     items: Array<{
       id: string; name: string; price: number | null
       result_value?: number | string | null
@@ -2262,6 +2267,7 @@ function LabResultsModal({ orderId, patientName, onClose }: {
       unit_snapshot?: string | null
       reference_min?: number | null
       reference_max?: number | null
+      reference_text?: string | null
       flag?: string | null
     }>
   } | null>(null)
@@ -2269,38 +2275,137 @@ function LabResultsModal({ orderId, patientName, onClose }: {
 
   useEffect(() => {
     supabase.from('lab_orders')
-      .select('status, order_number, ordered_at, doctor:doctors(first_name,last_name), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,flag)')
+      .select('status, order_number, ordered_at, sample_taken_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), patient:patients(birth_date,gender), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
       .eq('id', orderId)
       .single()
       .then(({ data }) => { setOrder(data as typeof order); setLoading(false) })
   }, [orderId, supabase])
 
   const handlePrint = () => {
-    const w = window.open('', '_blank', 'width=800,height=600')
+    const w = window.open('', '_blank', 'width=900,height=700')
     if (!w || !order) return
-    const stepIdx = LAB_STATUS_STEPS.findIndex(s => s.key === order.status)
+
+    const pName = order.patient_name_snapshot ?? patientName
+    const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
+    const birthDate = rawPatient?.birth_date
+      ? new Date(rawPatient.birth_date).toLocaleDateString('ru-RU')
+      : '—'
+    const genderRaw = order.sex_snapshot ?? rawPatient?.gender
+    const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : '—'
+    const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
+    const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
+    const sampleDate = order.sample_taken_at
+      ? new Date(order.sample_taken_at).toLocaleDateString('ru-RU')
+      : new Date(order.ordered_at).toLocaleDateString('ru-RU')
+    const printDate = new Date().toLocaleDateString('ru-RU')
+
+    const flagColor = (f?: string | null) => {
+      if (f === 'high' || f === 'critical') return '#c2410c'
+      if (f === 'low') return '#1d4ed8'
+      return '#1a5fa8'
+    }
+    const flagArrow = (f?: string | null) => {
+      if (f === 'high' || f === 'critical') return '↑&nbsp;'
+      if (f === 'low') return '↓&nbsp;'
+      return ''
+    }
+
     const rows = order.items.map(item => {
       const val = item.result_value ?? item.result_text
-      const flagMark = item.flag && item.flag !== 'normal' ? ` (${FLAG_LABEL[item.flag] ?? item.flag})` : ''
       const ref = item.reference_min != null || item.reference_max != null
-        ? `${item.reference_min ?? ''}–${item.reference_max ?? ''} ${item.unit_snapshot ?? ''}`
-        : (item.unit_snapshot ?? '')
+        ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
+        : (item.reference_text ?? '—')
+      const valCell = val != null
+        ? `<span style="color:${flagColor(item.flag)};font-weight:${item.flag && item.flag !== 'normal' ? 'bold' : 'normal'}">${flagArrow(item.flag)}${String(val)}</span>`
+        : '<span style="color:#aaa">—</span>'
       return `<tr>
-        <td style="padding:6px 10px;border-bottom:1px solid #eee">${item.name}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eee;font-weight:${item.flag && item.flag !== 'normal' ? 'bold' : 'normal'};color:${item.flag === 'high' || item.flag === 'critical' ? '#c2410c' : item.flag === 'low' ? '#1d4ed8' : '#111'}">${val != null ? String(val) + flagMark : '—'}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #eee;color:#6b7280">${ref}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;color:#1a5fa8">${item.name}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;text-align:center">${valCell}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;text-align:center;color:#1a5fa8">${item.unit_snapshot ?? '—'}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;text-align:center;color:#1a5fa8">${ref}</td>
+        <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;color:#aaa"></td>
       </tr>`
     }).join('')
-    w.document.write(`<!DOCTYPE html><html><head><title>Анализы — ${patientName}</title>
-    <style>body{font-family:Arial,sans-serif;padding:24px;color:#111}h2{margin:0 0 4px}p{margin:0 0 16px;color:#6b7280;font-size:13px}table{width:100%;border-collapse:collapse}th{text-align:left;padding:8px 10px;background:#f3f4f6;font-size:12px;text-transform:uppercase;letter-spacing:.05em}@media print{body{padding:0}}</style>
-    </head><body>
-    <h2>Результаты анализов</h2>
-    <p>${patientName} · ${new Date(order.ordered_at).toLocaleDateString('ru-RU')} · Статус: ${LAB_STATUS_STEPS[stepIdx]?.label ?? order.status}</p>
-    <table><thead><tr><th>Анализ</th><th>Результат</th><th>Референс</th></tr></thead><tbody>${rows}</tbody></table>
-    </body></html>`)
+
+    w.document.write(`<!DOCTYPE html><html lang="ru"><head>
+<meta charset="utf-8">
+<title>Результаты анализов — ${pName}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:11px;color:#1a5fa8;padding:20px 24px}
+.header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:6px;margin-bottom:4px}
+.logo-box{display:flex;flex-direction:column;align-items:flex-start}
+.logo-symbol{font-size:28px;line-height:1;color:#1a5fa8}
+.logo-name{font-size:15px;font-weight:bold;color:#1a5fa8;letter-spacing:1px}
+.logo-sub{font-size:8px;letter-spacing:3px;text-transform:uppercase;color:#1a5fa8}
+.title{font-size:14px;font-weight:bold;color:#1a5fa8;text-align:center;align-self:center}
+.clinic-info{text-align:right;font-size:10px;color:#1a5fa8;line-height:1.5}
+.divider{border:none;border-top:1.5px solid #1a5fa8;margin:4px 0 6px}
+.patient-block{font-size:11px;color:#1a5fa8;margin-bottom:6px;line-height:1.8}
+.patient-block strong{font-weight:bold}
+table{width:100%;border-collapse:collapse;margin-top:2px}
+thead tr th{background:#d0e4f5;padding:5px 8px;font-size:10px;font-weight:bold;color:#1a5fa8;border:1px solid #b0c8e8;text-align:center}
+thead tr th:first-child{text-align:left}
+.group-row td{background:#d0e4f5;font-weight:bold;padding:4px 8px;color:#1a5fa8;font-size:11px}
+tbody tr:hover{background:#f0f6ff}
+.footer{margin-top:20px;font-size:10px;color:#333;border-top:1px solid #b0c8e8;padding-top:8px}
+.footer .approver{color:#1a5fa8;font-weight:bold;margin-bottom:2px}
+.footer .disclaimer{font-weight:bold;margin-top:4px;color:#333}
+@media print{body{padding:10px 14px}@page{margin:10mm}}
+</style>
+</head><body>
+<div class="header">
+  <div class="logo-box">
+    <div class="logo-symbol">⊗</div>
+    <div class="logo-name">in health</div>
+    <div class="logo-sub">laboratory</div>
+  </div>
+  <div class="title">Результаты анализов</div>
+  <div class="clinic-info">
+    ТОО "IN HEALTH AKTAU"<br>
+    Казахстан, Актау, 31Б-ЖК ROSE<br>
+    8708 919 38 51<br>
+    inhealthkzz@gmail.com
+  </div>
+</div>
+<hr class="divider">
+<div class="patient-block">
+  <strong>ФИО: ${pName}</strong>&nbsp;&nbsp;&nbsp;Пол: ${gender}&nbsp;&nbsp;&nbsp;Дата рождения: ${birthDate}<br>
+  Врач: ${doctorName}<br>
+  Проба взята: ${sampleDate}
+</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:40%;text-align:left">Исследование</th>
+      <th>Результат</th>
+      <th>Ед. изм.</th>
+      <th>Референсные значения</th>
+      <th>Комментарий</th>
+    </tr>
+  </thead>
+  <tbody>
+    ${rows}
+  </tbody>
+</table>
+<div class="footer">
+  <div style="display:flex;justify-content:space-between;align-items:flex-end">
+    <div>
+      <div class="approver">Одобрил: ___________________________</div>
+      <div>Дата печати результата: ${printDate}</div>
+      <div class="disclaimer">Результаты исследований не являются диагнозом, необходима консультация специалиста.</div>
+    </div>
+    <div style="text-align:right;font-size:10px;color:#1a5fa8;border:1px solid #b0c8e8;padding:6px 12px;border-radius:4px">
+      Анализдер үшін<br>
+      Для анализов<br>
+      <span style="font-size:18px">___</span>
+    </div>
+  </div>
+</div>
+</body></html>`)
     w.document.close()
     w.focus()
-    setTimeout(() => { w.print() }, 400)
+    setTimeout(() => { w.print() }, 500)
   }
 
   const stepIdx = LAB_STATUS_STEPS.findIndex(s => s.key === order?.status)
