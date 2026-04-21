@@ -2413,7 +2413,7 @@ tbody tr:hover{background:#f0f6ff}
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-3" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
 
         {/* ── Шапка ── */}
         <div className="px-6 py-4 border-b border-gray-100 flex items-start justify-between gap-4 flex-shrink-0">
@@ -2469,50 +2469,124 @@ tbody tr:hover{background:#f0f6ff}
               </div>
             </div>
 
-            {/* ── Таблица анализов ── */}
-            <div className="flex-1 overflow-y-auto">
-              {order.items.length === 0 ? (
-                <div className="py-12 text-center text-sm text-gray-400">Нет позиций в заказе</div>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-white z-10">
-                    <tr className="border-b border-gray-200">
-                      <th className="text-left px-6 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider w-1/2">Анализ</th>
-                      <th className="text-center px-4 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Результат</th>
-                      <th className="text-center px-4 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Ед.</th>
-                      <th className="text-center px-6 py-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Норма</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {order.items.map((item, idx) => {
-                      const val = item.result_value ?? item.result_text
-                      const hasVal = val != null
-                      const flagCls = hasVal && item.flag ? FLAG_COLORS[item.flag] : ''
-                      return (
-                        <tr key={item.id} className={`${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/40'} hover:bg-purple-50/30 transition-colors`}>
-                          <td className="px-6 py-3.5 text-gray-800 font-medium">{item.name}</td>
-                          <td className="px-4 py-3.5 text-center">
-                            {hasVal ? (
-                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-bold ${flagCls || 'text-gray-700 bg-gray-50 border-gray-200'}`}>
-                                {item.flag && item.flag !== 'normal' && <span className="text-[10px]">{FLAG_LABEL[item.flag]}</span>}
-                                {String(val)}
-                              </span>
-                            ) : (
-                              <span className="text-gray-300 text-xs italic">ожидается</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3.5 text-center text-xs text-gray-400">{item.unit_snapshot ?? '—'}</td>
-                          <td className="px-6 py-3.5 text-center text-xs text-gray-400">
-                            {item.reference_min != null || item.reference_max != null
+            {/* ── Предпросмотр бланка (как будет в PDF) ── */}
+            <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
+              {(() => {
+                const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
+                const birthDate = rawPatient?.birth_date
+                  ? new Date(rawPatient.birth_date).toLocaleDateString('ru-RU')
+                  : '—'
+                const genderRaw = order.sex_snapshot ?? rawPatient?.gender
+                const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : '—'
+                const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
+                const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
+                const sampleDate = order.sample_taken_at
+                  ? new Date(order.sample_taken_at).toLocaleDateString('ru-RU')
+                  : new Date(order.ordered_at).toLocaleDateString('ru-RU')
+                const pName = order.patient_name_snapshot ?? patientName
+                const flagColor = (f?: string | null) =>
+                  f === 'high' || f === 'critical' ? '#c2410c' : f === 'low' ? '#1d4ed8' : '#1a5fa8'
+                const flagArrow = (f?: string | null) =>
+                  f === 'high' || f === 'critical' ? '↑ ' : f === 'low' ? '↓ ' : ''
+
+                return (
+                  <div className="bg-white shadow-md mx-auto" style={{ maxWidth: 720, fontFamily: 'Arial, sans-serif', color: '#1a5fa8', padding: '20px 24px' }}>
+                    {/* Header */}
+                    <div className="flex justify-between items-start pb-1.5">
+                      <div className="flex flex-col items-start">
+                        <div style={{ fontSize: 28, lineHeight: 1, color: '#1a5fa8' }}>⊗</div>
+                        <div style={{ fontSize: 15, fontWeight: 'bold', letterSpacing: 1 }}>in health</div>
+                        <div style={{ fontSize: 8, letterSpacing: 3, textTransform: 'uppercase' }}>laboratory</div>
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 'bold', alignSelf: 'center' }}>Результаты анализов</div>
+                      <div style={{ fontSize: 10, textAlign: 'right', lineHeight: 1.5 }}>
+                        ТОО &quot;IN HEALTH AKTAU&quot;<br />
+                        Казахстан, Актау, 31Б-ЖК ROSE<br />
+                        8708 919 38 51<br />
+                        inhealthkzz@gmail.com
+                      </div>
+                    </div>
+                    <hr style={{ border: 'none', borderTop: '1.5px solid #1a5fa8', margin: '4px 0 6px' }} />
+                    {/* Patient block */}
+                    <div style={{ fontSize: 11, lineHeight: 1.8, marginBottom: 6 }}>
+                      <strong>ФИО: {pName}</strong>&nbsp;&nbsp;&nbsp;Пол: {gender}&nbsp;&nbsp;&nbsp;Дата рождения: {birthDate}<br />
+                      Врач: {doctorName}<br />
+                      Проба взята: {sampleDate}
+                    </div>
+                    {/* Table */}
+                    {order.items.length === 0 ? (
+                      <div className="py-8 text-center" style={{ color: '#aaa', fontSize: 11 }}>Нет позиций в заказе</div>
+                    ) : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 2, fontSize: 11 }}>
+                        <thead>
+                          <tr>
+                            {['Исследование','Результат','Ед. изм.','Референсные значения','Комментарий'].map((h, i) => (
+                              <th key={h} style={{
+                                background: '#d0e4f5', padding: '5px 8px', fontSize: 10, fontWeight: 'bold',
+                                border: '1px solid #b0c8e8', textAlign: i === 0 ? 'left' : 'center',
+                                width: i === 0 ? '38%' : undefined,
+                              }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {order.items.map(item => {
+                            const val = item.result_value ?? item.result_text
+                            const ref = item.reference_min != null || item.reference_max != null
                               ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
-                              : '—'}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              )}
+                              : (item.reference_text ?? '—')
+                            const cellStyle: React.CSSProperties = {
+                              padding: '4px 8px', borderBottom: '1px dashed #b0c8e8', color: '#1a5fa8',
+                            }
+                            return (
+                              <tr key={item.id}>
+                                <td style={cellStyle}>{item.name}</td>
+                                <td style={{ ...cellStyle, textAlign: 'center' }}>
+                                  {val != null ? (
+                                    <span style={{
+                                      color: flagColor(item.flag),
+                                      fontWeight: item.flag && item.flag !== 'normal' ? 'bold' : 'normal',
+                                    }}>
+                                      {flagArrow(item.flag)}{String(val)}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: '#aaa' }}>—</span>
+                                  )}
+                                </td>
+                                <td style={{ ...cellStyle, textAlign: 'center' }}>{item.unit_snapshot ?? '—'}</td>
+                                <td style={{ ...cellStyle, textAlign: 'center' }}>{ref}</td>
+                                <td style={{ ...cellStyle, color: '#aaa' }}></td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                    {/* Footer */}
+                    <div style={{ marginTop: 20, fontSize: 10, color: '#333', borderTop: '1px solid #b0c8e8', paddingTop: 8 }}>
+                      <div className="flex justify-between items-end">
+                        <div>
+                          <div style={{ color: '#1a5fa8', fontWeight: 'bold', marginBottom: 2 }}>
+                            Одобрил: ___________________________
+                          </div>
+                          <div>Дата печати результата: {new Date().toLocaleDateString('ru-RU')}</div>
+                          <div style={{ fontWeight: 'bold', marginTop: 4 }}>
+                            Результаты исследований не являются диагнозом, необходима консультация специалиста.
+                          </div>
+                        </div>
+                        <div style={{
+                          textAlign: 'right', fontSize: 10, color: '#1a5fa8',
+                          border: '1px solid #b0c8e8', padding: '6px 12px', borderRadius: 4,
+                        }}>
+                          Анализдер үшін<br />
+                          Для анализов<br />
+                          <span style={{ fontSize: 18 }}>___</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
 
             {/* ── Футер с кнопкой скачать ── */}
