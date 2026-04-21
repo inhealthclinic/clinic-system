@@ -21,9 +21,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     if (!isLoading && !user) {
-      router.push('/login')
+      // Сохраняем текущий путь + query, чтобы после логина вернуть
+      // пользователя в то же место, а не кидать на корневой дашборд.
+      const search = typeof window !== 'undefined' ? window.location.search : ''
+      const returnTo = (pathname || '/') + search
+      const qs = returnTo && returnTo !== '/'
+        ? `?redirect=${encodeURIComponent(returnTo)}`
+        : ''
+      router.replace(`/login${qs}`)
     }
-  }, [isLoading, user, router])
+  }, [isLoading, user, router, pathname])
 
   if (isLoading) {
     return (
