@@ -26,7 +26,10 @@ interface Toast {
 export function LabNotifier() {
   const { isOwner, isAdmin, profile } = usePermissions()
   const isLaborant = profile?.role?.slug === 'laborant'
-  const canSeeLab = isOwner || isAdmin || isLaborant
+  // Ref: проверяем роль внутри handleIncoming, чтобы не терять подписку
+  // при позднем появлении профиля
+  const canSeeLabRef = useRef(false)
+  canSeeLabRef.current = isOwner || isAdmin || isLaborant
 
   const [toasts, setToasts] = useState<Toast[]>([])
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -55,11 +58,13 @@ export function LabNotifier() {
         audioCtxRef.current?.resume().catch(() => {})
       } catch { /* ignore */ }
     }
-    document.addEventListener('click', unlock)
-    document.addEventListener('keydown', unlock)
+    document.addEventListener('click', unlock, { once: false })
+    document.addEventListener('keydown', unlock, { once: false })
+    document.addEventListener('touchstart', unlock, { once: false })
     return () => {
       document.removeEventListener('click', unlock)
       document.removeEventListener('keydown', unlock)
+      document.removeEventListener('touchstart', unlock)
     }
   }, [])
 
@@ -98,6 +103,8 @@ export function LabNotifier() {
 
   const handleIncoming = useCallback(
     (order: IncomingLabOrder) => {
+      // Пропускаем если у текущего пользователя нет доступа к лаборатории
+      if (!canSeeLabRef.current) return
       const patientName = order.patient_name_snapshot ?? 'Пациент'
       const orderNum = order.order_number ? ` №${order.order_number}` : ''
       const title = `Новый анализ${orderNum}`
@@ -116,8 +123,8 @@ export function LabNotifier() {
     [playBeep, pushToast]
   )
 
-  // Подписываемся только если есть право на лабораторию
-  useLabPendingOrders(canSeeLab ? { onIncoming: handleIncoming } : {})
+  // Всегда подписываемся — проверка роли внутри handleIncoming через ref
+  useLabPendingOrders({ onIncoming: handleIncoming })
 
   if (toasts.length === 0) return null
 
