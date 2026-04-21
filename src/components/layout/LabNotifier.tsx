@@ -124,7 +124,23 @@ export function LabNotifier() {
   )
 
   // Всегда подписываемся — проверка роли внутри handleIncoming через ref
-  useLabPendingOrders({ onIncoming: handleIncoming })
+  // pollIntervalMs=4000 — быстрее для кросс-устройственных уведомлений
+  useLabPendingOrders({ onIncoming: handleIncoming, pollIntervalMs: 4000 })
+
+  // CustomEvent от transferToLab — срабатывает мгновенно в том же браузере,
+  // пока AudioContext ещё активен после клика пользователя
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const seenIds = new Set<string>()
+    const handler = (e: Event) => {
+      const order = (e as CustomEvent).detail
+      if (!order?.id || seenIds.has(order.id)) return
+      seenIds.add(order.id)
+      handleIncoming(order)
+    }
+    window.addEventListener('lab:order-created', handler)
+    return () => window.removeEventListener('lab:order-created', handler)
+  }, [handleIncoming])
 
   if (toasts.length === 0) return null
 

@@ -1548,6 +1548,22 @@ function AppointmentDetailDrawer({ appt, clinicId, onClose, onUpdate }: {
     setLabOrderStatus('ordered')
     setLabOrderItemNames(labRows.map(r => r.name.toLowerCase()))
     setTransferringLab(false)
+
+    // Немедленно уведомляем LabNotifier через CustomEvent — пока AudioContext
+    // ещё активен от клика пользователя (не ждём Realtime/polling 8 сек)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('lab:order-created', {
+        detail: {
+          id:                    order.id,
+          clinic_id:             clinicId,
+          patient_id:            appt.patient_id ?? null,
+          patient_name_snapshot: patDemo?.full_name ?? null,
+          order_number:          null,
+          status:                'ordered',
+          created_at:            new Date().toISOString(),
+        },
+      }))
+    }
   }
 
   // ── Add new lab services to existing order ─────────────────
