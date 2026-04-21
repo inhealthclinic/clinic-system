@@ -2323,29 +2323,43 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
     })()
   }, [activeOrderId, supabase])
 
-  const handlePrint = () => {
-    const w = window.open('', '_blank', 'width=900,height=700')
-    if (!w || !order) return
+  // Универсально получаем полный payload заказа для печати (используется
+  // и текущим activeOrder, и при печати нескольких по выбору)
+  type PrintableOrder = NonNullable<typeof order>
+  const fetchOrderForPrint = useCallback(async (id: string): Promise<PrintableOrder | null> => {
+    const { data } = await supabase.from('lab_orders')
+      .select('status, patient_id, order_number, ordered_at, sample_taken_at, verified_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
+      .eq('id', id)
+      .single()
+    if (!data) return null
+    let patient: { birth_date?: string | null; gender?: string | null } | null = null
+    const pid = (data as unknown as { patient_id?: string | null }).patient_id
+    if (pid) {
+      const { data: p } = await supabase.from('patients')
+        .select('birth_date, gender')
+        .eq('id', pid)
+        .maybeSingle()
+      if (p) patient = p as { birth_date?: string | null; gender?: string | null }
+    }
+    return { ...(data as unknown as Record<string, unknown>), patient } as unknown as PrintableOrder
+  }, [supabase])
 
-    const pName = order.patient_name_snapshot ?? patientName
-    const rawPatient = Array.isArray(order.patient) ? order.patient[0] : order.patient
-    // Приоритет: живые данные карточки пациента → prop → замороженный snapshot
+  // Собирает HTML-фрагмент одного бланка (без <html>/<head>/<body>)
+  const buildOrderBlock = (o: PrintableOrder, origin: string, isFirst: boolean) => {
+    const pName = o.patient_name_snapshot ?? patientName
+    const rawPatient = Array.isArray(o.patient) ? o.patient[0] : o.patient
     const bdRaw = rawPatient?.birth_date ?? patientBirthDate ?? null
-    const birthDate = bdRaw
-      ? new Date(bdRaw).toLocaleDateString('ru-RU')
-      : '—'
-    const genderRaw = rawPatient?.gender ?? patientGender ?? order.sex_snapshot
+    const birthDate = bdRaw ? new Date(bdRaw).toLocaleDateString('ru-RU') : '—'
+    const genderRaw = rawPatient?.gender ?? patientGender ?? o.sex_snapshot
     const gender = genderRaw === 'male' ? 'М' : genderRaw === 'female' ? 'Ж' : genderRaw === 'other' ? 'Др.' : '—'
-    const rawDoctor = Array.isArray(order.doctor) ? order.doctor[0] : order.doctor
+    const rawDoctor = Array.isArray(o.doctor) ? o.doctor[0] : o.doctor
     const doctorName = rawDoctor ? `${rawDoctor.last_name} ${rawDoctor.first_name[0]}.` : '—'
-    const sampleDate = order.sample_taken_at
-      ? new Date(order.sample_taken_at).toLocaleDateString('ru-RU')
-      : new Date(order.ordered_at).toLocaleDateString('ru-RU')
-    const printDate = order.verified_at
-      ? new Date(order.verified_at).toLocaleDateString('ru-RU')
+    const sampleDate = o.sample_taken_at
+      ? new Date(o.sample_taken_at).toLocaleDateString('ru-RU')
+      : new Date(o.ordered_at).toLocaleDateString('ru-RU')
+    const printDate = o.verified_at
+      ? new Date(o.verified_at).toLocaleDateString('ru-RU')
       : '—'
-    const origin = typeof window !== 'undefined' ? window.location.origin : ''
-
     const flagColor = (f?: string | null) => {
       if (f === 'high' || f === 'critical') return '#c2410c'
       if (f === 'low') return '#1d4ed8'
@@ -2356,8 +2370,7 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
       if (f === 'low') return '↓&nbsp;'
       return ''
     }
-
-    const rows = order.items.map(item => {
+    const rows = o.items.map(item => {
       const val = item.result_value ?? item.result_text
       const ref = item.reference_min != null || item.reference_max != null
         ? `${item.reference_min ?? ''}–${item.reference_max ?? ''}`
@@ -2373,34 +2386,7 @@ function LabResultsModal({ orderId, patientName, patientGender, patientBirthDate
         <td style="padding:4px 8px;border-bottom:1px dashed #b0c8e8;color:#aaa"></td>
       </tr>`
     }).join('')
-
-    w.document.write(`<!DOCTYPE html><html lang="ru"><head>
-<meta charset="utf-8">
-<title>Результаты анализов — ${pName}</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:11px;color:#1a5fa8;padding:20px 24px}
-.header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:6px;margin-bottom:4px}
-.logo-box{display:flex;flex-direction:column;align-items:flex-start}
-.logo-symbol{font-size:28px;line-height:1;color:#1a5fa8}
-.logo-name{font-size:15px;font-weight:bold;color:#1a5fa8;letter-spacing:1px}
-.logo-sub{font-size:8px;letter-spacing:3px;text-transform:uppercase;color:#1a5fa8}
-.title{font-size:14px;font-weight:bold;color:#1a5fa8;text-align:center;align-self:center}
-.clinic-info{text-align:right;font-size:10px;color:#1a5fa8;line-height:1.5}
-.divider{border:none;border-top:1.5px solid #1a5fa8;margin:4px 0 6px}
-.patient-block{font-size:11px;color:#1a5fa8;margin-bottom:6px;line-height:1.8}
-.patient-block strong{font-weight:bold}
-table{width:100%;border-collapse:collapse;margin-top:2px}
-thead tr th{background:#d0e4f5;padding:5px 8px;font-size:10px;font-weight:bold;color:#1a5fa8;border:1px solid #b0c8e8;text-align:center}
-thead tr th:first-child{text-align:left}
-.group-row td{background:#d0e4f5;font-weight:bold;padding:4px 8px;color:#1a5fa8;font-size:11px}
-tbody tr:hover{background:#f0f6ff}
-.footer{margin-top:20px;font-size:10px;color:#333;border-top:1px solid #b0c8e8;padding-top:8px}
-.footer .approver{color:#1a5fa8;font-weight:bold;margin-bottom:2px}
-.footer .disclaimer{font-weight:bold;margin-top:4px;color:#333}
-@media print{body{padding:10px 14px}@page{margin:10mm}}
-</style>
-</head><body>
+    return `<section class="sheet"${isFirst ? '' : ' style="page-break-before:always"'}>
 <div class="header">
   <div class="logo-box">
     <div class="logo-symbol">⊗</div>
@@ -2419,7 +2405,7 @@ tbody tr:hover{background:#f0f6ff}
 <div class="patient-block">
   <strong>ФИО: ${pName}</strong>&nbsp;&nbsp;&nbsp;Пол: ${gender}&nbsp;&nbsp;&nbsp;Дата рождения: ${birthDate}<br>
   Врач: ${doctorName}<br>
-  Проба взята: ${sampleDate}
+  Проба взята: ${sampleDate}${o.order_number ? `&nbsp;&nbsp;&nbsp;№ ${o.order_number}` : ''}
 </div>
 <table>
   <thead>
@@ -2448,10 +2434,84 @@ tbody tr:hover{background:#f0f6ff}
     <img src="${origin}/lab-stamp.png" alt="печать" style="height:96px;width:auto;opacity:0.9"/>
   </div>
 </div>
+</section>`
+  }
+
+  // Открывает окно печати для списка заказов (если пуст — текущего)
+  const openPrintWindow = async (ids?: string[]) => {
+    const list = (ids && ids.length > 0) ? ids : [activeOrderId]
+    const orders: PrintableOrder[] = []
+    for (const id of list) {
+      if (id === activeOrderId && order) {
+        orders.push(order)
+      } else {
+        const o = await fetchOrderForPrint(id)
+        if (o) orders.push(o)
+      }
+    }
+    if (orders.length === 0) return
+    const w = window.open('', '_blank', 'width=900,height=700')
+    if (!w) return
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const pName = orders[0].patient_name_snapshot ?? patientName
+    const blocks = orders.map((o, i) => buildOrderBlock(o, origin, i === 0)).join('\n')
+    w.document.write(`<!DOCTYPE html><html lang="ru"><head>
+<meta charset="utf-8">
+<title>Результаты анализов — ${pName}${orders.length > 1 ? ` (${orders.length})` : ''}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:11px;color:#1a5fa8}
+.sheet{padding:20px 24px}
+.header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:6px;margin-bottom:4px}
+.logo-box{display:flex;flex-direction:column;align-items:flex-start}
+.logo-symbol{font-size:28px;line-height:1;color:#1a5fa8}
+.logo-name{font-size:15px;font-weight:bold;color:#1a5fa8;letter-spacing:1px}
+.logo-sub{font-size:8px;letter-spacing:3px;text-transform:uppercase;color:#1a5fa8}
+.title{font-size:14px;font-weight:bold;color:#1a5fa8;text-align:center;align-self:center}
+.clinic-info{text-align:right;font-size:10px;color:#1a5fa8;line-height:1.5}
+.divider{border:none;border-top:1.5px solid #1a5fa8;margin:4px 0 6px}
+.patient-block{font-size:11px;color:#1a5fa8;margin-bottom:6px;line-height:1.8}
+.patient-block strong{font-weight:bold}
+table{width:100%;border-collapse:collapse;margin-top:2px}
+thead tr th{background:#d0e4f5;padding:5px 8px;font-size:10px;font-weight:bold;color:#1a5fa8;border:1px solid #b0c8e8;text-align:center}
+thead tr th:first-child{text-align:left}
+.group-row td{background:#d0e4f5;font-weight:bold;padding:4px 8px;color:#1a5fa8;font-size:11px}
+.footer{margin-top:20px;font-size:10px;color:#333;border-top:1px solid #b0c8e8;padding-top:8px}
+.footer .approver{color:#1a5fa8;font-weight:bold;margin-bottom:2px}
+.footer .disclaimer{font-weight:bold;margin-top:4px;color:#333}
+@media print{.sheet{padding:10px 14px}@page{margin:10mm}}
+</style>
+</head><body>
+${blocks}
 </body></html>`)
     w.document.close()
     w.focus()
     setTimeout(() => { w.print() }, 500)
+  }
+
+  // Обёртка, совместимая со старым onClick={handlePrint}
+  const handlePrint = () => { void openPrintWindow() }
+
+  // Состояние для панели мультипечати
+  const [multiOpen, setMultiOpen] = useState(false)
+  const [multiSel, setMultiSel] = useState<Set<string>>(new Set())
+  // При открытии панели — подставляем текущий заказ как отмеченный
+  const openMultiPanel = () => {
+    setMultiSel(new Set([activeOrderId]))
+    setMultiOpen(true)
+  }
+  const toggleMulti = (id: string) => {
+    setMultiSel(prev => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id); else n.add(id)
+      return n
+    })
+  }
+  const printSelected = async () => {
+    const ids = history.filter(h => multiSel.has(h.id)).map(h => h.id)
+    if (ids.length === 0) return
+    setMultiOpen(false)
+    await openPrintWindow(ids)
   }
 
   const stepIdx = LAB_STATUS_STEPS.findIndex(s => s.key === order?.status)
@@ -2693,6 +2753,18 @@ tbody tr:hover{background:#f0f6ff}
                     {reverting ? '...' : 'Вернуть в работу'}
                   </button>
                 )}
+                {/* Кнопка мультипечати — только если есть история
+                    (больше одного направления того же пациента) */}
+                {history.length > 1 && (
+                  <button
+                    onClick={openMultiPanel}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 text-xs font-medium transition-colors"
+                    title="Выбрать несколько направлений для печати"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M8 7V3h12v12h-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><rect x="4" y="7" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.8"/></svg>
+                    Печать нескольких
+                  </button>
+                )}
                 <button
                   onClick={handlePrint}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors"
@@ -2703,6 +2775,69 @@ tbody tr:hover{background:#f0f6ff}
               </div>
             </div>
           </>
+        )}
+        {/* ── Панель выбора направлений для пачечной печати ── */}
+        {multiOpen && (
+          <div className="absolute inset-0 z-[5] bg-black/30 flex items-end sm:items-center justify-center p-4" onClick={() => setMultiOpen(false)}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+                <div className="text-sm font-semibold text-gray-900">Выберите направления для печати</div>
+                <button onClick={() => setMultiOpen(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+              </div>
+              <div className="px-5 py-2 border-b border-gray-100 flex items-center gap-3 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setMultiSel(new Set(history.map(h => h.id)))}
+                  className="text-purple-600 hover:text-purple-700 font-medium"
+                >Выбрать все</button>
+                <button
+                  type="button"
+                  onClick={() => setMultiSel(new Set())}
+                  className="text-gray-500 hover:text-gray-700"
+                >Снять выбор</button>
+                <span className="ml-auto text-gray-400">{multiSel.size} из {history.length}</span>
+              </div>
+              <div className="flex-1 overflow-y-auto px-2 py-2">
+                {history.map(h => {
+                  const checked = multiSel.has(h.id)
+                  return (
+                    <label
+                      key={h.id}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer ${checked ? 'bg-purple-50' : 'hover:bg-gray-50'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleMulti(h.id)}
+                        className="w-4 h-4 accent-purple-600 cursor-pointer"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-gray-900">
+                          {new Date(h.ordered_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
+                        </div>
+                        {h.order_number && (
+                          <div className="text-[11px] text-gray-400 font-mono">{h.order_number}</div>
+                        )}
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2 bg-gray-50/60">
+                <button
+                  onClick={() => setMultiOpen(false)}
+                  className="px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100"
+                >Отмена</button>
+                <button
+                  onClick={printSelected}
+                  disabled={multiSel.size === 0}
+                  className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  🖨 Распечатать ({multiSel.size})
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>
