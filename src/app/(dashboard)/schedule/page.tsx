@@ -3356,7 +3356,7 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
   return (
     <>
       <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(720px,calc(100vw-24px))] max-h-[calc(100vh-40px)] bg-white rounded-2xl shadow-2xl z-[61] flex flex-col overflow-hidden">
+      <div className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(720px,calc(100vw-24px))] max-h-[calc(100vh-40px)] rounded-2xl shadow-2xl z-[61] flex flex-col overflow-hidden ${isRf ? 'bg-rose-50 ring-2 ring-rose-200' : 'bg-white'}`}>
 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
@@ -3364,6 +3364,7 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
             <p className="text-base font-semibold text-gray-900">
               Карта пациента
               {isVip && <span className="ml-2 text-xs font-bold text-yellow-600">VIP</span>}
+              {isRf && <span className="ml-2 inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">РФ</span>}
             </p>
             {p?.patient_number && <p className="text-xs text-gray-400 mt-0.5">№ {p.patient_number}</p>}
           </div>
@@ -3441,8 +3442,8 @@ function PatientCardModal({ patientId, onClose }: { patientId: string; onClose: 
                 </div>
               </div>
 
-              {/* Lab nuances */}
-              <div className="border-t border-gray-100 pt-3 space-y-3">
+              {/* Lab nuances — нейтральный фон даже для РФ-пациентов */}
+              <div className={`border-t border-gray-100 pt-3 space-y-3 ${isRf ? 'bg-white -mx-5 px-5 py-4 rounded-none' : ''}`}>
                 <p className="text-xs font-semibold text-gray-500">ЛАБОРАТОРНЫЕ НЮАНСЫ</p>
 
                 {/* Fasting + meds (universal) */}
