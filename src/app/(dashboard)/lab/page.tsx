@@ -33,6 +33,8 @@ interface LabOrder {
   notes: string | null
   ordered_at: string
   sample_taken_at: string | null
+  verified_at?: string | null
+  verified_by?: string | null
   // Snapshot (filled at creation time)
   patient_name_snapshot?: string | null
   sex_snapshot?: 'male' | 'female' | 'other' | null
@@ -591,7 +593,13 @@ function OrderDrawer({ order, onClose, onUpdated }: {
         ))
       }
     }
-    await supabase.from('lab_orders').update({ status: next.status }).eq('id', order.id)
+    const orderPatch: Record<string, unknown> = { status: next.status }
+    // Штампуем дату готовности при первом переходе в ready/verified
+    if ((next.status === 'ready' || next.status === 'verified') && !order.verified_at) {
+      orderPatch.verified_at = now
+      orderPatch.verified_by = profile?.id ?? null
+    }
+    await supabase.from('lab_orders').update(orderPatch).eq('id', order.id)
     setSaving(false)
     onUpdated()
     onClose()

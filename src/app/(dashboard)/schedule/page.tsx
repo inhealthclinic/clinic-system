@@ -2255,6 +2255,7 @@ function LabResultsModal({ orderId, patientName, onClose }: {
     order_number: string | null
     ordered_at: string
     sample_taken_at?: string | null
+    verified_at?: string | null
     sex_snapshot?: string | null
     age_snapshot?: number | null
     patient_name_snapshot?: string | null
@@ -2275,7 +2276,7 @@ function LabResultsModal({ orderId, patientName, onClose }: {
 
   useEffect(() => {
     supabase.from('lab_orders')
-      .select('status, order_number, ordered_at, sample_taken_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), patient:patients(birth_date,gender), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
+      .select('status, order_number, ordered_at, sample_taken_at, verified_at, sex_snapshot, age_snapshot, patient_name_snapshot, doctor:doctors(first_name,last_name), patient:patients(birth_date,gender), items:lab_order_items(id,name,price,result_value,result_text,unit_snapshot,reference_min,reference_max,reference_text,flag)')
       .eq('id', orderId)
       .single()
       .then(({ data }) => { setOrder(data as typeof order); setLoading(false) })
@@ -2297,7 +2298,9 @@ function LabResultsModal({ orderId, patientName, onClose }: {
     const sampleDate = order.sample_taken_at
       ? new Date(order.sample_taken_at).toLocaleDateString('ru-RU')
       : new Date(order.ordered_at).toLocaleDateString('ru-RU')
-    const printDate = new Date().toLocaleDateString('ru-RU')
+    const printDate = order.verified_at
+      ? new Date(order.verified_at).toLocaleDateString('ru-RU')
+      : '—'
     const origin = typeof window !== 'undefined' ? window.location.origin : ''
 
     const flagColor = (f?: string | null) => {
@@ -2396,7 +2399,7 @@ tbody tr:hover{background:#f0f6ff}
         <span>Одобрил: Бекниязова К.Х.</span>
         <img src="${origin}/lab-signature.png" alt="подпись" style="height:36px;margin-left:4px"/>
       </div>
-      <div>Дата печати результата: ${printDate}</div>
+      <div>Дата готовности результата: ${printDate}</div>
       <div class="disclaimer">Результаты исследований не являются диагнозом, необходима консультация специалиста.</div>
     </div>
     <img src="${origin}/lab-stamp.png" alt="печать" style="height:96px;width:auto;opacity:0.9"/>
@@ -2571,7 +2574,11 @@ tbody tr:hover{background:#f0f6ff}
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img src="/lab-signature.png" alt="подпись" style={{ height: 36, marginLeft: 4 }} />
                           </div>
-                          <div>Дата печати результата: {new Date().toLocaleDateString('ru-RU')}</div>
+                          <div>
+                            Дата готовности результата: {order.verified_at
+                              ? new Date(order.verified_at).toLocaleDateString('ru-RU')
+                              : '—'}
+                          </div>
                           <div style={{ fontWeight: 'bold', marginTop: 4 }}>
                             Результаты исследований не являются диагнозом, необходима консультация специалиста.
                           </div>
