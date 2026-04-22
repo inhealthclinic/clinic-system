@@ -220,6 +220,42 @@ export default function CRMKanbanPage() {
   // pending loss prompt
   const [lossPending, setLossPending] = useState<{ deal: DealRow; stageId: string } | null>(null)
 
+  // Счётчики непрочитанных входящих сообщений по каждой сделке — для бейджей
+  // на карточках канбана. Обновляем каждые 8 сек + подписываемся на realtime,
+  // чтобы новое WhatsApp/SMS сообщение мгновенно поднимало цифру.
+  const [unreadByDeal, setUnreadByDeal] = useState<Record<string, number>>({})
+  useEffect(() => {
+    if (!clinicId) return
+    let cancelled = false
+    const fetchUnread = async () => {
+      const { data } = await supabase
+        .from('deal_messages')
+        .select('deal_id')
+        .eq('clinic_id', clinicId)
+        .eq('direction', 'in')
+        .is('read_at', null)
+        .limit(2000)
+      if (cancelled) return
+      const map: Record<string, number> = {}
+      for (const row of (data ?? []) as { deal_id: string }[]) {
+        map[row.deal_id] = (map[row.deal_id] ?? 0) + 1
+      }
+      setUnreadByDeal(map)
+    }
+    fetchUnread()
+    const interval = setInterval(fetchUnread, 8000)
+    const ch = supabase.channel(`crm-unread:${clinicId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'deal_messages', filter: `clinic_id=eq.${clinicId}` },
+        () => { fetchUnread() })
+      .subscribe()
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      supabase.removeChannel(ch)
+    }
+  }, [clinicId, supabase])
+
   // selected deal — persisted in ?deal=<id> query param
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null)
   const pendingDealId = useRef<string | null>(searchParams.get('deal'))
@@ -789,7 +825,7 @@ export default function CRMKanbanPage() {
                 </div>
                 <div className="p-2 space-y-2 min-h-[40px] max-h-[calc(100vh-240px)] overflow-y-auto">
                   {cards.map(d => (
-                    <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+                    <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
                   ))}
                   {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
                 </div>
@@ -1028,8 +1064,9 @@ function MoreMenuItem({ label, icon, onClick }: { label: string; icon: React.Rea
 
 // ─── DealCard ─────────────────────────────────────────────────────────────────
 
-function DealCard({ deal, onDragStart, onClick }: {
+function DealCard({ deal, unread = 0, onDragStart, onClick }: {
   deal: DealRow
+  unread?: number
   onDragStart: (e: React.DragEvent) => void
   onClick: () => void
 }) {
@@ -1039,9 +1076,22 @@ function DealCard({ deal, onDragStart, onClick }: {
       draggable
       onDragStart={onDragStart}
       onClick={onClick}
-      className="bg-white border border-gray-200 rounded-md p-2 cursor-grab active:cursor-grabbing hover:shadow-sm"
+      className={`bg-white border rounded-md p-2 cursor-grab active:cursor-grabbing hover:shadow-sm ${unread > 0 ? 'border-green-300 ring-1 ring-green-100' : 'border-gray-200'}`}
     >
-      <div className="text-sm font-medium text-gray-900 truncate">{title}</div>
+      <div className="flex items-start gap-2">
+        <div className="text-sm font-medium text-gray-900 truncate flex-1">{title}</div>
+        {unread > 0 && (
+          <span
+            title={`${unread} непрочитанных сообщений`}
+            className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-semibold leading-none"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            {unread > 99 ? '99+' : unread}
+          </span>
+        )}
+      </div>
       {deal.patient?.phones?.[0] && (
         <div className="text-xs text-gray-500 truncate">{deal.patient.phones[0]}</div>
       )}
