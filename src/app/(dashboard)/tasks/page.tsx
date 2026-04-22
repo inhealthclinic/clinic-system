@@ -936,20 +936,6 @@ export default function TasksPage() {
         </select>
       </div>
 
-      {/* Type chips */}
-      <div className="flex items-center gap-1.5 mb-4 flex-wrap">
-        {[{ value: 'all', label: 'Все типы' }, ...TYPE_OPTIONS].map(t => (
-          <button key={t.value} onClick={() => setTypeFilter(t.value)}
-            className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
-              typeFilter === t.value
-                ? 'bg-gray-800 border-gray-800 text-white'
-                : 'border-gray-200 text-gray-500 hover:bg-gray-50'
-            }`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
       {/* Body */}
       {loading ? (
         <div className="text-center py-12 text-sm text-gray-400">Загрузка...</div>
@@ -966,15 +952,13 @@ export default function TasksPage() {
           )}
         </div>
       ) : view === 'day' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-          <ColumnBlock title="Просроченные" count={dayBuckets.overdue.length} tone="red"
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <ColumnBlock title="Просроченные задачи" count={dayBuckets.overdue.length} tone="red"
             items={dayBuckets.overdue} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
-          <ColumnBlock title="Сегодня" count={dayBuckets.today.length} tone="green"
+          <ColumnBlock title="Задачи на сегодня" count={dayBuckets.today.length} tone="green"
             items={dayBuckets.today} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
-          <ColumnBlock title="Завтра" count={dayBuckets.tomorrow.length} tone="blue"
+          <ColumnBlock title="Задачи на завтра" count={dayBuckets.tomorrow.length} tone="blue"
             items={dayBuckets.tomorrow} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
-          <ColumnBlock title="Позже" count={dayBuckets.later.length} tone="gray"
-            items={dayBuckets.later} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
         </div>
       ) : view === 'week' ? (
         <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-7 gap-3">
@@ -1035,26 +1019,28 @@ function ColumnBlock({ title, count, tone, highlight = false, items, onClick, on
   onClick: (t: TaskRow) => void
   onQuickComplete: (t: TaskRow, e: React.MouseEvent) => void
 }) {
-  const barCls = {
-    red:   'bg-red-500',
-    green: 'bg-green-500',
-    blue:  'bg-blue-500',
+  const underlineCls = {
+    red:   'bg-red-400',
+    green: 'bg-green-400',
+    blue:  'bg-blue-400',
     gray:  'bg-gray-300',
   }[tone]
-  const titleCls = {
-    red:   'text-red-600',
-    green: 'text-green-700',
-    blue:  'text-blue-700',
-    gray:  'text-gray-600',
-  }[tone]
+  const plural = (n: number) => {
+    const mod10 = n % 10, mod100 = n % 100
+    if (mod100 >= 11 && mod100 <= 14) return 'задач'
+    if (mod10 === 1) return 'задача'
+    if (mod10 >= 2 && mod10 <= 4) return 'задачи'
+    return 'задач'
+  }
   return (
-    <div className={`rounded-xl border ${highlight ? 'border-green-200 bg-green-50/30' : 'border-gray-100 bg-white'} flex flex-col min-h-[120px]`}>
-      <div className={`px-3 py-2 border-b border-gray-100 flex items-center gap-2`}>
-        <span className={`w-1.5 h-4 rounded ${barCls}`} />
-        <span className={`text-xs font-semibold uppercase tracking-wider ${titleCls}`}>{title}</span>
-        <span className="text-xs text-gray-400 ml-auto">{count}</span>
+    <div className={`flex flex-col min-h-[120px] ${highlight ? 'bg-green-50/30 rounded-xl' : ''}`}>
+      {/* amoCRM-style header: uppercase title, count under, colored underline */}
+      <div className="text-center pb-2">
+        <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-[0.08em]">{title}</div>
+        <div className="text-xs text-gray-400 mt-0.5">{count} {plural(count)}</div>
+        <div className={`h-0.5 mt-2 rounded-full ${underlineCls}`} />
       </div>
-      <div className="p-2 space-y-2 overflow-y-auto max-h-[calc(100vh-280px)]">
+      <div className="space-y-2 overflow-y-auto max-h-[calc(100vh-240px)] pt-2">
         {items.length === 0 ? (
           <div className="text-xs text-gray-300 text-center py-6">—</div>
         ) : (
