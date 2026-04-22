@@ -146,6 +146,7 @@ export function TaskNotifier() {
         { event: 'INSERT', schema: 'public', table: 'tasks', filter: `clinic_id=eq.${clinicId}` },
         (payload) => {
           const r = payload.new as Record<string, unknown>
+          console.debug('[TaskNotifier] RT tasks INSERT', r)
           handle({
             id: String(r.id),
             title: String(r.title ?? ''),
@@ -158,6 +159,7 @@ export function TaskNotifier() {
         { event: 'INSERT', schema: 'public', table: 'deal_tasks', filter: `clinic_id=eq.${clinicId}` },
         (payload) => {
           const r = payload.new as Record<string, unknown>
+          console.debug('[TaskNotifier] RT deal_tasks INSERT', r)
           handle({
             id: String(r.id),
             title: String(r.title ?? ''),
@@ -167,9 +169,29 @@ export function TaskNotifier() {
             source: 'deal_tasks',
           })
         })
-      .subscribe()
+      .subscribe((s) => console.debug('[TaskNotifier] channel status:', s))
     return () => { supabase.removeChannel(ch) }
   }, [clinicId, handle])
+
+  // Same-tab fallback: CRM при создании задачи диспатчит CustomEvent 'task:assigned',
+  // чтобы звенеть даже если Realtime-публикация ещё не подцеплена в БД.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onCustom = (e: Event) => {
+      const detail = (e as CustomEvent).detail as Record<string, unknown> | undefined
+      if (!detail) return
+      console.debug('[TaskNotifier] CustomEvent task:assigned', detail)
+      handle({
+        id: String(detail.id ?? ''),
+        title: String(detail.title ?? ''),
+        assigned_to: (detail.assignee_id ?? detail.assigned_to ?? null) as string | null,
+        status: (detail.status ?? null) as string | null,
+        source: 'deal_tasks',
+      })
+    }
+    window.addEventListener('task:assigned', onCustom)
+    return () => window.removeEventListener('task:assigned', onCustom)
+  }, [handle])
 
   if (toasts.length === 0) return null
 

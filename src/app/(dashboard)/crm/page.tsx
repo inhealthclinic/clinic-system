@@ -1834,15 +1834,21 @@ function DealModal({
       }
       if (composerMode === 'task') {
         setMsgDraft('')
-        const { error } = await supabase.from('deal_tasks').insert({
+        const assignee = composerTaskAssignee || profile?.id || null
+        const { data: inserted, error } = await supabase.from('deal_tasks').insert({
           deal_id: form.id,
           clinic_id: form.clinic_id,
           title: body,
           due_at: composerTaskDue ? new Date(composerTaskDue).toISOString() : null,
-          assignee_id: composerTaskAssignee || profile?.id || null,
+          assignee_id: assignee,
           created_by: profile?.id ?? null,
-        })
+        }).select('id, title, assignee_id, status').single()
         if (error) { alert(error.message); setMsgDraft(body); return }
+        // Same-tab fallback: если Realtime-публикация не подцепилась, всё
+        // равно звеним в текущем браузере. TaskNotifier слушает это событие.
+        if (typeof window !== 'undefined' && inserted) {
+          window.dispatchEvent(new CustomEvent('task:assigned', { detail: inserted }))
+        }
         setComposerTaskDue(''); setComposerTaskAssignee('')
         loadRelated()
         return
@@ -1855,15 +1861,19 @@ function DealModal({
   async function addTask() {
     const title = newTaskTitle.trim()
     if (!title || isNew) return
-    const { error } = await supabase.from('deal_tasks').insert({
+    const { data: inserted, error } = await supabase.from('deal_tasks').insert({
       deal_id: form.id,
       clinic_id: form.clinic_id,
       title,
       due_at: newTaskDue ? new Date(newTaskDue).toISOString() : null,
       assignee_id: newTaskAssignee || null,
       created_by: profile?.id ?? null,
-    })
+    }).select('id, title, assignee_id, status').single()
     if (error) { alert(error.message); return }
+    if (typeof window !== 'undefined' && inserted) {
+      // Same-tab fallback — независимо от того, подцепилась ли Realtime-публикация.
+      window.dispatchEvent(new CustomEvent('task:assigned', { detail: inserted }))
+    }
     setNewTaskTitle(''); setNewTaskDue(''); setNewTaskAssignee('')
     loadRelated()
   }
