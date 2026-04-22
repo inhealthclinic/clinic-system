@@ -213,8 +213,10 @@ const STATUS_RU: Record<string, string> = {
 
 /* ─── Status progression ─────────────────────────────────── */
 const NEXT_STATUS: Record<string, { status: string; label: string; cls: string }> = {
-  ordered:      { status: 'agreed',       label: 'Согласовать',    cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
-  agreed:       { status: 'sample_taken', label: 'Образец взят',   cls: 'bg-teal-600 hover:bg-teal-700 text-white' },
+  // Упрощённый флоу: ordered → in_progress (одной кнопкой «В работу»).
+  // agreed / sample_taken сохраняем для легаси-данных — они тоже едут прямо в in_progress.
+  ordered:      { status: 'in_progress',  label: 'В работу',       cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
+  agreed:       { status: 'in_progress',  label: 'В работу',       cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
   sample_taken: { status: 'in_progress',  label: 'В работу',       cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
   in_progress:  { status: 'ready',        label: '✓ Готово',       cls: 'bg-green-600 hover:bg-green-700 text-white' },
   ready:        { status: 'verified',     label: 'Верифицировать', cls: 'bg-purple-600 hover:bg-purple-700 text-white' },
@@ -712,10 +714,11 @@ function OrderDrawer({ order, onClose, onUpdated }: {
       alert(`Не удалось сохранить образец: ${insErr.message}`)
       return
     }
-    // Move status forward only if order is still in pre-sample phase
+    // Move status forward only if order is still in pre-work phase.
+    // В упрощённом флоу сразу прыгаем в in_progress (шаг sample_taken убран).
     if (!['sample_taken','in_progress','ready','verified','delivered'].includes(order.status)) {
       await supabase.from('lab_orders')
-        .update({ status: 'sample_taken', sample_taken_at: now })
+        .update({ status: 'in_progress', sample_taken_at: now })
         .eq('id', order.id)
     }
     setTakingSample(false)
@@ -1167,12 +1170,14 @@ function OrderDrawer({ order, onClose, onUpdated }: {
 
         {/* Footer */}
         <div className="p-5 border-t border-gray-100 space-y-2">
-          {/* Material taken — доступно пока заказ не верифицирован/выдан.
-              Можно брать несколько проб разных типов. */}
-          {!['verified','delivered'].includes(order.status) && (
+          {/* В упрощённом флоу отдельной кнопки «Материал взят» нет —
+              проба автоматически логируется при переходе в работу.
+              Кнопку «Добавить пробу» оставляем только если уже есть пробы,
+              чтобы можно было зафиксировать несколько типов материала. */}
+          {samples.length > 0 && !['verified','delivered'].includes(order.status) && (
             <button onClick={() => setSampleModalOpen(true)} disabled={takingSample}
-              className="w-full py-2.5 rounded-lg text-sm font-medium bg-teal-600 hover:bg-teal-700 text-white disabled:opacity-60 transition-colors">
-              {samples.length > 0 ? '➕ Добавить пробу' : '🩸 Материал взят'}
+              className="w-full py-2.5 rounded-lg text-sm font-medium bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 disabled:opacity-60 transition-colors">
+              ➕ Добавить пробу
             </button>
           )}
           {next && (
