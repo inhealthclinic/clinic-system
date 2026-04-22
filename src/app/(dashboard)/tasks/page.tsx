@@ -910,8 +910,9 @@ export default function TasksPage() {
   return (
     <div className="max-w-[1400px] mx-auto">
       {/* Controls row — как в amoCRM: день/неделя/месяц, фильтры, счётчик, ···, кнопка.
-          nowrap + мин. padding'и, чтобы всё помещалось в одну строку на десктопе. */}
-      <div className="flex items-center gap-2 mb-4 flex-nowrap overflow-x-auto">
+          nowrap + мин. padding'и, чтобы всё помещалось в одну строку на десктопе.
+          Важно: никакого overflow-x-auto здесь — он обрежет выпадающее меню «···». */}
+      <div className="flex items-center gap-2 mb-4 flex-nowrap">
         {/* View toggle: плоские текстовые кнопки «ДЕНЬ / НЕДЕЛЯ / МЕСЯЦ»
             (амоCRM-стиль — uppercase, letter-spaced, активный чёрный-жирный) */}
         <div className="flex items-center gap-3 shrink-0">
