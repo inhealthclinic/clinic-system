@@ -42,6 +42,9 @@ interface TaskRow {
   assignee?: { id: string; first_name: string; last_name: string } | null
   author?:   { id: string; first_name: string; last_name: string } | null
   deal?:     { id: string; name: string | null } | null
+  // Источник строки: основная таблица tasks или задача сделки (deal_tasks).
+  // Нужен, чтобы роутить мутации (complete / edit / delete) в правильную таблицу.
+  _source?: 'tasks' | 'deal_tasks'
 }
 
 interface UserRow { id: string; first_name: string; last_name: string }
@@ -414,9 +417,27 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
   const [due, setDue] = useState(task.due_at ? task.due_at.slice(0, 16) : '')
   const [result, setResult] = useState('')
 
+  // Роутер апдейтов: задачи из CRM (deal_tasks) и из основной таблицы (tasks)
+  // лежат в разных таблицах с разными именами полей. Здесь переводим
+  // общий TaskRow-патч в то, что понимает нужная таблица.
   const persist = async (patch: Partial<TaskRow>) => {
     setSaving(true)
-    await supabase.from('tasks').update(patch).eq('id', task.id)
+    if (task._source === 'deal_tasks') {
+      const dtPatch: Record<string, unknown> = {}
+      if ('title' in patch)       dtPatch.title = patch.title
+      if ('description' in patch) dtPatch.description = patch.description
+      if ('due_at' in patch)      dtPatch.due_at = patch.due_at
+      if ('assigned_to' in patch) dtPatch.assignee_id = patch.assigned_to
+      if ('status' in patch) {
+        // TaskRow.status → deal_tasks.status (open/done/cancelled)
+        dtPatch.status = patch.status === 'done' ? 'done'
+          : patch.status === 'cancelled' ? 'cancelled' : 'open'
+      }
+      if ('done_at' in patch)     dtPatch.completed_at = patch.done_at
+      await supabase.from('deal_tasks').update(dtPatch).eq('id', task.id)
+    } else {
+      await supabase.from('tasks').update(patch).eq('id', task.id)
+    }
     setSaving(false)
     onUpdate()
   }
@@ -439,7 +460,17 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
     if (due) {
       patch.due_at = new Date(due).toISOString()
     }
-    await supabase.from('tasks').update(patch).eq('id', task.id)
+    if (task._source === 'deal_tasks') {
+      await supabase.from('deal_tasks').update({
+        status: 'done',
+        completed_at: patch.done_at,
+        assignee_id: patch.assigned_to,
+        description: patch.description,
+        due_at: patch.due_at,
+      }).eq('id', task.id)
+    } else {
+      await supabase.from('tasks').update(patch).eq('id', task.id)
+    }
     setSaving(false)
     onUpdate()
     onClose()
@@ -458,7 +489,11 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
 
   const deleteTask = async () => {
     setDeleting(true)
-    await supabase.from('tasks').delete().eq('id', task.id)
+    if (task._source === 'deal_tasks') {
+      await supabase.from('deal_tasks').delete().eq('id', task.id)
+    } else {
+      await supabase.from('tasks').delete().eq('id', task.id)
+    }
     setDeleting(false)
     onUpdate(); onClose()
   }
@@ -798,9 +833,63 @@ export default function TasksPage() {
       .limit(500)
     if (status === 'active') q = q.in('status', ['new','in_progress','overdue'])
     else if (status === 'done') q = q.eq('status', 'done')
-    const { data, error } = await q
-    if (error) { console.error(error); setTasks([]); setLoading(false); return }
-    setTasks((data ?? []) as unknown as TaskRow[])
+
+    // Параллельно подтягиваем задачи сделок (CRM): у них отдельная таблица
+    // deal_tasks со своей схемой. Маппим в тот же TaskRow-формат, чтобы
+    // страница «Задачи» показывала всё в одной доске.
+    let dq = supabase
+      .from('deal_tasks')
+      .select(`
+        id, clinic_id, title, description, due_at, status, completed_at,
+        created_at, created_by, assignee_id, deal_id,
+        assignee:user_profiles!deal_tasks_assignee_id_fkey(id, first_name, last_name),
+        author:user_profiles!deal_tasks_created_by_fkey(id, first_name, last_name),
+        deal:deals(id, name)
+      `)
+      .eq('clinic_id', clinicId)
+      .order('due_at', { ascending: true, nullsFirst: false })
+      .limit(500)
+    if (status === 'active') dq = dq.eq('status', 'open')
+    else if (status === 'done') dq = dq.eq('status', 'done')
+
+    const [{ data, error }, { data: dData, error: dErr }] = await Promise.all([q, dq])
+    if (error) console.error(error)
+    if (dErr) console.error(dErr)
+
+    const tRows: TaskRow[] = (data ?? []).map((r: any) => ({ ...r, _source: 'tasks' as const }))
+    const dRows: TaskRow[] = (dData ?? []).map((r: any) => ({
+      id: r.id,
+      clinic_id: r.clinic_id,
+      title: r.title,
+      description: r.description,
+      type: 'other',
+      priority: 'normal',
+      // deal_tasks.status: open/done/cancelled. Маппим в наш TaskRow-статус,
+      // чтобы общий фильтр «Активные/Выполненные/Все» работал одинаково.
+      status: r.status === 'open' ? 'new' : r.status === 'done' ? 'done' : 'cancelled',
+      assigned_to: r.assignee_id,
+      created_by: r.created_by,
+      patient_id: null,
+      deal_id: r.deal_id,
+      visit_id: null,
+      due_at: r.due_at,
+      done_at: r.completed_at,
+      created_at: r.created_at,
+      patient: null,
+      assignee: r.assignee,
+      author: r.author,
+      deal: r.deal,
+      _source: 'deal_tasks',
+    }))
+
+    // Сортируем общий список по due_at (nulls last), как и основной запрос.
+    const merged = [...tRows, ...dRows].sort((a, b) => {
+      if (!a.due_at && !b.due_at) return 0
+      if (!a.due_at) return 1
+      if (!b.due_at) return -1
+      return a.due_at.localeCompare(b.due_at)
+    })
+    setTasks(merged)
     setLoading(false)
   }, [clinicId, status, supabase])
 
@@ -822,6 +911,9 @@ export default function TasksPage() {
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'tasks', filter: `clinic_id=eq.${clinicId}` },
         () => { load() })
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'deal_tasks', filter: `clinic_id=eq.${clinicId}` },
+        () => { load() })
       .subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [clinicId, supabase, load])
@@ -829,12 +921,21 @@ export default function TasksPage() {
   const quickComplete = useCallback(async (task: TaskRow, e: React.MouseEvent) => {
     e.stopPropagation()
     const toDone = task.status !== 'done'
-    await supabase.from('tasks').update({
-      status: toDone ? 'done' : 'new',
-      done_at: toDone ? new Date().toISOString() : null,
-    }).eq('id', task.id)
+    const nowIso = new Date().toISOString()
+    if (task._source === 'deal_tasks') {
+      // У deal_tasks статус open/done/cancelled и поле completed_at (не done_at).
+      await supabase.from('deal_tasks').update({
+        status: toDone ? 'done' : 'open',
+        completed_at: toDone ? nowIso : null,
+      }).eq('id', task.id)
+    } else {
+      await supabase.from('tasks').update({
+        status: toDone ? 'done' : 'new',
+        done_at: toDone ? nowIso : null,
+      }).eq('id', task.id)
+    }
     setTasks(prev => prev.map(t => t.id === task.id
-      ? { ...t, status: toDone ? 'done' : 'new', done_at: toDone ? new Date().toISOString() : null }
+      ? { ...t, status: toDone ? 'done' : 'new', done_at: toDone ? nowIso : null }
       : t))
   }, [supabase])
 
