@@ -80,6 +80,7 @@ function PaymentModal({ clinicId, onClose, onSaved }: {
   onSaved: () => void
 }) {
   const supabase = createClient()
+  const { profile } = useAuthStore()
   const [query, setQuery]     = useState('')
   const [hits, setHits]       = useState<PatientHit[]>([])
   const [patient, setPatient] = useState<PatientHit | null>(null)
@@ -87,6 +88,7 @@ function PaymentModal({ clinicId, onClose, onSaved }: {
   const [method, setMethod]   = useState('cash')
   const [type, setType]       = useState('payment')
   const [notes, setNotes]     = useState('')
+  const [refundReason, setRefundReason] = useState('')
   const [saving, setSaving]   = useState(false)
   const [error, setError]     = useState('')
   const debRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -111,14 +113,19 @@ function PaymentModal({ clinicId, onClose, onSaved }: {
     e.preventDefault()
     if (!patient) { setError('Выберите пациента'); return }
     if (!amount || Number(amount) <= 0) { setError('Укажите сумму'); return }
+    if (type === 'refund' && !refundReason.trim()) {
+      setError('Укажите причину возврата'); return
+    }
     setSaving(true); setError('')
     const { error: err } = await supabase.from('payments').insert({
-      clinic_id:  clinicId,
-      patient_id: patient.id,
-      amount:     Number(amount),
+      clinic_id:     clinicId,
+      patient_id:    patient.id,
+      amount:        Number(amount),
       method, type,
-      status:     'completed',
-      notes:      notes.trim() || null,
+      status:        'completed',
+      notes:         notes.trim() || null,
+      refund_reason: type === 'refund' ? refundReason.trim() : null,
+      received_by:   profile?.id ?? null,
     })
     if (err) { setError(err.message); setSaving(false); return }
     onSaved(); onClose()
@@ -189,6 +196,16 @@ function PaymentModal({ clinicId, onClose, onSaved }: {
               ))}
             </div>
           </div>
+
+          {type === 'refund' && (
+            <div>
+              <label className="block text-xs font-medium text-red-600 mb-1.5">Причина возврата *</label>
+              <input className={inp} value={refundReason}
+                onChange={e => setRefundReason(e.target.value)}
+                placeholder="Напр.: отмена услуги, ошибка при вводе…"
+                required />
+            </div>
+          )}
 
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1.5">Комментарий</label>
