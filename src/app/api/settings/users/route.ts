@@ -1,9 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
+/**
+ * POST /api/settings/users
+ *
+ * Создание сотрудника: проверка прав → auth.admin.createUser → insert
+ * в user_profiles. Порядок важен: сначала идентифицируем и авторизуем
+ * вызывающего, и только потом заводим нового юзера в Supabase Auth.
+ * Иначе при любой ошибке прав мы оставляли бы «сиротские» auth-юзеры,
+ * а при повторной попытке создания с тем же email получали «already
+ * registered».
+ */
 export async function POST(req: NextRequest) {
   try {
-    // Проверяем наличие service role key до любых запросов
+    // ── 0. Env ───────────────────────────────────────────────
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
     if (!serviceKey) {
       return NextResponse.json(
@@ -11,24 +21,27 @@ export async function POST(req: NextRequest) {
         { status: 503 }
       )
     }
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    if (!url || !anonKey) {
+      return NextResponse.json(
+        { error: 'Сервер не настроен: отсутствуют SUPABASE URL/ANON_KEY' },
+        { status: 503 }
+      )
+    }
 
-    const adminClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      serviceKey,
-      { auth: { autoRefreshToken: false, persistSession: false } }
-    )
+    const adminClient = createClient(url, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
 
-    // Парсим тело — оборачиваем отдельно чтобы дать понятную ошибку
+    // ── 1. Тело запроса ──────────────────────────────────────
     let body: Record<string, string>
     try {
       body = await req.json()
     } catch {
       return NextResponse.json({ error: 'Неверный формат запроса' }, { status: 400 })
     }
-
     const { first_name, last_name, email, password, role_slug } = body
-
-    // Валидация
     if (!first_name || !last_name || !email || !password || !role_slug) {
       return NextResponse.json({ error: 'Все поля обязательны' }, { status: 400 })
     }
@@ -36,13 +49,99 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Пароль минимум 6 символов' }, { status: 400 })
     }
 
-    // 1. Создаём пользователя в Supabase Auth
+    // ── 2. Идентификация вызывающего ─────────────────────────
+    const authHeader = req.headers.get('authorization') ?? ''
+    if (!authHeader.toLowerCase().startsWith('bearer ')) {
+      return NextResponse.json(
+        { error: 'Нужна авторизация (перелогиньтесь и попробуйте снова)' },
+        { status: 401 }
+      )
+    }
+    const jwt = authHeader.slice('bearer '.length).trim()
+
+    // Через admin-клиент достаём пользователя по его JWT — это надёжнее
+    // чем делать запрос от имени анон-клиента с прокинутым header'ом
+    // (в прод-окружении некоторые прокси режут Authorization у внутренних fetch-ов).
+    const { data: userInfo, error: userErr } = await adminClient.auth.getUser(jwt)
+    if (userErr || !userInfo?.user) {
+      console.error('[api/settings/users] getUser failed:', userErr)
+      return NextResponse.json(
+        { error: 'Сессия недействительна — перелогиньтесь' },
+        { status: 401 }
+      )
+    }
+    const callerUserId = userInfo.user.id
+
+    // ── 3. Профиль и роль вызывающего ────────────────────────
+    // Читаем через adminClient, чтобы не зависеть от RLS: проверку прав
+    // делаем сами по slug роли + по разрешению users:create (если есть).
+    const { data: callerProfile, error: profileError } = await adminClient
+      .from('user_profiles')
+      .select('clinic_id, role_id, roles:role_id(slug)')
+      .eq('id', callerUserId)
+      .maybeSingle()
+
+    if (profileError) {
+      console.error('[api/settings/users] profile lookup failed:', profileError)
+      return NextResponse.json(
+        { error: 'Не удалось проверить права: ' + profileError.message },
+        { status: 500 }
+      )
+    }
+    if (!callerProfile) {
+      return NextResponse.json(
+        { error: 'Профиль вызывающего не найден. Обратитесь к администратору.' },
+        { status: 403 }
+      )
+    }
+    const clinic_id = callerProfile.clinic_id
+    if (!clinic_id) {
+      return NextResponse.json(
+        { error: 'У вашего профиля не указана клиника' },
+        { status: 403 }
+      )
+    }
+    const callerRoleSlug = (callerProfile as unknown as {
+      roles?: { slug?: string } | { slug?: string }[]
+    }).roles
+    const slug = Array.isArray(callerRoleSlug) ? callerRoleSlug[0]?.slug : callerRoleSlug?.slug
+
+    // Разрешаем owner / admin без проверки прав. Остальным — через has_permission.
+    let allowed = slug === 'owner' || slug === 'admin'
+    if (!allowed) {
+      const { data: hasPerm } = await adminClient.rpc('has_permission', {
+        p_user: callerUserId,
+        p_perm: 'users:create',
+      })
+      allowed = !!hasPerm
+    }
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Нет прав для создания сотрудников (нужна роль owner/admin или право users:create)' },
+        { status: 403 }
+      )
+    }
+
+    // ── 4. Находим role_id по slug НОВОГО сотрудника ─────────
+    const { data: role, error: roleError } = await adminClient
+      .from('roles')
+      .select('id')
+      .eq('clinic_id', clinic_id)
+      .eq('slug', role_slug)
+      .single()
+    if (roleError || !role) {
+      return NextResponse.json(
+        { error: `Роль «${role_slug}» не найдена в вашей клинике` },
+        { status: 400 }
+      )
+    }
+
+    // ── 5. Создаём Auth-пользователя (только после всех проверок) ──
     const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
     })
-
     if (authError) {
       const msg = authError.message.toLowerCase()
       if (msg.includes('already registered') || msg.includes('already been registered')) {
@@ -53,56 +152,29 @@ export async function POST(req: NextRequest) {
       }
       return NextResponse.json({ error: authError.message }, { status: 400 })
     }
-
     const userId = authData.user.id
 
-    // 2. Получаем clinic_id вызывающего пользователя
-    const authHeader = req.headers.get('authorization')
-    const anonClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { global: { headers: { Authorization: authHeader ?? '' } } }
-    )
-
-    const { data: callerProfile, error: profileError } = await anonClient
-      .from('user_profiles')
-      .select('clinic_id')
-      .single()
-
-    if (profileError || !callerProfile) {
-      await adminClient.auth.admin.deleteUser(userId)
-      return NextResponse.json({ error: 'Нет прав для создания сотрудников' }, { status: 403 })
-    }
-
-    const clinic_id = callerProfile.clinic_id
-
-    // 3. Находим role_id по slug
-    const { data: role, error: roleError } = await adminClient
-      .from('roles')
-      .select('id')
-      .eq('clinic_id', clinic_id)
-      .eq('slug', role_slug)
-      .single()
-
-    if (roleError || !role) {
-      await adminClient.auth.admin.deleteUser(userId)
-      return NextResponse.json({ error: `Роль "${role_slug}" не найдена` }, { status: 400 })
-    }
-
-    // 4. Создаём user_profile
+    // ── 6. user_profile ───────────────────────────────────────
     const { data: profile, error: insertError } = await adminClient
       .from('user_profiles')
-      .insert({ id: userId, clinic_id, role_id: role.id, first_name, last_name, is_active: true })
+      .insert({
+        id: userId,
+        clinic_id,
+        role_id: role.id,
+        first_name,
+        last_name,
+        is_active: true,
+      })
       .select()
       .single()
 
     if (insertError) {
+      // Откат auth-юзера, иначе следующий create с этим email упадёт с 409.
       await adminClient.auth.admin.deleteUser(userId)
       return NextResponse.json({ error: insertError.message }, { status: 500 })
     }
 
     return NextResponse.json({ user: profile }, { status: 201 })
-
   } catch (err) {
     console.error('POST /api/settings/users:', err)
     return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 })
