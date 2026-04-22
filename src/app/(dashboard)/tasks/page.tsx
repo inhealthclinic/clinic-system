@@ -909,18 +909,19 @@ export default function TasksPage() {
   /* ─── render ─── */
   return (
     <div className="max-w-[1400px] mx-auto">
-      {/* Controls row — как в amoCRM: день/неделя/месяц, фильтры, счётчик, ···, кнопка */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
+      {/* Controls row — как в amoCRM: день/неделя/месяц, фильтры, счётчик, ···, кнопка.
+          nowrap + мин. padding'и, чтобы всё помещалось в одну строку на десктопе. */}
+      <div className="flex items-center gap-2 mb-4 flex-nowrap overflow-x-auto">
         {/* View toggle: плоские текстовые кнопки «ДЕНЬ / НЕДЕЛЯ / МЕСЯЦ»
             (амоCRM-стиль — uppercase, letter-spaced, активный чёрный-жирный) */}
-        <div className="flex items-center gap-5">
+        <div className="flex items-center gap-3 shrink-0">
           {([
             ['day',   'День'],
             ['week',  'Неделя'],
             ['month', 'Месяц'],
           ] as const).map(([v, label]) => (
             <button key={v} onClick={() => setView(v)}
-              className={`text-[12px] uppercase tracking-[0.12em] transition-colors ${
+              className={`text-[11px] uppercase tracking-[0.1em] transition-colors whitespace-nowrap ${
                 view === v ? 'text-gray-900 font-semibold' : 'text-gray-400 font-medium hover:text-gray-700'
               }`}>
               {label}
@@ -929,13 +930,13 @@ export default function TasksPage() {
         </div>
 
         {/* Разделитель */}
-        <div className="h-5 w-px bg-gray-200" />
+        <div className="h-5 w-px bg-gray-200 shrink-0" />
 
         {/* Layout toggle: сетка (колонки) / список (плоский) */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           <button onClick={() => setLayout('grid')}
             title="Сетка"
-            className={`p-1.5 rounded-md transition-colors ${
+            className={`p-1 rounded-md transition-colors ${
               layout === 'grid' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-50'
             }`}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -947,7 +948,7 @@ export default function TasksPage() {
           </button>
           <button onClick={() => setLayout('list')}
             title="Список"
-            className={`p-1.5 rounded-md transition-colors ${
+            className={`p-1 rounded-md transition-colors ${
               layout === 'list' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-50'
             }`}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -957,17 +958,17 @@ export default function TasksPage() {
         </div>
 
         {/* Разделитель */}
-        <div className="h-5 w-px bg-gray-200" />
+        <div className="h-5 w-px bg-gray-200 shrink-0" />
 
         {/* Status toggle */}
-        <div className="flex bg-gray-100 rounded-lg p-0.5">
+        <div className="flex bg-gray-100 rounded-lg p-0.5 shrink-0">
           {([
             ['active', 'Активные'],
             ['done',   'Выполненные'],
             ['all',    'Все'],
           ] as const).map(([s, label]) => (
             <button key={s} onClick={() => setStatus(s)}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              className={`px-2 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
                 status === s ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
               }`}>
               {label}
@@ -976,20 +977,20 @@ export default function TasksPage() {
         </div>
 
         {/* Search */}
-        <div className="relative flex-1 min-w-[200px] max-w-[320px]">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+        <div className="relative flex-1 min-w-[140px] max-w-[240px]">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
             <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2"/>
             <path d="M21 21l-4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
           </svg>
-          <input type="text" placeholder="Поиск: задача, пациент, сделка, телефон..."
+          <input type="text" placeholder="Поиск..."
             value={search} onChange={e => setSearch(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg pl-9 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+            className="w-full border border-gray-200 rounded-lg pl-7 pr-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
 
         {/* Assignee filter */}
         <select value={assigneeFilter} onChange={e => setAssigneeFilter(e.target.value)}
-          className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 bg-white shrink-0 max-w-[150px]">
           <option value="all">Все ответственные</option>
           <option value="me">👤 Мои задачи</option>
           <option value="">— не назначен —</option>
@@ -999,8 +1000,8 @@ export default function TasksPage() {
         </select>
 
         {/* right cluster: count · ··· · add */}
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-sm text-gray-500">
+        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          <span className="text-xs text-gray-500 whitespace-nowrap">
             {filteredTasks.length} {(() => {
               const n = filteredTasks.length, mod10 = n % 10, mod100 = n % 100
               if (mod100 >= 11 && mod100 <= 14) return 'задач'
@@ -1010,18 +1011,18 @@ export default function TasksPage() {
             })()}
           </span>
           {overdueCount > 0 && status !== 'done' && (
-            <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">
+            <span className="text-[11px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap">
               {overdueCount} просрочено
             </span>
           )}
           {urgentCount > 0 && (
-            <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-medium">
+            <span className="text-[11px] bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap">
               {urgentCount} срочных
             </span>
           )}
           <div className="relative">
             <button onClick={() => setMoreOpen(v => !v)}
-              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+              className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
               title="Ещё">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                 <circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/>
@@ -1077,8 +1078,8 @@ export default function TasksPage() {
             )}
           </div>
           <button onClick={() => setShowCreate(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap">
-            <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
+            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 whitespace-nowrap shrink-0">
+            <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
               <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
             </svg>
             Добавить задачу
