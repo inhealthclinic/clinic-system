@@ -209,6 +209,74 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
   return { id: deal.id, clinic_id: deal.clinic_id, name: deal.name }
 }
 
+/**
+ * Авто-подтверждение приёма: если пациент в ответ на 24ч/2ч-напоминание
+ * пишет "+" / "да" / "ok" / "yes" — ближайший pending-визит переводится
+ * в confirmed, менеджеру не нужно звонить.
+ *
+ * Логика защиты от ложных срабатываний:
+ *   • смотрим только короткие (<=8 символов) сообщения,
+ *   • только в окне ближайших 48ч до приёма (чтобы «ок» из обычного
+ *     диалога не подтвердил визит на завтра),
+ *   • только статус pending (confirmed уже подтверждён, cancelled
+ *     не воскрешаем).
+ */
+const CONFIRM_WORDS = /^\s*[+✓✅]?\s*(да|yes|ok|okay|ок|оке|конечно|буду|приду|подтверждаю|confirmed?)\s*[!.]?\s*$/i
+
+async function tryAutoConfirmAppointment(
+  phone: string,
+  text: string,
+  clinicId: string,
+): Promise<string | null> {
+  if (text.length > 20) return null
+  if (!CONFIRM_WORDS.test(text) && text.trim() !== '+') return null
+
+  const db = admin()
+  const tail = phone.slice(-10)
+  const variants = Array.from(new Set([phone, `+${phone}`, tail, `+${tail}`]))
+  const orExpr = variants.map((v) => `phones.cs.{${v}}`).join(',')
+  const { data: pats } = await db
+    .from('patients')
+    .select('id')
+    .eq('clinic_id', clinicId)
+    .or(orExpr)
+    .limit(5)
+  if (!pats || pats.length === 0) return null
+
+  const now = new Date()
+  const in48h = new Date(now.getTime() + 48 * 3600_000)
+  const todayIso = now.toISOString().slice(0, 10)
+  const tomorrowIso = in48h.toISOString().slice(0, 10)
+
+  const { data: appts } = await db
+    .from('appointments')
+    .select('id, date, time_start, status')
+    .in('patient_id', pats.map((p: { id: string }) => p.id))
+    .eq('status', 'pending')
+    .gte('date', todayIso)
+    .lte('date', tomorrowIso)
+    .order('date', { ascending: true })
+    .order('time_start', { ascending: true })
+    .limit(1)
+  if (!appts || appts.length === 0) return null
+
+  const a = appts[0]
+  const at = new Date(`${a.date}T${a.time_start}`)
+  if (at < now || at > in48h) return null
+
+  const { error } = await db
+    .from('appointments')
+    .update({ status: 'confirmed' })
+    .eq('id', a.id)
+    .eq('status', 'pending')
+  if (error) {
+    console.warn('[greenapi] auto-confirm update failed:', error.message)
+    return null
+  }
+  console.log('[greenapi] auto-confirmed appointment', a.id, 'via reply from', phone)
+  return a.id
+}
+
 async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   const db = admin()
   const phone = chatIdToPhone(wh.senderData.chatId)
@@ -263,6 +331,26 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
     }
   } else {
     console.log('[greenapi] message saved, deal', deal.id)
+  }
+
+  // Авто-подтверждение: если это короткий положительный ответ на напоминание,
+  // находим ближайший pending-приём пациента и переводим в confirmed. Ошибки
+  // глотаем — это побочный эффект, пусть не валит обработку сообщения.
+  try {
+    const confirmedId = await tryAutoConfirmAppointment(phone, text, deal.clinic_id)
+    if (confirmedId) {
+      // Лог в interactions, чтобы менеджер видел в истории сделки,
+      // что подтверждение пришло автоматом.
+      await db.from('crm_interactions').insert({
+        clinic_id: deal.clinic_id,
+        deal_id: deal.id,
+        type: 'whatsapp',
+        direction: 'inbound',
+        summary: `Авто-подтверждение приёма по ответу "${text.slice(0, 40)}"`,
+      })
+    }
+  } catch (e) {
+    console.warn('[greenapi] auto-confirm flow failed (non-fatal):', e)
   }
 }
 

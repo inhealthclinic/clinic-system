@@ -44,38 +44,20 @@ export async function sendSms(to: string, body: string): Promise<SendResult> {
   }
 }
 
-/* ─── Meta WhatsApp Business ─────────────────────────────── */
+/* ─── WhatsApp через Green-API ───────────────────────────── */
+// В МИС WhatsApp подключён через Green-API (шлюз на SaaS), а не Meta
+// Business напрямую — Meta требует одобрения номера 2–4 недели. Клиент
+// уже есть в src/lib/greenapi.ts, здесь просто оборачиваем в единый
+// SendResult.
 
 export async function sendWhatsApp(to: string, body: string): Promise<SendResult> {
-  const phoneId = process.env.WHATSAPP_PHONE_ID
-  const token = process.env.WHATSAPP_TOKEN
-  if (!phoneId || !token) {
-    return { ok: false, error: 'whatsapp not configured' }
+  if (!process.env.GREENAPI_INSTANCE_ID || !process.env.GREENAPI_API_TOKEN) {
+    return { ok: false, error: 'greenapi not configured' }
   }
-
-  // Meta требует номер без «+», только цифры
-  const cleanTo = to.replace(/\D/g, '')
-
   try {
-    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: cleanTo,
-        type: 'text',
-        text: { body },
-      }),
-    })
-    const json = (await res.json()) as {
-      messages?: Array<{ id: string }>
-      error?: { message: string }
-    }
-    if (!res.ok) return { ok: false, error: json.error?.message || `HTTP ${res.status}` }
-    return { ok: true, providerId: json.messages?.[0]?.id }
+    const { sendWhatsAppText } = await import('@/lib/greenapi')
+    const { idMessage } = await sendWhatsAppText(to, body)
+    return { ok: true, providerId: idMessage }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'network error' }
   }
