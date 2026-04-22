@@ -1691,6 +1691,10 @@ export default function LabPage() {
           ))}
         </div>
         <div className="flex-1" />
+        <Link href="/lab/references"
+          className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
+          📏 Референсы
+        </Link>
         <Link href="/inventory"
           className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
           Реагенты и расходники
