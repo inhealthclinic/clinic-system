@@ -166,12 +166,28 @@ function pickRange(
     return true
   })
   if (eligible.length === 0) return null
+  // Медицинский приоритет: беременность > возраст > пол.
+  // Педиатрические диапазоны сильно отличаются от взрослых, поэтому
+  // группа с age-границами должна побеждать обычную «Мужчины/Женщины».
+  // Группа с И полом, И возрастом (напр. «Девочки до 18») — самая
+  // специфичная среди non-pregnancy и выигрывает у обеих.
   const score = (r: RefRange) =>
-    (r.sex ? 2 : 0) +
-    (r.pregnant != null ? 2 : 0) +
-    (r.age_min != null ? 1 : 0) +
-    (r.age_max != null ? 1 : 0)
-  return eligible.slice().sort((a, b) => score(b) - score(a))[0]
+    (r.pregnant != null ? 8 : 0) +
+    (r.age_min != null ? 2 : 0) +
+    (r.age_max != null ? 2 : 0) +
+    (r.sex ? 1 : 0)
+  // Тай-брейк: при равном счёте берём более узкий возрастной коридор
+  // (напр. «0–1» выигрывает у «0–18» для младенца).
+  const width = (r: RefRange) => {
+    const lo = r.age_min ?? 0
+    const hi = r.age_max ?? 200
+    return hi - lo
+  }
+  return eligible.slice().sort((a, b) => {
+    const ds = score(b) - score(a)
+    if (ds !== 0) return ds
+    return width(a) - width(b)
+  })[0]
 }
 
 interface PatientHit {
