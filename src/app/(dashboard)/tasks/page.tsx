@@ -131,6 +131,63 @@ function bucketOf(task: TaskRow, refNow: Date): 'overdue' | 'today' | 'tomorrow'
 }
 function now() { return new Date() }
 
+/* ─── Notifications / sound ────────────────────────────────────────────────
+   При появлении новой задачи у ответственного должен прилететь браузерный
+   нотиф + короткий звук. Звук синтезируем через WebAudio (без ассетов),
+   чтобы работало «из коробки». Нотиф требует разрешения — пинаем при
+   первом заходе на страницу. */
+function requestNotificationPermission(): void {
+  if (typeof window === 'undefined') return
+  if (!('Notification' in window)) return
+  if (Notification.permission === 'default') {
+    // Некоторые браузеры (особенно Safari) игнорируют вызов без юзер-жеста —
+    // в этом случае просто промолчит и попросит в следующий раз.
+    Notification.requestPermission().catch(() => {})
+  }
+}
+
+function playTaskBeep(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const Ctor = window.AudioContext || (window as any).webkitAudioContext
+    if (!Ctor) return
+    const ctx: AudioContext = new Ctor()
+    // «Тон задачи»: двойной короткий бип 880 → 1320 Гц.
+    const play = (freq: number, start: number, duration: number) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + start)
+      gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + start + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + duration)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(ctx.currentTime + start)
+      osc.stop(ctx.currentTime + start + duration + 0.02)
+    }
+    play(880, 0, 0.14)
+    play(1320, 0.16, 0.16)
+    // Через 0.5 сек закроем контекст, чтобы не висел.
+    setTimeout(() => { ctx.close().catch(() => {}) }, 600)
+  } catch { /* ignore */ }
+}
+
+function notifyAssignedTask(title: string, body?: string): void {
+  playTaskBeep()
+  if (typeof window === 'undefined') return
+  if (!('Notification' in window) || Notification.permission !== 'granted') return
+  try {
+    const n = new Notification(`Новая задача: ${title}`, {
+      body: body || 'Вам назначена задача',
+      icon: '/favicon.ico',
+      tag: 'task-new',
+    })
+    n.onclick = () => { window.focus(); n.close() }
+    // Автозакрытие через 8 сек — не копим штабели.
+    setTimeout(() => n.close(), 8000)
+  } catch { /* ignore */ }
+}
+
 /* ─── CSV export ───────────────────────────────────────────────────────────
    Выгружаем отфильтрованный список в CSV с UTF-8 BOM, чтобы Excel правильно
    подхватывал кириллицу. Разделитель — точка с запятой (русская локаль Excel). */
