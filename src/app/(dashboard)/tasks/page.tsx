@@ -128,6 +128,43 @@ function bucketOf(task: TaskRow, refNow: Date): 'overdue' | 'today' | 'tomorrow'
 }
 function now() { return new Date() }
 
+/* ─── CSV export ───────────────────────────────────────────────────────────
+   Выгружаем отфильтрованный список в CSV с UTF-8 BOM, чтобы Excel правильно
+   подхватывал кириллицу. Разделитель — точка с запятой (русская локаль Excel). */
+function exportTasksCsv(tasks: TaskRow[]): void {
+  if (typeof window === 'undefined') return
+  const esc = (s: string | null | undefined) => {
+    const v = (s ?? '').toString().replace(/"/g, '""')
+    return `"${v}"`
+  }
+  const header = ['Заголовок','Описание','Тип','Приоритет','Статус','Срок','Исполнитель','Автор','Пациент','Телефон','Сделка','Создано','Выполнено']
+  const rows = tasks.map(t => [
+    t.title,
+    t.description,
+    TYPE_META[t.type as keyof typeof TYPE_META]?.label ?? t.type,
+    PRIORITY_STYLE[t.priority as keyof typeof PRIORITY_STYLE]?.label ?? t.priority,
+    t.status,
+    t.due_at ? new Date(t.due_at).toLocaleString('ru-RU') : '',
+    t.assignee ? `${t.assignee.last_name} ${t.assignee.first_name}` : '',
+    t.author ? `${t.author.last_name} ${t.author.first_name}` : '',
+    t.patient?.full_name ?? '',
+    t.patient?.phones?.[0] ?? '',
+    t.deal?.name ?? (t.deal?.id ?? ''),
+    t.created_at ? new Date(t.created_at).toLocaleString('ru-RU') : '',
+    t.done_at ? new Date(t.done_at).toLocaleString('ru-RU') : '',
+  ].map(esc).join(';'))
+  const csv = '\uFEFF' + [header.map(esc).join(';'), ...rows].join('\r\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `tasks-${new Date().toISOString().slice(0,10)}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 /* ─── CreateTaskModal ───────────────────────────────────────────────────── */
 
 function CreateTaskModal({ clinicId, onClose, onCreated, dealId, patientId }: {
@@ -602,10 +639,11 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
 
 /* ─── TaskCard ─────────────────────────────────────────────────────────── */
 
-function TaskCard({ task, onClick }: {
+function TaskCard({ task, onClick, density = 'detailed' }: {
   task: TaskRow
   onClick: () => void
   onQuickComplete: (t: TaskRow, e: React.MouseEvent) => void
+  density?: 'compact' | 'detailed'
 }) {
   const due = fmtRelativeDue(task.due_at, task.status === 'done')
   // amoCRM colors the date in the card: красный — просрочено, зелёный — сегодня, серый — остальные.
@@ -619,6 +657,20 @@ function TaskCard({ task, onClick }: {
   const authorName = task.author
     ? `${task.author.last_name} ${task.author.first_name[0] ?? ''}.`.trim()
     : null
+
+  if (density === 'compact') {
+    // Компактный режим: только название + срок. Без деталей — удобно при
+    // большом количестве задач в колонке.
+    return (
+      <div onClick={onClick}
+        className="bg-white border border-gray-200 rounded-md px-2.5 py-1.5 cursor-pointer hover:shadow-sm hover:border-gray-300 transition-all">
+        <div className="flex items-baseline gap-2">
+          <span className="text-xs text-gray-900 font-medium truncate flex-1">{task.title}</span>
+          <span className={`text-[11px] shrink-0 ${dueCls}`}>{due.label}</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div onClick={onClick}
@@ -672,6 +724,9 @@ export default function TasksPage() {
   const [selected, setSelected] = useState<TaskRow | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const [refTick, setRefTick] = useState(0) // для обновления «сейчас» каждую минуту
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [cardDensity, setCardDensity] = useState<'compact' | 'detailed'>('detailed')
+  const [showTypeManager, setShowTypeManager] = useState(false)
 
   // Восстанавливаем выбор view из localStorage
   useEffect(() => {
@@ -680,7 +735,19 @@ export default function TasksPage() {
     if (v === 'day' || v === 'week' || v === 'month') setView(v)
     const a = window.localStorage.getItem('tasks.assignee')
     if (a) setAssigneeFilter(a)
+    const ar = window.localStorage.getItem('tasks.autoRefresh')
+    if (ar === '0') setAutoRefresh(false)
+    const cd = window.localStorage.getItem('tasks.cardDensity')
+    if (cd === 'compact' || cd === 'detailed') setCardDensity(cd)
   }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('tasks.autoRefresh', autoRefresh ? '1' : '0')
+  }, [autoRefresh])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('tasks.cardDensity', cardDensity)
+  }, [cardDensity])
   useEffect(() => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem('tasks.view', view)
@@ -731,6 +798,15 @@ export default function TasksPage() {
   }, [clinicId, status, supabase])
 
   useEffect(() => { load() }, [load])
+
+  // Автообновление: раз в 60 секунд заново тянем задачи.
+  // Realtime ловит изменения мгновенно, но автообновление страхует на случай
+  // потери соединения или пропущенных событий.
+  useEffect(() => {
+    if (!autoRefresh) return
+    const i = setInterval(() => { load() }, 60_000)
+    return () => clearInterval(i)
+  }, [autoRefresh, load])
 
   // Realtime: новые задачи/изменения сразу подъезжают
   useEffect(() => {
@@ -915,27 +991,48 @@ export default function TasksPage() {
             {moreOpen && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[200px] z-20 text-sm">
+                <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[260px] z-20 text-sm">
+                  {/* Управление типами задач — открывает модалку со списком */}
+                  <button onClick={() => { setShowTypeManager(true); setMoreOpen(false) }}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700 flex items-center gap-2">
+                    <span className="w-4 text-center">⏰</span>
+                    <span>Управление типами задач</span>
+                  </button>
+                  {/* Экспорт — CSV текущих отфильтрованных задач */}
+                  <button onClick={() => { exportTasksCsv(filteredTasks); setMoreOpen(false) }}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700 flex items-center gap-2">
+                    <span className="w-4 text-center">⬆️</span>
+                    <span>Экспорт</span>
+                  </button>
+                  {/* Синхронизировать — форс-перезагрузка */}
                   <button onClick={() => { load(); setMoreOpen(false) }}
-                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700">
-                    ↻ Обновить
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700 flex items-center gap-2">
+                    <span className="w-4 text-center">🗓</span>
+                    <span>Синхронизировать</span>
                   </button>
-                  <button onClick={() => { setSearch(''); setAssigneeFilter('all'); setTypeFilter('all'); setMoreOpen(false) }}
-                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700">
-                    Сбросить фильтры
-                  </button>
+                  {/* Внешний вид карточки — переключатель подробный / компактный */}
                   <div className="border-t border-gray-100 my-1" />
-                  <div className="px-3 py-1.5 text-[11px] text-gray-400 uppercase tracking-wider">Тип задачи</div>
-                  <button onClick={() => { setTypeFilter('all'); setMoreOpen(false) }}
-                    className={`w-full text-left px-3 py-1.5 hover:bg-gray-50 ${typeFilter === 'all' ? 'text-blue-600 font-medium' : 'text-gray-700'}`}>
-                    Все типы
+                  <div className="px-3 py-1.5 text-[11px] text-gray-400 uppercase tracking-wider flex items-center gap-2">
+                    <span className="w-4 text-center">✨</span>
+                    <span>Внешний вид карточки</span>
+                  </div>
+                  <button onClick={() => { setCardDensity('detailed'); setMoreOpen(false) }}
+                    className={`w-full text-left pl-9 pr-3 py-1.5 hover:bg-gray-50 flex items-center justify-between ${cardDensity === 'detailed' ? 'text-blue-600 font-medium' : 'text-gray-700'}`}>
+                    <span>Подробный</span>
+                    {cardDensity === 'detailed' && <span>✓</span>}
                   </button>
-                  {TYPE_OPTIONS.map(t => (
-                    <button key={t.value} onClick={() => { setTypeFilter(t.value); setMoreOpen(false) }}
-                      className={`w-full text-left px-3 py-1.5 hover:bg-gray-50 ${typeFilter === t.value ? 'text-blue-600 font-medium' : 'text-gray-700'}`}>
-                      {t.label}
-                    </button>
-                  ))}
+                  <button onClick={() => { setCardDensity('compact'); setMoreOpen(false) }}
+                    className={`w-full text-left pl-9 pr-3 py-1.5 hover:bg-gray-50 flex items-center justify-between ${cardDensity === 'compact' ? 'text-blue-600 font-medium' : 'text-gray-700'}`}>
+                    <span>Компактный</span>
+                    {cardDensity === 'compact' && <span>✓</span>}
+                  </button>
+                  {/* Автообновление — тумблер */}
+                  <div className="border-t border-gray-100 my-1" />
+                  <button onClick={() => setAutoRefresh(v => !v)}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700 flex items-center justify-between">
+                    <span>Автообновление</span>
+                    {autoRefresh && <span className="text-blue-600">✓</span>}
+                  </button>
                 </div>
               </>
             )}
@@ -957,11 +1054,11 @@ export default function TasksPage() {
       ) : view === 'day' ? (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <ColumnBlock title="Просроченные задачи" count={dayBuckets.overdue.length} tone="red"
-            items={dayBuckets.overdue} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+            items={dayBuckets.overdue} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
           <ColumnBlock title="Задачи на сегодня" count={dayBuckets.today.length} tone="green"
-            items={dayBuckets.today} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+            items={dayBuckets.today} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
           <ColumnBlock title="Задачи на завтра" count={dayBuckets.tomorrow.length} tone="blue"
-            items={dayBuckets.tomorrow} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+            items={dayBuckets.tomorrow} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
         </div>
       ) : view === 'week' ? (
         <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-7 gap-3">
@@ -970,30 +1067,30 @@ export default function TasksPage() {
             return (
               <ColumnBlock key={i} title={fmtDayHeader(col.date)} count={col.items.length}
                 tone={isToday ? 'green' : 'gray'} highlight={isToday}
-                items={col.items} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+                items={col.items} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
             )
           })}
           {weekCols.noDate.length > 0 && (
             <ColumnBlock title="Без срока" count={weekCols.noDate.length} tone="gray"
-              items={weekCols.noDate} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+              items={weekCols.noDate} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
           )}
         </div>
       ) : (
         <div className="space-y-4">
           {monthGroups.overdue.length > 0 && (
             <GroupBlock title="Просроченные" count={monthGroups.overdue.length} tone="red"
-              items={monthGroups.overdue} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+              items={monthGroups.overdue} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
           )}
           {monthGroups.groups.map(g => (
             <GroupBlock key={g.date.toISOString()}
               title={g.date.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}
               count={g.items.length}
               tone={sameDay(g.date, refNow) ? 'green' : 'gray'}
-              items={g.items} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+              items={g.items} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
           ))}
           {monthGroups.noDate.length > 0 && (
             <GroupBlock title="Без срока" count={monthGroups.noDate.length} tone="gray"
-              items={monthGroups.noDate} onClick={t => setSelected(t)} onQuickComplete={quickComplete} />
+              items={monthGroups.noDate} onClick={t => setSelected(t)} onQuickComplete={quickComplete} density={cardDensity} />
           )}
         </div>
       )}
@@ -1008,19 +1105,87 @@ export default function TasksPage() {
         <TaskDetailDrawer task={selected} users={users}
           onClose={() => setSelected(null)} onUpdate={load} />
       )}
+
+      {showTypeManager && (
+        <TaskTypeManagerModal
+          tasks={tasks}
+          activeType={typeFilter}
+          onPick={v => { setTypeFilter(v); setShowTypeManager(false) }}
+          onClose={() => setShowTypeManager(false)} />
+      )}
+    </div>
+  )
+}
+
+/* ─── Task Type Manager ─────────────────────────────────────────────────────
+   amoCRM-like «Управление типами задач» — показывает все доступные типы
+   с иконками и количеством задач по каждому. Клик по типу фильтрует доску.
+   Справочник типов у нас зашит в TYPE_META (миграция под пользовательские
+   типы пока не создана — когда появится таблица task_types, эту модалку
+   можно будет расширить CRUD-операциями). */
+function TaskTypeManagerModal({ tasks, activeType, onPick, onClose }: {
+  tasks: TaskRow[]
+  activeType: string
+  onPick: (value: string) => void
+  onClose: () => void
+}) {
+  const counts = useMemo(() => {
+    const acc: Record<string, number> = {}
+    for (const t of tasks) {
+      const k = (t.type ?? 'other') as string
+      acc[k] = (acc[k] ?? 0) + 1
+    }
+    return acc
+  }, [tasks])
+  const total = tasks.length
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-gray-900">Управление типами задач</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+        <div className="overflow-y-auto py-2">
+          <button onClick={() => onPick('all')}
+            className={`w-full text-left px-5 py-2.5 hover:bg-gray-50 flex items-center justify-between ${activeType === 'all' ? 'bg-blue-50 text-blue-700' : 'text-gray-700'}`}>
+            <span className="flex items-center gap-3">
+              <span className="w-6 text-center">∀</span>
+              <span className="text-sm font-medium">Все типы</span>
+            </span>
+            <span className="text-xs text-gray-400">{total}</span>
+          </button>
+          <div className="border-t border-gray-100 my-1" />
+          {Object.entries(TYPE_META).map(([value, m]) => (
+            <button key={value} onClick={() => onPick(value)}
+              className={`w-full text-left px-5 py-2.5 hover:bg-gray-50 flex items-center justify-between ${activeType === value ? 'bg-blue-50 text-blue-700' : 'text-gray-700'}`}>
+              <span className="flex items-center gap-3">
+                <span className="w-6 text-center text-base">{m.icon}</span>
+                <span className="text-sm">{m.label}</span>
+              </span>
+              <span className="text-xs text-gray-400">{counts[value] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 text-[11px] text-gray-400">
+          Типы задач определены системой. Чтобы добавить пользовательские
+          типы, создайте таблицу <code className="text-gray-500">task_types</code> и расширьте справочник.
+        </div>
+      </div>
     </div>
   )
 }
 
 /* ─── Small layout building blocks ──────────────────────────────────────── */
 
-function ColumnBlock({ title, count, tone, highlight = false, items, onClick, onQuickComplete }: {
+function ColumnBlock({ title, count, tone, highlight = false, items, onClick, onQuickComplete, density = 'detailed' }: {
   title: string; count: number
   tone: 'red' | 'green' | 'blue' | 'gray'
   highlight?: boolean
   items: TaskRow[]
   onClick: (t: TaskRow) => void
   onQuickComplete: (t: TaskRow, e: React.MouseEvent) => void
+  density?: 'compact' | 'detailed'
 }) {
   const underlineCls = {
     red:   'bg-red-300',
@@ -1048,7 +1213,7 @@ function ColumnBlock({ title, count, tone, highlight = false, items, onClick, on
           <div className="text-xs text-gray-300 text-center py-6">—</div>
         ) : (
           items.map(t => (
-            <TaskCard key={t.id} task={t} onClick={() => onClick(t)} onQuickComplete={onQuickComplete} />
+            <TaskCard key={t.id} task={t} onClick={() => onClick(t)} onQuickComplete={onQuickComplete} density={density} />
           ))
         )}
       </div>
@@ -1056,12 +1221,13 @@ function ColumnBlock({ title, count, tone, highlight = false, items, onClick, on
   )
 }
 
-function GroupBlock({ title, count, tone, items, onClick, onQuickComplete }: {
+function GroupBlock({ title, count, tone, items, onClick, onQuickComplete, density = 'detailed' }: {
   title: string; count: number
   tone: 'red' | 'green' | 'gray'
   items: TaskRow[]
   onClick: (t: TaskRow) => void
   onQuickComplete: (t: TaskRow, e: React.MouseEvent) => void
+  density?: 'compact' | 'detailed'
 }) {
   const barCls = tone === 'red' ? 'bg-red-500' : tone === 'green' ? 'bg-green-500' : 'bg-gray-300'
   const titleCls = tone === 'red' ? 'text-red-600' : tone === 'green' ? 'text-green-700' : 'text-gray-700'
@@ -1074,7 +1240,7 @@ function GroupBlock({ title, count, tone, items, onClick, onQuickComplete }: {
       </div>
       <div className="p-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
         {items.map(t => (
-          <TaskCard key={t.id} task={t} onClick={() => onClick(t)} onQuickComplete={onQuickComplete} />
+          <TaskCard key={t.id} task={t} onClick={() => onClick(t)} onQuickComplete={onQuickComplete} density={density} />
         ))}
       </div>
     </div>
