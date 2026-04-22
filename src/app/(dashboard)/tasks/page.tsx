@@ -727,6 +727,7 @@ export default function TasksPage() {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [cardDensity, setCardDensity] = useState<'compact' | 'detailed'>('detailed')
   const [showTypeManager, setShowTypeManager] = useState(false)
+  const [layout, setLayout] = useState<'grid' | 'list'>('grid')
 
   // Восстанавливаем выбор view из localStorage
   useEffect(() => {
@@ -739,7 +740,13 @@ export default function TasksPage() {
     if (ar === '0') setAutoRefresh(false)
     const cd = window.localStorage.getItem('tasks.cardDensity')
     if (cd === 'compact' || cd === 'detailed') setCardDensity(cd)
+    const lay = window.localStorage.getItem('tasks.layout')
+    if (lay === 'grid' || lay === 'list') setLayout(lay)
   }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('tasks.layout', layout)
+  }, [layout])
   useEffect(() => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem('tasks.autoRefresh', autoRefresh ? '1' : '0')
@@ -903,22 +910,54 @@ export default function TasksPage() {
   return (
     <div className="max-w-[1400px] mx-auto">
       {/* Controls row — как в amoCRM: день/неделя/месяц, фильтры, счётчик, ···, кнопка */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
-        {/* View toggle */}
-        <div className="flex bg-gray-100 rounded-lg p-0.5">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        {/* View toggle: плоские текстовые кнопки «ДЕНЬ / НЕДЕЛЯ / МЕСЯЦ»
+            (амоCRM-стиль — uppercase, letter-spaced, активный чёрный-жирный) */}
+        <div className="flex items-center gap-5">
           {([
             ['day',   'День'],
             ['week',  'Неделя'],
             ['month', 'Месяц'],
           ] as const).map(([v, label]) => (
             <button key={v} onClick={() => setView(v)}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                view === v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              className={`text-[12px] uppercase tracking-[0.12em] transition-colors ${
+                view === v ? 'text-gray-900 font-semibold' : 'text-gray-400 font-medium hover:text-gray-700'
               }`}>
               {label}
             </button>
           ))}
         </div>
+
+        {/* Разделитель */}
+        <div className="h-5 w-px bg-gray-200" />
+
+        {/* Layout toggle: сетка (колонки) / список (плоский) */}
+        <div className="flex items-center gap-1">
+          <button onClick={() => setLayout('grid')}
+            title="Сетка"
+            className={`p-1.5 rounded-md transition-colors ${
+              layout === 'grid' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-50'
+            }`}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <rect x="3"  y="3"  width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8"/>
+              <rect x="14" y="3"  width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8"/>
+              <rect x="3"  y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8"/>
+              <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8"/>
+            </svg>
+          </button>
+          <button onClick={() => setLayout('list')}
+            title="Список"
+            className={`p-1.5 rounded-md transition-colors ${
+              layout === 'list' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-50'
+            }`}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* Разделитель */}
+        <div className="h-5 w-px bg-gray-200" />
 
         {/* Status toggle */}
         <div className="flex bg-gray-100 rounded-lg p-0.5">
@@ -1051,6 +1090,20 @@ export default function TasksPage() {
           видишь три столбца с «0 задач», а не общий пустой плейсхолдер). */}
       {loading ? (
         <div className="text-center py-12 text-sm text-gray-400">Загрузка...</div>
+      ) : layout === 'list' ? (
+        // Плоский список — склеиваем bucket'ы по порядку (просрочено → сегодня
+        // → завтра → позже → без срока) и рендерим одной колонкой с разделителями.
+        <TaskFlatList
+          buckets={[
+            { title: 'Просроченные задачи', tone: 'red',   items: dayBuckets.overdue },
+            { title: 'Задачи на сегодня',    tone: 'green', items: dayBuckets.today },
+            { title: 'Задачи на завтра',     tone: 'blue',  items: dayBuckets.tomorrow },
+            { title: 'Позже',                tone: 'gray',  items: dayBuckets.later },
+          ]}
+          onClick={t => setSelected(t)}
+          onQuickComplete={quickComplete}
+          density={cardDensity}
+        />
       ) : view === 'day' ? (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <ColumnBlock title="Просроченные задачи" count={dayBuckets.overdue.length} tone="red"
@@ -1113,6 +1166,46 @@ export default function TasksPage() {
           onPick={v => { setTypeFilter(v); setShowTypeManager(false) }}
           onClose={() => setShowTypeManager(false)} />
       )}
+    </div>
+  )
+}
+
+/* ─── Flat list layout ──────────────────────────────────────────────────────
+   Альтернативный вид: одна колонка во всю ширину, с разделами-плашками
+   между бакетами. Удобно, когда задач мало или хочется обычный список. */
+function TaskFlatList({ buckets, onClick, onQuickComplete, density }: {
+  buckets: { title: string; tone: 'red' | 'green' | 'blue' | 'gray'; items: TaskRow[] }[]
+  onClick: (t: TaskRow) => void
+  onQuickComplete: (t: TaskRow, e: React.MouseEvent) => void
+  density: 'compact' | 'detailed'
+}) {
+  const toneBar = { red: 'bg-red-400', green: 'bg-emerald-400', blue: 'bg-sky-400', gray: 'bg-gray-300' }
+  const toneText = { red: 'text-red-600', green: 'text-emerald-700', blue: 'text-sky-700', gray: 'text-gray-600' }
+  return (
+    <div className="space-y-4">
+      {buckets.map(b => (
+        <div key={b.title}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className={`w-1 h-4 rounded ${toneBar[b.tone]}`} />
+            <span className={`text-[11px] font-semibold uppercase tracking-[0.08em] ${toneText[b.tone]}`}>
+              {b.title}
+            </span>
+            <span className="text-xs text-gray-400">{b.items.length}</span>
+          </div>
+          {b.items.length === 0 ? (
+            <div className="text-xs text-gray-300 py-2 pl-3">—</div>
+          ) : (
+            <div className="space-y-2">
+              {b.items.map(t => (
+                <TaskCard key={t.id} task={t}
+                  onClick={() => onClick(t)}
+                  onQuickComplete={onQuickComplete}
+                  density={density} />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
