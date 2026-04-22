@@ -908,21 +908,10 @@ export default function TasksPage() {
         </select>
       </div>
 
-      {/* Body */}
+      {/* Body — колонки рендерим всегда, даже если пусто (как в amoCRM:
+          видишь три столбца с «0 задач», а не общий пустой плейсхолдер). */}
       {loading ? (
         <div className="text-center py-12 text-sm text-gray-400">Загрузка...</div>
-      ) : filteredTasks.length === 0 ? (
-        <div className="text-center py-16 bg-white rounded-xl border border-gray-100">
-          <p className="text-sm text-gray-400 mb-3">
-            {status === 'done' ? 'Выполненных задач нет' : 'Задач нет 🎉'}
-          </p>
-          {status !== 'done' && (
-            <button onClick={() => setShowCreate(true)}
-              className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-              + Создать задачу
-            </button>
-          )}
-        </div>
       ) : view === 'day' ? (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <ColumnBlock title="Просроченные задачи" count={dayBuckets.overdue.length} tone="red"
