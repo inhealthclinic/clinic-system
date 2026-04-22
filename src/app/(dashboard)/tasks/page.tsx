@@ -670,6 +670,7 @@ export default function TasksPage() {
   const [search, setSearch] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [selected, setSelected] = useState<TaskRow | null>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [refTick, setRefTick] = useState(0) // для обновления «сейчас» каждую минуту
 
   // Восстанавливаем выбор view из localStorage
@@ -825,32 +826,7 @@ export default function TasksPage() {
   /* ─── render ─── */
   return (
     <div className="max-w-[1400px] mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-gray-900">Задачи</h1>
-          <span className="text-sm text-gray-400">{filteredTasks.length}</span>
-          {overdueCount > 0 && status !== 'done' && (
-            <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">
-              ⚠️ {overdueCount} просрочено
-            </span>
-          )}
-          {urgentCount > 0 && (
-            <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-medium">
-              🔴 {urgentCount} срочных
-            </span>
-          )}
-        </div>
-        <button onClick={() => setShowCreate(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5">
-          <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
-          </svg>
-          Новая задача
-        </button>
-      </div>
-
-      {/* Controls row */}
+      {/* Controls row — как в amoCRM: день/неделя/месяц, фильтры, счётчик, ···, кнопка */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         {/* View toggle */}
         <div className="flex bg-gray-100 rounded-lg p-0.5">
@@ -906,6 +882,72 @@ export default function TasksPage() {
             <option key={u.id} value={u.id}>{u.last_name} {u.first_name}</option>
           ))}
         </select>
+
+        {/* right cluster: count · ··· · add */}
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-sm text-gray-500">
+            {filteredTasks.length} {(() => {
+              const n = filteredTasks.length, mod10 = n % 10, mod100 = n % 100
+              if (mod100 >= 11 && mod100 <= 14) return 'задач'
+              if (mod10 === 1) return 'задача'
+              if (mod10 >= 2 && mod10 <= 4) return 'задачи'
+              return 'задач'
+            })()}
+          </span>
+          {overdueCount > 0 && status !== 'done' && (
+            <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium">
+              {overdueCount} просрочено
+            </span>
+          )}
+          {urgentCount > 0 && (
+            <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-medium">
+              {urgentCount} срочных
+            </span>
+          )}
+          <div className="relative">
+            <button onClick={() => setMoreOpen(v => !v)}
+              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+              title="Ещё">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/>
+              </svg>
+            </button>
+            {moreOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[200px] z-20 text-sm">
+                  <button onClick={() => { load(); setMoreOpen(false) }}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700">
+                    ↻ Обновить
+                  </button>
+                  <button onClick={() => { setSearch(''); setAssigneeFilter('all'); setTypeFilter('all'); setMoreOpen(false) }}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 text-gray-700">
+                    Сбросить фильтры
+                  </button>
+                  <div className="border-t border-gray-100 my-1" />
+                  <div className="px-3 py-1.5 text-[11px] text-gray-400 uppercase tracking-wider">Тип задачи</div>
+                  <button onClick={() => { setTypeFilter('all'); setMoreOpen(false) }}
+                    className={`w-full text-left px-3 py-1.5 hover:bg-gray-50 ${typeFilter === 'all' ? 'text-blue-600 font-medium' : 'text-gray-700'}`}>
+                    Все типы
+                  </button>
+                  {TYPE_OPTIONS.map(t => (
+                    <button key={t.value} onClick={() => { setTypeFilter(t.value); setMoreOpen(false) }}
+                      className={`w-full text-left px-3 py-1.5 hover:bg-gray-50 ${typeFilter === t.value ? 'text-blue-600 font-medium' : 'text-gray-700'}`}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          <button onClick={() => setShowCreate(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap">
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+            </svg>
+            Добавить задачу
+          </button>
+        </div>
       </div>
 
       {/* Body — колонки рендерим всегда, даже если пусто (как в amoCRM:
