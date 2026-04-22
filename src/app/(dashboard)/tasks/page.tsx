@@ -602,76 +602,48 @@ function TaskDetailDrawer({ task, users, onClose, onUpdate }: {
 
 /* ─── TaskCard ─────────────────────────────────────────────────────────── */
 
-function TaskCard({ task, onClick, onQuickComplete }: {
+function TaskCard({ task, onClick }: {
   task: TaskRow
   onClick: () => void
   onQuickComplete: (t: TaskRow, e: React.MouseEvent) => void
 }) {
-  const typeMeta = (task.type && TYPE_META[task.type]) || TYPE_META.other
-  const pStyle = PRIORITY_STYLE[task.priority] ?? PRIORITY_STYLE.normal
   const due = fmtRelativeDue(task.due_at, task.status === 'done')
-  const toneCls = due.tone === 'red' ? 'text-red-600' : due.tone === 'green' ? 'text-green-600' : due.tone === 'blue' ? 'text-blue-600' : 'text-gray-500'
+  // amoCRM colors the date in the card: красный — просрочено, зелёный — сегодня, серый — остальные.
+  const dueCls = due.tone === 'red' ? 'text-red-500' : due.tone === 'green' ? 'text-green-600' : due.tone === 'blue' ? 'text-gray-500' : 'text-gray-500'
+
+  // Вверху карточки — телефон пациента, как в amoCRM (первичный идентификатор).
+  // Если нет — ФИО. Если нет и этого — заголовок задачи.
+  const topLine = task.patient?.phones?.[0]
+    || task.patient?.full_name
+    || task.title
+  const authorName = task.author
+    ? `${task.author.last_name} ${task.author.first_name[0] ?? ''}.`.trim()
+    : null
 
   return (
     <div onClick={onClick}
-      className={`group bg-white border rounded-lg p-3 cursor-pointer hover:shadow-sm transition-shadow ${task.priority === 'urgent' ? 'border-red-200' : 'border-gray-200'}`}>
-      <div className="flex items-start gap-2">
-        <button onClick={(e) => onQuickComplete(task, e)}
-          title={task.status === 'done' ? 'Вернуть в работу' : 'Выполнить'}
-          className={`mt-0.5 w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors ${
-            task.status === 'done' ? 'bg-green-500 border-green-500' : 'border-gray-300 hover:border-green-500'
-          }`}>
-          {task.status === 'done' && (
-            <svg width="10" height="10" fill="none" viewBox="0 0 12 12">
-              <path d="M2 6l3 3 5-5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          )}
-        </button>
+      className="bg-white border border-gray-200 rounded-lg p-3 cursor-pointer hover:shadow-md hover:border-gray-300 transition-all">
+      {/* Телефон / имя */}
+      <div className="text-sm text-gray-900 font-medium truncate">{topLine}</div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className={`w-1.5 h-1.5 rounded-full ${pStyle.dot}`} />
-            <p className={`text-sm font-medium leading-snug truncate ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-900'}`}>
-              <span className="mr-1">{typeMeta.icon}</span>{task.title}
-            </p>
-          </div>
+      {/* Ссылка на сделку */}
+      {task.deal && (
+        <Link href={`/crm?deal=${task.deal.id}`} onClick={e => e.stopPropagation()}
+          className="block text-sm text-blue-500 hover:text-blue-700 hover:underline mt-1 truncate">
+          {task.deal.name || `Сделка #${task.deal.id.slice(0, 8)}`}
+        </Link>
+      )}
 
-          {task.description && (
-            <p className="text-xs text-gray-500 mt-1 line-clamp-2 whitespace-pre-wrap">{task.description}</p>
-          )}
+      {/* Дата + автор */}
+      <div className={`text-xs mt-1.5 ${dueCls}`}>
+        <span>{due.label}</span>
+        {authorName && <span className="text-gray-500">, от {authorName}</span>}
+      </div>
 
-          <div className="flex items-center gap-2 mt-2 flex-wrap text-[11px]">
-            {task.deal && (
-              <Link href={`/crm?deal=${task.deal.id}`} onClick={e => e.stopPropagation()}
-                className="text-blue-600 hover:underline truncate max-w-[160px]">
-                💼 {task.deal.name || `Сделка #${task.deal.id.slice(0, 6)}`}
-              </Link>
-            )}
-            {task.patient && (
-              <Link href={`/patients/${task.patient.id}`} onClick={e => e.stopPropagation()}
-                className="text-gray-600 hover:text-blue-600 hover:underline truncate max-w-[160px]">
-                🧑 {task.patient.full_name}
-              </Link>
-            )}
-            {task.patient?.phones?.[0] && (
-              <span className="text-gray-400">{task.patient.phones[0]}</span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 mt-1.5 text-[11px]">
-            <span className={`font-medium ${toneCls}`}>⏱ {due.label}</span>
-            {task.assignee && (
-              <span className="text-gray-400 ml-auto truncate max-w-[120px]">
-                → {task.assignee.last_name} {task.assignee.first_name[0]}.
-              </span>
-            )}
-          </div>
-          {task.author && (
-            <p className="text-[10px] text-gray-300 mt-0.5">
-              от {task.author.last_name} {task.author.first_name[0]}.
-            </p>
-          )}
-        </div>
+      {/* Заголовок задачи + описание (как «Связаться: …» в amoCRM) */}
+      <div className="mt-2 text-xs text-gray-700 leading-relaxed line-clamp-4">
+        <span className="font-semibold">{task.title}{task.description ? ':' : ''}</span>
+        {task.description && <span className="text-gray-600"> {task.description}</span>}
       </div>
     </div>
   )
@@ -1020,10 +992,10 @@ function ColumnBlock({ title, count, tone, highlight = false, items, onClick, on
   onQuickComplete: (t: TaskRow, e: React.MouseEvent) => void
 }) {
   const underlineCls = {
-    red:   'bg-red-400',
-    green: 'bg-green-400',
-    blue:  'bg-blue-400',
-    gray:  'bg-gray-300',
+    red:   'bg-red-300',
+    green: 'bg-emerald-300',
+    blue:  'bg-sky-300',
+    gray:  'bg-gray-200',
   }[tone]
   const plural = (n: number) => {
     const mod10 = n % 10, mod100 = n % 100
@@ -1033,14 +1005,14 @@ function ColumnBlock({ title, count, tone, highlight = false, items, onClick, on
     return 'задач'
   }
   return (
-    <div className={`flex flex-col min-h-[120px] ${highlight ? 'bg-green-50/30 rounded-xl' : ''}`}>
+    <div className={`flex flex-col min-h-[120px] ${highlight ? 'bg-green-50/20 rounded-xl' : ''}`}>
       {/* amoCRM-style header: uppercase title, count under, colored underline */}
-      <div className="text-center pb-2">
-        <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-[0.08em]">{title}</div>
-        <div className="text-xs text-gray-400 mt-0.5">{count} {plural(count)}</div>
-        <div className={`h-0.5 mt-2 rounded-full ${underlineCls}`} />
+      <div className="text-center pb-0">
+        <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-[0.08em]">{title}</div>
+        <div className="text-[13px] text-gray-600 mt-1">{count} {plural(count)}</div>
+        <div className={`h-[2px] mt-3 ${underlineCls}`} />
       </div>
-      <div className="space-y-2 overflow-y-auto max-h-[calc(100vh-240px)] pt-2">
+      <div className="space-y-2 overflow-y-auto max-h-[calc(100vh-240px)] pt-3">
         {items.length === 0 ? (
           <div className="text-xs text-gray-300 text-center py-6">—</div>
         ) : (
