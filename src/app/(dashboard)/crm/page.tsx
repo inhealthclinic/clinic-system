@@ -2646,6 +2646,78 @@ function DealModal({
 
                   {activeTab === 'chat' && (
                     <div className="flex flex-col flex-1 min-h-0">
+                      {/* Sticky банер с активными задачами сделки — висит сверху
+                          чата, пока задача не будет закрыта (amoCRM-стиль).
+                          Клик по зелёному кружку-чеку отмечает задачу выполненной. */}
+                      {tasks.filter(t => t.status === 'open').length > 0 && (
+                        <div className="flex-shrink-0 border-b border-gray-100 bg-white">
+                          {tasks
+                            .filter(t => t.status === 'open')
+                            .sort((a, b) => {
+                              // nulls last, раньше — выше
+                              if (!a.due_at && !b.due_at) return 0
+                              if (!a.due_at) return 1
+                              if (!b.due_at) return -1
+                              return a.due_at.localeCompare(b.due_at)
+                            })
+                            .map(t => {
+                              // «Сегодня 11:30-12:00 для <пациента> · <title>»
+                              const fmtWhen = (iso: string | null): string => {
+                                if (!iso) return 'Без срока'
+                                const d = new Date(iso)
+                                const now = new Date()
+                                const startOfDay = (x: Date) => {
+                                  const c = new Date(x); c.setHours(0,0,0,0); return c
+                                }
+                                const dayDiff = Math.round(
+                                  (startOfDay(d).getTime() - startOfDay(now).getTime()) / 86_400_000
+                                )
+                                const hhmm = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+                                const end = new Date(d.getTime() + 30 * 60_000)
+                                const hhmm2 = end.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+                                const slot = `${hhmm}-${hhmm2}`
+                                if (dayDiff === 0)      return `Сегодня ${slot}`
+                                if (dayDiff === 1)      return `Завтра ${slot}`
+                                if (dayDiff === -1)     return `Вчера ${slot}`
+                                if (dayDiff < 0)        return `Просрочено · ${d.toLocaleDateString('ru-RU', { day:'2-digit', month:'2-digit' })} ${hhmm}`
+                                return `${d.toLocaleDateString('ru-RU', { day:'2-digit', month:'short' })} ${slot}`
+                              }
+                              const patientFirst = deal.patient?.full_name?.split(/\s+/)[1]
+                                ?? deal.patient?.full_name?.split(/\s+/)[0]
+                                ?? null
+                              const isOverdue = t.due_at && new Date(t.due_at) < new Date()
+                              return (
+                                <div key={t.id}
+                                  className={`flex items-center gap-3 px-4 py-2.5 border-l-4 ${
+                                    isOverdue ? 'border-red-400 bg-red-50/40' : 'border-pink-400 bg-pink-50/30'
+                                  }`}>
+                                  {/* Clock icon */}
+                                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                                    className={isOverdue ? 'text-red-500 shrink-0' : 'text-pink-500 shrink-0'}>
+                                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8"/>
+                                    <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                                  </svg>
+                                  <div className="flex-1 text-sm text-gray-800">
+                                    <span>{fmtWhen(t.due_at)}</span>
+                                    {patientFirst && <span> для {patientFirst}</span>}
+                                  </div>
+                                  {/* Complete button — «зелёный кружок с галочкой» как в амо */}
+                                  <button onClick={() => toggleTask(t)}
+                                    title="Выполнить задачу"
+                                    className="shrink-0 w-6 h-6 rounded-full border-2 border-green-500 text-green-600 hover:bg-green-500 hover:text-white transition-colors flex items-center justify-center">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                      <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                  </button>
+                                  <span className="text-sm font-semibold text-gray-900 truncate max-w-[40%]">
+                                    {t.title}
+                                  </span>
+                                </div>
+                              )
+                            })}
+                        </div>
+                      )}
+
                       {/* Messages list */}
                       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
                         {(() => {
