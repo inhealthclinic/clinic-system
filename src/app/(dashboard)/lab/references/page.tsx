@@ -26,6 +26,7 @@ interface Service {
   clinic_id: string
   parent_service_id: string | null
   is_panel: boolean
+  sort_order: number
   name: string
   category: string | null
   is_lab: boolean
@@ -107,7 +108,16 @@ export default function LabReferencesPage() {
   const selected    = useMemo(() => allServices.find(s => s.id === selectedId) ?? null, [allServices, selectedId])
   const topServices = useMemo(() => allServices.filter(s => !s.parent_service_id), [allServices])
   const children    = useMemo(
-    () => selected?.is_panel ? allServices.filter(s => s.parent_service_id === selected.id) : [],
+    () => selected?.is_panel
+      ? allServices
+          .filter(s => s.parent_service_id === selected.id)
+          .sort((a, b) => {
+            const ao = a.sort_order ?? 0
+            const bo = b.sort_order ?? 0
+            if (ao !== bo) return ao - bo
+            return a.name.localeCompare(b.name, 'ru')
+          })
+      : [],
     [allServices, selected]
   )
 
@@ -117,7 +127,7 @@ export default function LabReferencesPage() {
     setLoading(true)
     const { data } = await supabase
       .from('services')
-      .select('id, clinic_id, parent_service_id, is_panel, name, category, is_lab, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
+      .select('id, clinic_id, parent_service_id, is_panel, sort_order, name, category, is_lab, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
       .eq('clinic_id', clinicId)
       .eq('is_lab', true)
       .eq('is_active', true)
