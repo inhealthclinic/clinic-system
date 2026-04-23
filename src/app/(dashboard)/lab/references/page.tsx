@@ -1,5 +1,21 @@
 'use client'
 
+/**
+ * /lab/references — настройка референсов для лабораторных услуг.
+ *
+ * Слева — список услуг верхнего уровня (parent_service_id IS NULL).
+ * Панели (is_panel=true) показываются отдельным стилем: по клику в
+ * правой области открывается список их детей-аналитов с inline-правкой
+ * ref_min / ref_max / unit / critical_low / critical_high.
+ *
+ * Для обычных услуг (не-панелей) сохранено прежнее поведение:
+ * форма дефолтного референса + таблица демографических диапазонов
+ * (reference_ranges).
+ *
+ * Кнопка «✨ Пресет: ОАК+СОЭ» вызывает RPC seed_oak_panel(clinic) —
+ * создаёт панель и 25 дочерних аналитов или связывает существующих.
+ */
+
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -7,6 +23,9 @@ import { useAuthStore } from '@/lib/stores/authStore'
 /* ─── Types ──────────────────────────────────────────────────────────── */
 interface Service {
   id: string
+  clinic_id: string
+  parent_service_id: string | null
+  is_panel: boolean
   name: string
   category: string | null
   is_lab: boolean
@@ -44,6 +63,7 @@ const PRESETS: Record<Preset, { label: string; emoji: string; apply: (r: Partial
 }
 
 const inp = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
+const inpSm = 'w-full border border-gray-200 rounded-md px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 focus:border-transparent outline-none'
 const lbl = 'block text-xs font-medium text-gray-500 mb-1'
 
 /* ─── Helpers ────────────────────────────────────────────────────────── */
@@ -65,11 +85,11 @@ function describeRange(r: RefRange): string {
 
 /* ─── Page ───────────────────────────────────────────────────────────── */
 export default function LabReferencesPage() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id ?? ''
 
-  const [services, setServices]       = useState<Service[]>([])
+  const [allServices, setAllServices] = useState<Service[]>([])
   const [selectedId, setSelectedId]   = useState<string | null>(null)
   const [ranges, setRanges]           = useState<RefRange[]>([])
   const [loading, setLoading]         = useState(true)
@@ -81,22 +101,29 @@ export default function LabReferencesPage() {
   const [error, setError]             = useState('')
   const [seeding, setSeeding]         = useState(false)
   const [seedMsg, setSeedMsg]         = useState('')
+  // Локальный буфер правок по детям панели, чтобы кнопки «Сохранить» были быстрые.
+  const [childEdits, setChildEdits]   = useState<Record<string, Partial<Service>>>({})
 
-  const selected = useMemo(() => services.find(s => s.id === selectedId) ?? null, [services, selectedId])
+  const selected    = useMemo(() => allServices.find(s => s.id === selectedId) ?? null, [allServices, selectedId])
+  const topServices = useMemo(() => allServices.filter(s => !s.parent_service_id), [allServices])
+  const children    = useMemo(
+    () => selected?.is_panel ? allServices.filter(s => s.parent_service_id === selected.id) : [],
+    [allServices, selected]
+  )
 
-  /* ─── Load services ─── */
+  /* ─── Load all services (with parent info) ─── */
   const loadServices = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
     const { data } = await supabase
       .from('services')
-      .select('id, name, category, is_lab, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
+      .select('id, clinic_id, parent_service_id, is_panel, name, category, is_lab, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
       .eq('clinic_id', clinicId)
       .eq('is_lab', true)
       .eq('is_active', true)
       .order('category', { nullsFirst: true })
       .order('name')
-    setServices((data ?? []) as Service[])
+    setAllServices((data ?? []) as Service[])
     setLoading(false)
   }, [clinicId, supabase])
 
@@ -133,7 +160,21 @@ export default function LabReferencesPage() {
     }
   }
 
-  /* ─── Form handlers ─── */
+  /* ─── Seed OAK panel ─── */
+  const seedOakPanel = async () => {
+    if (!clinicId) return
+    if (!confirm('Создать панель «ОАК+СОЭ» с 25 показателями в категории «Гематология»?')) return
+    setSeeding(true); setSeedMsg('')
+    const { data, error: err } = await supabase.rpc('seed_oak_panel', { p_clinic_id: clinicId })
+    setSeeding(false)
+    if (err) { setSeedMsg(`Ошибка: ${err.message}`); return }
+    const r = (data ?? {}) as { created?: number; linked?: number; panel_id?: string }
+    setSeedMsg(`Создано: ${r.created ?? 0} · Привязано к панели: ${r.linked ?? 0}`)
+    await loadServices()
+    if (r.panel_id) setSelectedId(r.panel_id)
+  }
+
+  /* ─── Form handlers (демографические диапазоны) ─── */
   const openForm = (r?: RefRange) => {
     if (r) {
       setEditingId(r.id)
@@ -176,27 +217,39 @@ export default function LabReferencesPage() {
     loadRanges()
   }
 
-  /* ─── Seed: ОАК+СОЭ пресет ─── */
-  const seedOakPanel = async () => {
-    if (!clinicId) return
-    if (!confirm('Создать 25 показателей ОАК+СОЭ в категории «Гематология»?\nУже существующие анализы с такими именами пропустятся.')) return
-    setSeeding(true); setSeedMsg('')
-    const { data, error: err } = await supabase.rpc('seed_oak_panel', { p_clinic_id: clinicId })
-    setSeeding(false)
-    if (err) { setSeedMsg(`Ошибка: ${err.message}`); return }
-    const n = typeof data === 'number' ? data : 0
-    setSeedMsg(n > 0 ? `Создано новых анализов: ${n}` : 'Все 25 показателей уже были в системе')
-    loadServices()
-  }
-
   const delRange = async (id: string) => {
     if (!confirm('Удалить диапазон?')) return
     await supabase.from('reference_ranges').delete().eq('id', id)
     loadRanges()
   }
 
+  /* ─── Inline-правка дочерних аналитов панели ─── */
+  const setChildField = (id: string, patch: Partial<Service>) => {
+    setChildEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }
+  const saveChild = async (id: string) => {
+    const patch = childEdits[id]
+    if (!patch) return
+    setSaving(true)
+    const clean: Record<string, unknown> = {}
+    for (const k of ['default_unit','reference_min','reference_max','critical_low','critical_high','reference_text'] as const) {
+      if (k in patch) {
+        const v = patch[k]
+        clean[k] = v === '' || v === undefined ? null : v
+      }
+    }
+    const { error: err } = await supabase.from('services').update(clean).eq('id', id)
+    setSaving(false)
+    if (err) { setError(err.message); return }
+    setError('')
+    setChildEdits(prev => {
+      const n = { ...prev }; delete n[id]; return n
+    })
+    await loadServices()
+  }
+
   /* ─── Filter + group ─── */
-  const visible = services.filter(s =>
+  const visible = topServices.filter(s =>
     !search.trim() ||
     s.name.toLowerCase().includes(search.toLowerCase()) ||
     (s.category ?? '').toLowerCase().includes(search.toLowerCase())
@@ -226,7 +279,7 @@ export default function LabReferencesPage() {
           <button
             onClick={seedOakPanel}
             disabled={seeding}
-            title="Одним кликом создать 25 показателей клинического анализа крови с СОЭ"
+            title="Создать/привязать панель «ОАК+СОЭ» с 25 показателями"
             className="w-full text-xs font-medium px-3 py-2 rounded-lg bg-purple-50 hover:bg-purple-100 disabled:opacity-60 text-purple-700 border border-purple-200 transition-colors">
             {seeding ? 'Создаём...' : '✨ Пресет: ОАК+СОЭ (25 показателей)'}
           </button>
@@ -249,14 +302,23 @@ export default function LabReferencesPage() {
                 <div className="px-4 py-2 bg-gray-50 border-y border-gray-100">
                   <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">{cat}</span>
                 </div>
-                {items.map(s => (
-                  <button key={s.id} onClick={() => setSelectedId(s.id)}
-                    className={`w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 transition-colors ${
-                      selectedId === s.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
-                    }`}>
-                    {s.name}
-                  </button>
-                ))}
+                {items.map(s => {
+                  const childCount = allServices.filter(c => c.parent_service_id === s.id).length
+                  return (
+                    <button key={s.id} onClick={() => setSelectedId(s.id)}
+                      className={`w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 transition-colors flex items-center gap-2 ${
+                        selectedId === s.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
+                      }`}>
+                      {s.is_panel && <span className="text-purple-500 text-xs">📦</span>}
+                      <span className="flex-1 truncate">{s.name}</span>
+                      {s.is_panel && childCount > 0 && (
+                        <span className="text-[10px] text-gray-400 bg-gray-100 rounded-full px-1.5 py-0.5">
+                          {childCount}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
               </div>
             ))
           )}
@@ -269,7 +331,100 @@ export default function LabReferencesPage() {
           <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
             <p className="text-sm text-gray-400">Выберите анализ слева</p>
           </div>
+        ) : selected.is_panel ? (
+          /* ───── PANEL: table of children ───── */
+          <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <span className="text-purple-500">📦</span>
+                <h3 className="text-sm font-semibold text-gray-900">{selected.name}</h3>
+                <span className="text-xs text-gray-400">панель · {children.length} показателей</span>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                Значения min/max — дефолтный референс аналита. Для возрастных/половых разниц откройте аналит отдельно (через поиск).
+              </p>
+            </div>
+            {children.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-400">
+                Внутри панели ещё нет показателей. Нажмите «✨ Пресет: ОАК+СОЭ» слева.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 text-left text-[10px] uppercase tracking-wider text-gray-500">
+                      <th className="px-3 py-2 font-semibold">Показатель</th>
+                      <th className="px-2 py-2 font-semibold w-24">Ед.</th>
+                      <th className="px-2 py-2 font-semibold w-20">Min</th>
+                      <th className="px-2 py-2 font-semibold w-20">Max</th>
+                      <th className="px-2 py-2 font-semibold w-20 text-red-500">Crit low</th>
+                      <th className="px-2 py-2 font-semibold w-20 text-red-500">Crit high</th>
+                      <th className="px-2 py-2 font-semibold w-20"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {children.map(c => {
+                      const edit = childEdits[c.id] ?? {}
+                      const dirty = Object.keys(edit).length > 0
+                      const val = <K extends keyof Service>(k: K): Service[K] =>
+                        (k in edit ? (edit[k] as Service[K]) : c[k])
+                      const onChange = <K extends keyof Service>(k: K) =>
+                        (e: React.ChangeEvent<HTMLInputElement>) => {
+                          const raw = e.target.value
+                          const v = k === 'default_unit'
+                            ? (raw || null) as Service[K]
+                            : (raw === '' ? null : Number(raw)) as Service[K]
+                          setChildField(c.id, { [k]: v } as Partial<Service>)
+                        }
+                      return (
+                        <tr key={c.id} className={dirty ? 'bg-yellow-50' : ''}>
+                          <td className="px-3 py-1.5 text-gray-900">{c.name}</td>
+                          <td className="px-2 py-1.5">
+                            <input className={inpSm}
+                              value={(val('default_unit') as string | null) ?? ''}
+                              onChange={onChange('default_unit')} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" step="any" className={inpSm}
+                              value={(val('reference_min') as number | null) ?? ''}
+                              onChange={onChange('reference_min')} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" step="any" className={inpSm}
+                              value={(val('reference_max') as number | null) ?? ''}
+                              onChange={onChange('reference_max')} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" step="any" className={inpSm}
+                              value={(val('critical_low') as number | null) ?? ''}
+                              onChange={onChange('critical_low')} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" step="any" className={inpSm}
+                              value={(val('critical_high') as number | null) ?? ''}
+                              onChange={onChange('critical_high')} />
+                          </td>
+                          <td className="px-2 py-1.5 text-right">
+                            {dirty && (
+                              <button
+                                onClick={() => saveChild(c.id)}
+                                disabled={saving}
+                                className="text-[11px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-2 py-1 rounded">
+                                {saving ? '...' : 'Сохранить'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {error && <p className="text-xs text-red-600 px-5 py-2 bg-red-50 border-t border-red-100">{error}</p>}
+          </div>
         ) : (
+          /* ───── REGULAR SERVICE ───── */
           <>
             {/* Default reference */}
             <div className="bg-white rounded-xl border border-gray-100 p-5">
@@ -284,7 +439,7 @@ export default function LabReferencesPage() {
                   <label className={lbl}>Min</label>
                   <input type="number" step="any" className={inp}
                     value={selected.reference_min ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, reference_min: e.target.value === '' ? null : Number(e.target.value) } : s))}
                     placeholder="3.5" />
                 </div>
@@ -292,26 +447,25 @@ export default function LabReferencesPage() {
                   <label className={lbl}>Max</label>
                   <input type="number" step="any" className={inp}
                     value={selected.reference_max ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, reference_max: e.target.value === '' ? null : Number(e.target.value) } : s))}
                     placeholder="5.5" />
                 </div>
                 <div>
                   <label className={lbl}>Ед. изм.</label>
                   <input className={inp} value={selected.default_unit ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, default_unit: e.target.value || null } : s))}
                     placeholder="г/л" />
                 </div>
                 <div>
                   <label className={lbl}>Текст. описание</label>
                   <input className={inp} value={selected.reference_text ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, reference_text: e.target.value || null } : s))}
                     placeholder="отриц., &lt;1:10…" />
                 </div>
               </div>
-              {/* Critical (panic) values */}
               <div className="mt-4 pt-4 border-t border-red-100">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-base">‼</span>
@@ -325,7 +479,7 @@ export default function LabReferencesPage() {
                     <label className={lbl}>Critical low</label>
                     <input type="number" step="any" className={inp}
                       value={selected.critical_low ?? ''}
-                      onChange={e => setServices(prev => prev.map(s =>
+                      onChange={e => setAllServices(prev => prev.map(s =>
                         s.id === selected.id ? { ...s, critical_low: e.target.value === '' ? null : Number(e.target.value) } : s))}
                       placeholder="напр., 2.0" />
                   </div>
@@ -333,7 +487,7 @@ export default function LabReferencesPage() {
                     <label className={lbl}>Critical high</label>
                     <input type="number" step="any" className={inp}
                       value={selected.critical_high ?? ''}
-                      onChange={e => setServices(prev => prev.map(s =>
+                      onChange={e => setAllServices(prev => prev.map(s =>
                         s.id === selected.id ? { ...s, critical_high: e.target.value === '' ? null : Number(e.target.value) } : s))}
                       placeholder="напр., 10.0" />
                   </div>
@@ -397,7 +551,7 @@ export default function LabReferencesPage() {
         )}
       </div>
 
-      {/* ── Form modal ── */}
+      {/* ── Form modal for demographic range ── */}
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowForm(false)} />
@@ -409,7 +563,6 @@ export default function LabReferencesPage() {
               <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
             </div>
 
-            {/* Presets */}
             <div className="flex flex-wrap gap-2 mb-4">
               {(Object.keys(PRESETS) as Preset[]).map(p => (
                 <button key={p} onClick={() => applyPreset(p)}
