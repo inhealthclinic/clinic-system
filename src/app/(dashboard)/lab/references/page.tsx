@@ -100,10 +100,10 @@ export default function LabReferencesPage() {
   const [form, setForm]               = useState<Partial<RefRange>>({})
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
-  const [seeding, setSeeding]         = useState(false)
-  const [seedMsg, setSeedMsg]         = useState('')
   // Локальный буфер правок по детям панели, чтобы кнопки «Сохранить» были быстрые.
   const [childEdits, setChildEdits]   = useState<Record<string, Partial<Service>>>({})
+  // reference_ranges для всех детей выбранной панели (key = service_id)
+  const [childRanges, setChildRanges] = useState<Record<string, RefRange[]>>({})
 
   const selected    = useMemo(() => allServices.find(s => s.id === selectedId) ?? null, [allServices, selectedId])
   const topServices = useMemo(() => allServices.filter(s => !s.parent_service_id), [allServices])
@@ -147,8 +147,26 @@ export default function LabReferencesPage() {
     setRanges((data ?? []) as RefRange[])
   }, [selectedId, supabase])
 
+  /* Загружаем диапазоны всех детей панели одним запросом */
+  const loadChildRanges = useCallback(async () => {
+    if (!selected?.is_panel) { setChildRanges({}); return }
+    const childIds = allServices.filter(s => s.parent_service_id === selected.id).map(s => s.id)
+    if (childIds.length === 0) { setChildRanges({}); return }
+    const { data } = await supabase
+      .from('reference_ranges')
+      .select('*')
+      .in('service_id', childIds)
+      .order('sex')
+    const grouped: Record<string, RefRange[]> = {}
+    for (const r of (data ?? []) as RefRange[]) {
+      (grouped[r.service_id] ||= []).push(r)
+    }
+    setChildRanges(grouped)
+  }, [selected, allServices, supabase])
+
   useEffect(() => { loadServices() }, [loadServices])
   useEffect(() => { loadRanges() }, [loadRanges])
+  useEffect(() => { loadChildRanges() }, [loadChildRanges])
 
   /* ─── Save default reference on service ─── */
   const saveDefault = async () => {
@@ -168,20 +186,6 @@ export default function LabReferencesPage() {
       setError('')
       loadServices()
     }
-  }
-
-  /* ─── Seed OAK panel ─── */
-  const seedOakPanel = async () => {
-    if (!clinicId) return
-    if (!confirm('Создать панель «ОАК+СОЭ» с 25 показателями в категории «Гематология»?')) return
-    setSeeding(true); setSeedMsg('')
-    const { data, error: err } = await supabase.rpc('seed_oak_panel', { p_clinic_id: clinicId })
-    setSeeding(false)
-    if (err) { setSeedMsg(`Ошибка: ${err.message}`); return }
-    const r = (data ?? {}) as { created?: number; linked?: number; panel_id?: string }
-    setSeedMsg(`Создано: ${r.created ?? 0} · Привязано к панели: ${r.linked ?? 0}`)
-    await loadServices()
-    if (r.panel_id) setSelectedId(r.panel_id)
   }
 
   /* ─── Form handlers (демографические диапазоны) ─── */
@@ -283,21 +287,9 @@ export default function LabReferencesPage() {
           <h2 className="text-sm font-semibold text-gray-900">Анализы</h2>
           <p className="text-xs text-gray-400 mt-0.5">Выберите для настройки референсов</p>
         </div>
-        <div className="p-3 border-b border-gray-100 space-y-2">
+        <div className="p-3 border-b border-gray-100">
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Поиск..." className={inp} />
-          <button
-            onClick={seedOakPanel}
-            disabled={seeding}
-            title="Создать/привязать панель «ОАК+СОЭ» с 25 показателями"
-            className="w-full text-xs font-medium px-3 py-2 rounded-lg bg-purple-50 hover:bg-purple-100 disabled:opacity-60 text-purple-700 border border-purple-200 transition-colors">
-            {seeding ? 'Создаём...' : '✨ Пресет: ОАК+СОЭ (25 показателей)'}
-          </button>
-          {seedMsg && (
-            <p className={`text-[11px] px-2 py-1 rounded ${seedMsg.startsWith('Ошибка') ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>
-              {seedMsg}
-            </p>
-          )}
         </div>
         <div className="max-h-[560px] overflow-auto">
           {loading ? (
@@ -351,12 +343,12 @@ export default function LabReferencesPage() {
                 <span className="text-xs text-gray-400">панель · {children.length} показателей</span>
               </div>
               <p className="text-xs text-gray-400 mt-1">
-                Значения min/max — дефолтный референс аналита. Для возрастных/половых разниц откройте аналит отдельно (через поиск).
+                Min/Max — дефолтный референс. Ниже — диапазоны по полу (♂ / ♀). Клик по названию — подробная правка групп.
               </p>
             </div>
             {children.length === 0 ? (
               <div className="p-8 text-center text-sm text-gray-400">
-                Внутри панели ещё нет показателей. Нажмите «✨ Пресет: ОАК+СОЭ» слева.
+                Внутри панели ещё нет показателей.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -386,9 +378,24 @@ export default function LabReferencesPage() {
                             : (raw === '' ? null : Number(raw)) as Service[K]
                           setChildField(c.id, { [k]: v } as Partial<Service>)
                         }
+                      const rrs = childRanges[c.id] ?? []
+                      const mr = rrs.find(r => r.sex === 'M')
+                      const fr = rrs.find(r => r.sex === 'F')
                       return (
                         <tr key={c.id} className={dirty ? 'bg-yellow-50' : ''}>
-                          <td className="px-3 py-1.5 text-gray-900">{c.name}</td>
+                          <td className="px-3 py-1.5">
+                            <button
+                              onClick={() => setSelectedId(c.id)}
+                              className="text-left text-gray-900 hover:text-blue-600 hover:underline">
+                              {c.name}
+                            </button>
+                            {(mr || fr) && (
+                              <div className="mt-0.5 flex gap-2 text-[10px] text-gray-500">
+                                {mr && <span>♂ {mr.min_value ?? '—'}–{mr.max_value ?? '—'}</span>}
+                                {fr && <span>♀ {fr.min_value ?? '—'}–{fr.max_value ?? '—'}</span>}
+                              </div>
+                            )}
+                          </td>
                           <td className="px-2 py-1.5">
                             <input className={inpSm}
                               value={(val('default_unit') as string | null) ?? ''}
@@ -436,6 +443,13 @@ export default function LabReferencesPage() {
         ) : (
           /* ───── REGULAR SERVICE ───── */
           <>
+            {selected.parent_service_id && (
+              <button
+                onClick={() => setSelectedId(selected.parent_service_id)}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+                ← Назад к панели
+              </button>
+            )}
             {/* Default reference */}
             <div className="bg-white rounded-xl border border-gray-100 p-5">
               <div className="mb-3">
