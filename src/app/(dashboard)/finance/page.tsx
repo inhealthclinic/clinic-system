@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { exportCsv } from '@/lib/export/csv'
 
 interface Payment {
   id: string
@@ -298,6 +299,20 @@ export default function FinancePage() {
           ))}
         </div>
         <div className="flex-1" />
+        <button
+          onClick={() => exportCsv(`payments-${period}`, payments, [
+            { key: 'Пациент', value: p => p.patient?.full_name ?? '' },
+            { key: 'Тип',     value: p => TYPE_RU[p.type]   ?? p.type },
+            { key: 'Метод',   value: p => METHOD_RU[p.method] ?? p.method },
+            { key: 'Сумма, ₸', value: p => p.amount },
+            { key: 'Статус',  value: p => p.status },
+            { key: 'Дата',    value: p => new Date(p.paid_at).toLocaleString('ru-RU') },
+          ])}
+          disabled={payments.length === 0}
+          className="px-4 py-2 border border-gray-200 hover:bg-gray-50 disabled:opacity-40 text-gray-700 text-sm font-medium rounded-lg transition-colors"
+          title="Экспорт платежей за период в CSV">
+          ⬇ CSV
+        </button>
         <button onClick={() => setShowModal(true)} disabled={!clinicId}
           className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors">
           + Принять оплату

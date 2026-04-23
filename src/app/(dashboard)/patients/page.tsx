@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { Patient } from '@/types'
+import { exportCsv, todayStamp } from '@/lib/export/csv'
 
 /* ─── MedElement: Print patient card ─────────────────────── */
 function printPatientCard(p: Patient) {
@@ -162,11 +163,33 @@ export default function PatientsPage() {
           <h2 className="text-lg font-semibold text-gray-900">Пациенты</h2>
           <p className="text-sm text-gray-400">{total} записей</p>
         </div>
-        <Link
-          href="/patients/new"
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-          + Новый пациент
-        </Link>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportCsv(`patients-${todayStamp()}`, patients, [
+              { key: 'ФИО',          value: p => p.full_name },
+              { key: 'Карта №',      value: p => p.patient_number ?? '' },
+              { key: 'Телефоны',     value: p => (p.phones ?? []).join(' / ') },
+              { key: 'Email',        value: p => p.email ?? '' },
+              { key: 'ИИН',          value: p => p.iin ?? '' },
+              { key: 'Дата рождения', value: p => p.birth_date ?? '' },
+              { key: 'Пол',          value: p => p.gender === 'male' ? 'М' : p.gender === 'female' ? 'Ж' : '' },
+              { key: 'Город',        value: p => p.city ?? '' },
+              { key: 'Статус',       value: p => STATUS_LABEL[p.status] ?? p.status },
+              { key: 'Баланс, ₸',    value: p => p.balance_amount ?? 0 },
+              { key: 'Долг, ₸',      value: p => p.debt_amount ?? 0 },
+              { key: 'Создан',       value: p => p.created_at?.slice(0, 10) ?? '' },
+            ])}
+            disabled={patients.length === 0}
+            className="border border-gray-200 hover:bg-gray-50 disabled:opacity-40 text-gray-700 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
+            title="Экспорт текущей выборки в CSV (откроется в Excel)">
+            ⬇ CSV
+          </button>
+          <Link
+            href="/patients/new"
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+            + Новый пациент
+          </Link>
+        </div>
       </div>
 
       {/* Search */}
