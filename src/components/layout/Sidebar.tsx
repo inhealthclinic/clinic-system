@@ -83,6 +83,17 @@ const NAV: NavItem[] = [
     ),
   },
   {
+    label: 'Сообщения',
+    href: '/messages',
+    badgeKey: 'crm-unread',
+    roles: ['admin', 'manager'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+  },
+  {
     label: 'Финансы',
     href: '/finance',
     roles: ['admin', 'cashier'],
