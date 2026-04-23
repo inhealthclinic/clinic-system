@@ -104,6 +104,11 @@ export default function LabReferencesPage() {
   const [childEdits, setChildEdits]   = useState<Record<string, Partial<Service>>>({})
   // reference_ranges для всех детей выбранной панели (key = service_id)
   const [childRanges, setChildRanges] = useState<Record<string, RefRange[]>>({})
+  // Модалка раздельного ввода M/F для одного аналита панели
+  const [sexModal, setSexModal] = useState<{
+    child: Service
+    mMin: string; mMax: string; fMin: string; fMax: string
+  } | null>(null)
 
   const selected    = useMemo(() => allServices.find(s => s.id === selectedId) ?? null, [allServices, selectedId])
   const topServices = useMemo(() => allServices.filter(s => !s.parent_service_id), [allServices])
@@ -262,6 +267,55 @@ export default function LabReferencesPage() {
     await loadServices()
   }
 
+  /* ─── Модалка раздельного ввода M/F для ребёнка панели ─── */
+  const openSexModal = (c: Service) => {
+    const rrs = childRanges[c.id] ?? []
+    const m = rrs.find(r => r.sex === 'M')
+    const f = rrs.find(r => r.sex === 'F')
+    setSexModal({
+      child: c,
+      mMin: m?.min_value != null ? String(m.min_value) : '',
+      mMax: m?.max_value != null ? String(m.max_value) : '',
+      fMin: f?.min_value != null ? String(f.min_value) : '',
+      fMax: f?.max_value != null ? String(f.max_value) : '',
+    })
+  }
+  const saveSexModal = async () => {
+    if (!sexModal) return
+    const { child, mMin, mMax, fMin, fMax } = sexModal
+    setSaving(true)
+    // Сносим старые M/F этого аналита и вставляем заново (идемпотентно)
+    await supabase.from('reference_ranges')
+      .delete()
+      .eq('service_id', child.id)
+      .in('sex', ['M', 'F'])
+    const rows: Array<Record<string, unknown>> = []
+    const num = (v: string) => v.trim() === '' ? null : Number(v)
+    if (mMin !== '' || mMax !== '') {
+      rows.push({
+        service_id: child.id, label: 'Мужчины', sex: 'M',
+        age_min: 18, age_max: null, pregnant: null,
+        min_value: num(mMin), max_value: num(mMax),
+        unit: child.default_unit,
+      })
+    }
+    if (fMin !== '' || fMax !== '') {
+      rows.push({
+        service_id: child.id, label: 'Женщины', sex: 'F',
+        age_min: 18, age_max: null, pregnant: false,
+        min_value: num(fMin), max_value: num(fMax),
+        unit: child.default_unit,
+      })
+    }
+    if (rows.length > 0) {
+      const { error: err } = await supabase.from('reference_ranges').insert(rows)
+      if (err) { setError(err.message); setSaving(false); return }
+    }
+    setSaving(false)
+    setSexModal(null)
+    await loadChildRanges()
+  }
+
   /* ─── Filter + group ─── */
   const visible = topServices.filter(s =>
     !search.trim() ||
@@ -389,12 +443,6 @@ export default function LabReferencesPage() {
                               className="text-left text-gray-900 hover:text-blue-600 hover:underline">
                               {c.name}
                             </button>
-                            {(mr || fr) && (
-                              <div className="mt-0.5 flex gap-2 text-[10px] text-gray-500">
-                                {mr && <span>♂ {mr.min_value ?? '—'}–{mr.max_value ?? '—'}</span>}
-                                {fr && <span>♀ {fr.min_value ?? '—'}–{fr.max_value ?? '—'}</span>}
-                              </div>
-                            )}
                           </td>
                           <td className="px-2 py-1.5">
                             <input className={inpSm}
@@ -422,14 +470,26 @@ export default function LabReferencesPage() {
                               onChange={onChange('critical_high')} />
                           </td>
                           <td className="px-2 py-1.5 text-right">
-                            {dirty && (
+                            <div className="flex items-center justify-end gap-1.5">
                               <button
-                                onClick={() => saveChild(c.id)}
-                                disabled={saving}
-                                className="text-[11px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-2 py-1 rounded">
-                                {saving ? '...' : 'Сохранить'}
+                                onClick={() => openSexModal(c)}
+                                title="Раздельные диапазоны для мужчин и женщин"
+                                className={`text-[11px] px-1.5 py-1 rounded border transition-colors ${
+                                  mr || fr
+                                    ? 'bg-pink-50 border-pink-200 text-pink-700 hover:bg-pink-100'
+                                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                }`}>
+                                ♂♀
                               </button>
-                            )}
+                              {dirty && (
+                                <button
+                                  onClick={() => saveChild(c.id)}
+                                  disabled={saving}
+                                  className="text-[11px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-2 py-1 rounded">
+                                  {saving ? '...' : 'Сохр.'}
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       )
@@ -574,6 +634,68 @@ export default function LabReferencesPage() {
           </>
         )}
       </div>
+
+      {/* ── Модалка раздельных M/F референсов ── */}
+      {sexModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setSexModal(null)} />
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 z-10">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-base font-semibold text-gray-900">Мужчины / Женщины</h3>
+              <button onClick={() => setSexModal(null)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">{sexModal.child.name}{sexModal.child.default_unit ? `, ${sexModal.child.default_unit}` : ''}</p>
+
+            <div className="space-y-4">
+              <div className="border border-gray-100 rounded-xl p-3">
+                <div className="text-xs font-medium text-gray-700 mb-2">♂ Мужчины</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={lbl}>Min</label>
+                    <input type="number" step="any" className={inp}
+                      value={sexModal.mMin}
+                      onChange={e => setSexModal(s => s && ({ ...s, mMin: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className={lbl}>Max</label>
+                    <input type="number" step="any" className={inp}
+                      value={sexModal.mMax}
+                      onChange={e => setSexModal(s => s && ({ ...s, mMax: e.target.value }))} />
+                  </div>
+                </div>
+              </div>
+              <div className="border border-gray-100 rounded-xl p-3">
+                <div className="text-xs font-medium text-gray-700 mb-2">♀ Женщины</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={lbl}>Min</label>
+                    <input type="number" step="any" className={inp}
+                      value={sexModal.fMin}
+                      onChange={e => setSexModal(s => s && ({ ...s, fMin: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className={lbl}>Max</label>
+                    <input type="number" step="any" className={inp}
+                      value={sexModal.fMax}
+                      onChange={e => setSexModal(s => s && ({ ...s, fMax: e.target.value }))} />
+                  </div>
+                </div>
+              </div>
+              {error && <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
+              <div className="flex gap-3 pt-1">
+                <button onClick={() => setSexModal(null)}
+                  className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg py-2 text-sm font-medium">
+                  Отмена
+                </button>
+                <button onClick={saveSexModal} disabled={saving}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2 text-sm font-medium">
+                  {saving ? 'Сохранение...' : 'Сохранить'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Form modal for demographic range ── */}
       {showForm && (
