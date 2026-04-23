@@ -410,6 +410,7 @@ export default function LabReferencesPage() {
                       <th className="px-2 py-2 font-semibold w-24">Ед.</th>
                       <th className="px-2 py-2 font-semibold w-20">Min</th>
                       <th className="px-2 py-2 font-semibold w-20">Max</th>
+                      <th className="px-2 py-2 font-semibold w-32">Эталон</th>
                       <th className="px-2 py-2 font-semibold w-20 text-red-500">Crit low</th>
                       <th className="px-2 py-2 font-semibold w-20 text-red-500">Crit high</th>
                       <th className="px-2 py-2 font-semibold w-20"></th>
@@ -478,6 +479,12 @@ export default function LabReferencesPage() {
                                 value={sexMaxVal}
                                 onChange={e => setSexEdits(prev => ({ ...prev, [c.id]: { ...prev[c.id], max: e.target.value } }))} />
                             )}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input className={inpSm} disabled={!isDef}
+                              placeholder="напр. отсутствуют"
+                              value={(val('reference_text') as string | null) ?? ''}
+                              onChange={e => setChildField(c.id, { reference_text: e.target.value || null })} />
                           </td>
                           <td className="px-2 py-1.5">
                             <input type="number" step="any" className={inpSm} disabled={!isDef}
