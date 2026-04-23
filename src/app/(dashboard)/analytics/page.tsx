@@ -8,6 +8,9 @@ interface RevenueByDay  { day: string; total: number }
 interface TopService    { name: string; count: number; total: number }
 interface ApptByStatus  { status: string; count: number }
 interface PatientsByWeek { week: string; count: number }
+interface FunnelStage   { name: string; count: number }
+interface DoctorLoad    { name: string; hours: number; count: number }
+interface TopPatient    { name: string; total: number }
 
 type Period = '7' | '30' | '90'
 
@@ -97,6 +100,9 @@ export default function AnalyticsPage() {
   const [apptByStatus, setApptByStatus]   = useState<ApptByStatus[]>([])
   const [patientsByWeek, setPatientsByWeek] = useState<PatientsByWeek[]>([])
   const [completionRate, setCompletionRate] = useState<number | null>(null)
+  const [funnel, setFunnel]               = useState<FunnelStage[]>([])
+  const [doctorLoad, setDoctorLoad]       = useState<DoctorLoad[]>([])
+  const [topPatients, setTopPatients]     = useState<TopPatient[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -183,6 +189,99 @@ export default function AnalyticsPage() {
     const cancelled = apptMap['cancelled'] ?? 0
     const denom = completed + cancelled
     setCompletionRate(denom > 0 ? Math.round((completed / denom) * 100) : null)
+
+    // 6. CRM funnel — открытые сделки по стадиям (по активному pipeline).
+    //    Стадии берём из pipeline_stages, сортируем по sort_order. Для
+    //    одной клиники воронок обычно одна «медицинская» — её и покажем.
+    const { data: stages } = await supabase
+      .from('pipeline_stages')
+      .select('id, name, sort_order, is_active')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
+    const { data: deals } = await supabase
+      .from('deals')
+      .select('stage_id, status')
+      .eq('status', 'open')
+    const dealCountByStage: Record<string, number> = {}
+    ;(deals ?? []).forEach((d: { stage_id: string | null }) => {
+      if (!d.stage_id) return
+      dealCountByStage[d.stage_id] = (dealCountByStage[d.stage_id] ?? 0) + 1
+    })
+    setFunnel(
+      (stages ?? []).map((s: { id: string; name: string }) => ({
+        name: s.name,
+        count: dealCountByStage[s.id] ?? 0,
+      }))
+    )
+
+    // 7. Загрузка врачей — суммарные часы записей за период.
+    //    duration_min / 60, группировка по doctor_id. Берём appointments
+    //    в статусах, которые считаются «реальной работой».
+    const { data: doctorAppts } = await supabase
+      .from('appointments')
+      .select('doctor_id, duration_min, doctor:doctors(first_name, last_name)')
+      .gte('date', since.slice(0, 10))
+      .in('status', ['completed', 'arrived', 'confirmed', 'pending'])
+    const docMap: Record<string, { name: string; minutes: number; count: number }> = {}
+    ;(doctorAppts ?? []).forEach((a: {
+      doctor_id: string
+      duration_min: number | null
+      doctor: { first_name: string; last_name: string } | { first_name: string; last_name: string }[] | null
+    }) => {
+      const doc = Array.isArray(a.doctor) ? a.doctor[0] : a.doctor
+      if (!doc) return
+      const key = a.doctor_id
+      const name = `${doc.last_name} ${doc.first_name[0] ?? ''}.`
+      if (!docMap[key]) docMap[key] = { name, minutes: 0, count: 0 }
+      docMap[key].minutes += a.duration_min ?? 0
+      docMap[key].count += 1
+    })
+    setDoctorLoad(
+      Object.values(docMap)
+        .map(v => ({ name: v.name, hours: Math.round(v.minutes / 60 * 10) / 10, count: v.count }))
+        .sort((a, b) => b.hours - a.hours)
+        .slice(0, 8)
+    )
+
+    // 8. Топ-10 пациентов по LTV за период.
+    //    Джойним payments → charges → visits → patients. Считаем
+    //    сумму completed-платежей (не refund). Для рейтинга достаточно.
+    const { data: payPatients } = await supabase
+      .from('payments')
+      .select('amount, charge:charges(visit:visits(patient:patients(full_name)))')
+      .neq('type', 'refund')
+      .eq('status', 'completed')
+      .gte('paid_at', since)
+    const ltvMap: Record<string, number> = {}
+    // Supabase выдаёт вложенные join-ы либо массивом, либо объектом в
+    // зависимости от кардинальности. TS-дженерик путается на 3 уровнях,
+    // поэтому разворачиваем через `any` (внутренний код аналитики, не
+    // контракт API).
+    ;(payPatients ?? []).forEach((row: unknown) => {
+      const r = row as { amount: number | null; charge: unknown }
+      const c = Array.isArray(r.charge) ? r.charge[0] : r.charge
+      const v = c && typeof c === 'object' && 'visit' in c
+        ? (Array.isArray((c as { visit: unknown }).visit)
+            ? (c as { visit: unknown[] }).visit[0]
+            : (c as { visit: unknown }).visit)
+        : null
+      const p = v && typeof v === 'object' && 'patient' in v
+        ? (Array.isArray((v as { patient: unknown }).patient)
+            ? (v as { patient: unknown[] }).patient[0]
+            : (v as { patient: unknown }).patient)
+        : null
+      const name = p && typeof p === 'object' && 'full_name' in p
+        ? String((p as { full_name: unknown }).full_name)
+        : null
+      if (!name) return
+      ltvMap[name] = (ltvMap[name] ?? 0) + (r.amount ?? 0)
+    })
+    setTopPatients(
+      Object.entries(ltvMap)
+        .map(([name, total]) => ({ name, total }))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 10)
+    )
 
     setLoading(false)
   }, [period])
@@ -346,6 +445,82 @@ export default function AnalyticsPage() {
             </>
           )}
         </div>
+      </div>
+
+      {/* Funnel + doctor load */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* CRM funnel */}
+        <div className="bg-white rounded-xl border border-gray-100 p-5">
+          <h3 className="text-sm font-semibold text-gray-900 mb-4">Воронка CRM (открытые сделки)</h3>
+          {loading ? <Skeleton className="h-36" /> : funnel.length === 0 ? (
+            <p className="text-sm text-gray-400 py-8 text-center">Нет воронок</p>
+          ) : (
+            <div className="space-y-2">
+              {(() => {
+                const max = Math.max(...funnel.map(f => f.count), 1)
+                return funnel.map((s, i) => {
+                  const pct = Math.round((s.count / max) * 100)
+                  return (
+                    <div key={i} className="flex items-center gap-3">
+                      <span className="text-xs text-gray-600 w-28 truncate">{s.name}</span>
+                      <div className="flex-1 bg-gray-100 rounded h-5 relative">
+                        <div className="bg-indigo-500 rounded h-full transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-sm font-semibold text-gray-900 w-8 text-right">{s.count}</span>
+                    </div>
+                  )
+                })
+              })()}
+            </div>
+          )}
+        </div>
+
+        {/* Doctor load */}
+        <div className="bg-white rounded-xl border border-gray-100 p-5">
+          <h3 className="text-sm font-semibold text-gray-900 mb-4">Загрузка врачей (часы)</h3>
+          {loading ? <Skeleton className="h-36" /> : doctorLoad.length === 0 ? (
+            <p className="text-sm text-gray-400 py-8 text-center">Нет записей</p>
+          ) : (
+            <div className="space-y-2">
+              {(() => {
+                const max = Math.max(...doctorLoad.map(d => d.hours), 1)
+                return doctorLoad.map((d, i) => {
+                  const pct = Math.round((d.hours / max) * 100)
+                  return (
+                    <div key={i} className="flex items-center gap-3">
+                      <span className="text-xs text-gray-600 w-32 truncate">{d.name}</span>
+                      <div className="flex-1 bg-gray-100 rounded h-5 relative">
+                        <div className="bg-teal-500 rounded h-full transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-sm font-semibold text-gray-900 w-14 text-right">{d.hours} ч</span>
+                      <span className="text-xs text-gray-400 w-10 text-right">{d.count}</span>
+                    </div>
+                  )
+                })
+              })()}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Top patients by LTV */}
+      <div className="bg-white rounded-xl border border-gray-100 p-5">
+        <h3 className="text-sm font-semibold text-gray-900 mb-4">Топ-10 пациентов по выручке за период</h3>
+        {loading ? <Skeleton className="h-36" /> : topPatients.length === 0 ? (
+          <p className="text-sm text-gray-400 py-8 text-center">Нет оплат</p>
+        ) : (
+          <div className="space-y-1">
+            {topPatients.map((p, i) => (
+              <div key={i} className="flex items-center justify-between py-1 border-b border-gray-50 last:border-0">
+                <span className="text-sm text-gray-800">
+                  <span className="text-xs text-gray-400 mr-2 font-mono">{String(i + 1).padStart(2, '0')}</span>
+                  {p.name}
+                </span>
+                <span className="text-sm font-semibold text-green-600">{fmt(p.total)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* New patients bar chart */}
