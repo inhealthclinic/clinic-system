@@ -365,6 +365,7 @@ export default function ServicesPage() {
     const { data } = await createClient()
       .from('services')
       .select('*')
+      .is('parent_service_id', null)   // скрываем дочерние аналиты панелей
       .order('category')
       .order('name')
     setServices((data ?? []) as Service[])
