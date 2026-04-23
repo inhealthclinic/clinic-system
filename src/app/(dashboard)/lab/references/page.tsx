@@ -79,6 +79,8 @@ export default function LabReferencesPage() {
   const [form, setForm]               = useState<Partial<RefRange>>({})
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
+  const [seeding, setSeeding]         = useState(false)
+  const [seedMsg, setSeedMsg]         = useState('')
 
   const selected = useMemo(() => services.find(s => s.id === selectedId) ?? null, [services, selectedId])
 
@@ -174,6 +176,19 @@ export default function LabReferencesPage() {
     loadRanges()
   }
 
+  /* ─── Seed: ОАК+СОЭ пресет ─── */
+  const seedOakPanel = async () => {
+    if (!clinicId) return
+    if (!confirm('Создать 25 показателей ОАК+СОЭ в категории «Гематология»?\nУже существующие анализы с такими именами пропустятся.')) return
+    setSeeding(true); setSeedMsg('')
+    const { data, error: err } = await supabase.rpc('seed_oak_panel', { p_clinic_id: clinicId })
+    setSeeding(false)
+    if (err) { setSeedMsg(`Ошибка: ${err.message}`); return }
+    const n = typeof data === 'number' ? data : 0
+    setSeedMsg(n > 0 ? `Создано новых анализов: ${n}` : 'Все 25 показателей уже были в системе')
+    loadServices()
+  }
+
   const delRange = async (id: string) => {
     if (!confirm('Удалить диапазон?')) return
     await supabase.from('reference_ranges').delete().eq('id', id)
@@ -205,9 +220,21 @@ export default function LabReferencesPage() {
           <h2 className="text-sm font-semibold text-gray-900">Анализы</h2>
           <p className="text-xs text-gray-400 mt-0.5">Выберите для настройки референсов</p>
         </div>
-        <div className="p-3 border-b border-gray-100">
+        <div className="p-3 border-b border-gray-100 space-y-2">
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Поиск..." className={inp} />
+          <button
+            onClick={seedOakPanel}
+            disabled={seeding}
+            title="Одним кликом создать 25 показателей клинического анализа крови с СОЭ"
+            className="w-full text-xs font-medium px-3 py-2 rounded-lg bg-purple-50 hover:bg-purple-100 disabled:opacity-60 text-purple-700 border border-purple-200 transition-colors">
+            {seeding ? 'Создаём...' : '✨ Пресет: ОАК+СОЭ (25 показателей)'}
+          </button>
+          {seedMsg && (
+            <p className={`text-[11px] px-2 py-1 rounded ${seedMsg.startsWith('Ошибка') ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>
+              {seedMsg}
+            </p>
+          )}
         </div>
         <div className="max-h-[560px] overflow-auto">
           {loading ? (
