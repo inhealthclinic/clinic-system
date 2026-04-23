@@ -1,0 +1,25 @@
+name: Cron jobs
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  reminders:
+    if: github.event.schedule != '0 6 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.REMINDER_URL }}" | tee r.json
+          grep -q '"ok":true' r.json
+
+  generate-tasks:
+    if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.GENERATE_TASKS_URL }}" | tee g.json
+          grep -q '"ok":true' g.json
