@@ -3874,15 +3874,31 @@ function ImportDealsModal({
   } | null>(null)
 
   // Нормализация заголовков столбцов: кириллица/пробелы/регистр → канонические ключи.
+  // AmoCRM экспортирует с развёрнутыми названиями («Название сделки», «Основной
+  // контакт», «Рабочий телефон» и т.д.) — поддерживаем все распространённые
+  // варианты, чтобы менеджер не правил файл вручную перед импортом.
   const ALIASES: Record<string, string> = {
-    'название': 'name', 'сделка': 'name', 'name': 'name',
-    'пациент': 'patient', 'фио': 'patient', 'patient': 'patient',
-    'телефон': 'phone', 'phone': 'phone', 'tel': 'phone',
+    // name — название сделки
+    'название': 'name', 'название сделки': 'name', 'сделка': 'name', 'name': 'name',
+    // patient — ФИО контакта
+    'пациент': 'patient', 'фио': 'patient', 'полное имя': 'patient',
+    'контакт': 'patient', 'основной контакт': 'patient', 'patient': 'patient',
+    // phone — любой из телефонов amoCRM
+    'телефон': 'phone', 'рабочий телефон': 'phone', 'мобильный': 'phone',
+    'мобильный телефон': 'phone', 'контактный телефон': 'phone',
+    'phone': 'phone', 'tel': 'phone',
+    // city
     'город': 'city', 'city': 'city',
-    'сумма': 'amount', 'amount': 'amount', 'budget': 'amount',
-    'заметка': 'notes', 'комментарий': 'notes', 'notes': 'notes',
+    // amount — сумма/бюджет сделки
+    'сумма': 'amount', 'сумма сделки': 'amount', 'бюджет': 'amount',
+    'стоимость': 'amount', 'amount': 'amount', 'budget': 'amount',
+    // notes — заметка/комментарий/описание
+    'заметка': 'notes', 'примечание': 'notes', 'комментарий': 'notes',
+    'описание': 'notes', 'notes': 'notes',
+    // tags
     'теги': 'tags', 'tags': 'tags',
-    // Внешний ID для upsert при повторном импорте.
+    // external_id — ID сделки во внешней системе, для upsert при повторном импорте.
+    'id': 'external_id', 'id сделки': 'external_id',
     'id amocrm': 'external_id', 'id амо': 'external_id', 'id амокрм': 'external_id',
     'внешний id': 'external_id', 'external_id': 'external_id', 'external id': 'external_id',
   }
