@@ -3974,20 +3974,42 @@ function ImportDealsModal({
   // «Контакт. Имя».
   function resolveHeader(h: string): string {
     if (ALIASES[h]) return ALIASES[h]
-    // external_id — проверяем первым, т.к. "ID контакта" не должно уйти в patient
+    // Сначала отсекаем явно ненужные колонки amoCRM, чтобы они не
+    // ловились по случайной подстроке («Компания контакта» → не patient,
+    // «Дата создания сделки» → не name, «Sendapi телефон» → не phone).
+    if (/^(дата|кем |этап |воронка|ответствен|источник|utm_|roistat|компан|должност|возраст|email|факс|sendapi|instagram|tiktok|telegram|vkontakte|\bref\b|ref source|from$|gcl|_ym|yclid|fbclid|openstat|referrer|birthday|день рожд|тип записи|анкета|причина|врач|соглашение|пол\b)/i.test(h)) {
+      return h
+    }
+    // external_id — первым, чтобы "ID" ушёл сюда, а не в patient через «имя»
     if (/^id$|id.*сделк|id.*amo|amocrm|external/i.test(h)) return 'external_id'
-    if (/телефон|phone|моб\b|мобильн/i.test(h)) return 'phone'
-    if (/контакт|клиент|пациент|\bфио\b|полное имя|имя|фамили/i.test(h)) return 'patient'
-    if (/названи|сделк|title|\bname\b/i.test(h)) return 'name'
-    if (/бюджет|сумма|стоимост|budget|amount|price/i.test(h)) return 'amount'
-    if (/город|city/i.test(h)) return 'city'
-    if (/примечан|коммент|заметк|описани|notes/i.test(h)) return 'notes'
-    if (/тег|tag/i.test(h)) return 'tags'
+    if (/телефон|^phone|phone number|мобильн/i.test(h)) return 'phone'
+    if (/полное имя|\bфио\b|имя контакт|контакт.*имя|фамили|\bклиент\b|\bпациент\b/i.test(h)) return 'patient'
+    if (/назван|^сделка$|^title$|^name$/i.test(h)) return 'name'
+    if (/бюджет|^сумма|стоимост|^budget$|^amount$|^price$/i.test(h)) return 'amount'
+    if (/^город$|^city$/i.test(h)) return 'city'
+    if (/примечан|коммент|заметк|описани|^notes$/i.test(h)) return 'notes'
+    if (/^тег|^tags?$/i.test(h)) return 'tags'
     return h
   }
 
+  // AmoCRM экспортирует CSV в Windows-1251 без BOM — `file.text()` читает
+  // его как UTF-8 и превращает кириллицу в мусор. Определяем кодировку
+  // по BOM / валидности UTF-8 и падаем на cp1251, если UTF-8 невалиден.
+  async function readFileSmart(file: File): Promise<string> {
+    const buf = await file.arrayBuffer()
+    const bytes = new Uint8Array(buf)
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+      return new TextDecoder('utf-8').decode(bytes.subarray(3))
+    }
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      return new TextDecoder('windows-1251').decode(bytes)
+    }
+  }
+
   async function onFile(file: File) {
-    const text = await file.text()
+    const text = await readFileSmart(file)
     const parsed = parseCsv(text)
     setRows(parsed.rows)
     setDetectedHeaders(parsed.headers)
