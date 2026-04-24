@@ -33,7 +33,7 @@ interface MedRecord {
   icd10_code: string | null; diagnosis_text: string | null
   diagnosis_type: 'preliminary' | 'final'
   prescriptions: Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>
-  recommendations: string | null; control_date: string | null
+  recommendations: string | null; treatment_plan: string | null; control_date: string | null
   is_signed: boolean; prescription_number: string | null
 }
 interface ICD10Hit { code: string; name: string }
@@ -256,9 +256,11 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
     bp: '', pulse: '', temperature: '', spo2: '', weight: '', height: '',
     icd10_code: '', icd10_name: '', diagnosis_text: '',
     diagnosis_type: 'preliminary' as 'preliminary' | 'final',
-    recommendations: '', control_date: '',
+    recommendations: '', treatment_plan: '', control_date: '',
     prescriptions: [] as Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>,
   })
+  const [autosaveStatus, setAutosaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
 
   useEffect(() => {
     supabase.from('medical_records').select('*').eq('visit_id', visit.id).maybeSingle()
@@ -278,6 +280,7 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
             diagnosis_text: data.diagnosis_text ?? '',
             diagnosis_type: data.diagnosis_type ?? 'preliminary',
             recommendations: data.recommendations ?? '',
+            treatment_plan: data.treatment_plan ?? '',
             control_date: data.control_date ?? '',
             prescriptions: data.prescriptions ?? [],
           })
@@ -529,6 +532,7 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
       diagnosis_type: form.diagnosis_type,
       prescriptions: form.prescriptions.filter(p => p.drug_name.trim()),
       recommendations: form.recommendations || null,
+      treatment_plan: form.treatment_plan || null,
       control_date: form.control_date || null,
       is_signed: sign,
     }
@@ -541,7 +545,73 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
     }
     setSaving(false)
     setEditing(false)
+    setLastSavedAt(new Date())
+    setAutosaveStatus('saved')
   }
+
+  /* ── Autosave by debounce ───────────────────────────────── */
+  const formRef = useRef(form)
+  formRef.current = form
+  const recordRef = useRef(record)
+  recordRef.current = record
+  const savingRef = useRef(saving)
+  savingRef.current = saving
+  const firstLoadRef = useRef(true)
+
+  useEffect(() => {
+    // Skip initial form load
+    if (firstLoadRef.current) { firstLoadRef.current = false; return }
+    // Don't autosave signed records
+    if (record?.is_signed) return
+    // Don't autosave if nothing to save
+    const f = form
+    const hasContent =
+      f.complaints.trim() || f.anamnesis.trim() || f.objective.trim() ||
+      f.diagnosis_text.trim() || f.icd10_code ||
+      f.recommendations.trim() || f.treatment_plan.trim() ||
+      f.prescriptions.length > 0
+    if (!hasContent) return
+
+    const timer = setTimeout(async () => {
+      if (savingRef.current) return
+      const cur = formRef.current
+      const rec = recordRef.current
+      setAutosaveStatus('saving')
+      const payload = {
+        clinic_id: visit.clinic_id, visit_id: visit.id,
+        patient_id: visit.patient.id, doctor_id: visit.doctor.id,
+        complaints: cur.complaints || null,
+        anamnesis: cur.anamnesis || null,
+        objective: cur.objective || null,
+        vitals: buildVitals(),
+        icd10_code: cur.icd10_code || null,
+        diagnosis_text: cur.diagnosis_text || null,
+        diagnosis_type: cur.diagnosis_type,
+        prescriptions: cur.prescriptions.filter(p => p.drug_name.trim()),
+        recommendations: cur.recommendations || null,
+        treatment_plan: cur.treatment_plan || null,
+        control_date: cur.control_date || null,
+        is_signed: false,
+      }
+      try {
+        if (rec) {
+          const { data, error } = await supabase.from('medical_records').update(payload).eq('id', rec.id).select().single()
+          if (error) throw error
+          if (data) setRecord(data as MedRecord)
+        } else {
+          const { data, error } = await supabase.from('medical_records').insert(payload).select().single()
+          if (error) throw error
+          if (data) setRecord(data as MedRecord)
+        }
+        setLastSavedAt(new Date())
+        setAutosaveStatus('saved')
+      } catch {
+        setAutosaveStatus('error')
+      }
+    }, 1500)
+    return () => clearTimeout(timer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form])
 
   if (loading) return (
     <div className="bg-white rounded-xl border border-gray-100 p-6 mt-4 text-sm text-gray-400 text-center">Загрузка медзаписи...</div>
@@ -1016,16 +1086,26 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
           </div>
         </div>
 
-        {/* Recommendations */}
+        {/* Recommendations + Treatment plan */}
         <div>
           <div className="flex items-center gap-2 mb-3">
             <span className="w-6 h-6 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">P</span>
-            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">План — рекомендации и контроль</p>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">План лечения и рекомендации</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <textarea className={inp + ' resize-none'} rows={2} placeholder="Режим, диета, активность…"
-                value={form.recommendations} onChange={e => setForm(f => ({ ...f, recommendations: e.target.value }))} />
+              <label className="block text-xs text-gray-500 mb-1">План лечения</label>
+              <textarea className={inp + ' resize-none'} rows={3}
+                placeholder="Медикаментозная терапия, процедуры, этапы…"
+                value={form.treatment_plan}
+                onChange={e => setForm(f => ({ ...f, treatment_plan: e.target.value }))} />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Рекомендации</label>
+              <textarea className={inp + ' resize-none'} rows={2}
+                placeholder="Режим, диета, активность…"
+                value={form.recommendations}
+                onChange={e => setForm(f => ({ ...f, recommendations: e.target.value }))} />
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Дата контроля</label>
@@ -1033,6 +1113,17 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
                 onChange={e => setForm(f => ({ ...f, control_date: e.target.value }))} />
             </div>
           </div>
+        </div>
+
+        {/* Autosave status */}
+        <div className="flex items-center justify-end text-xs -mb-1">
+          {autosaveStatus === 'saving' && <span className="text-gray-400">💾 Автосохранение…</span>}
+          {autosaveStatus === 'saved' && lastSavedAt && (
+            <span className="text-green-600">
+              ✓ Сохранено {lastSavedAt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+          {autosaveStatus === 'error' && <span className="text-red-500">⚠ Ошибка автосохранения</span>}
         </div>
 
         {/* Actions */}
