@@ -1015,8 +1015,11 @@ export default function CRMKanbanPage() {
         </div>
       )}
 
-      {/* Плавающая панель действий для массового режима */}
-      {bulkMode && bulkSelected.size > 0 && (
+      {/* Плавающая панель действий для массового режима.
+          Показываем её ВСЕГДА пока режим включён — так видно, что
+          массовый режим активен даже без выбранных сделок; кнопки
+          внутри сами дизейблятся при count=0. */}
+      {bulkMode && (
         <BulkActionBar
           count={bulkSelected.size}
           stages={activeStages}
@@ -3855,6 +3858,10 @@ function BulkActionBar({
   // Локальный стейт для модалок внутри панели — всё inline, без
   // отдельного компонента, чтобы не тащить props через три уровня.
   const [openMenu, setOpenMenu] = useState<null | 'task' | 'tags' | 'field'>(null)
+  // Пока не отмечена ни одна сделка — все action-кнопки неактивны.
+  // Режим уже виден (сама плашка), а в подписи — подсказка.
+  const empty = count === 0
+  const noop = busy || empty
   async function wrap(fn: () => Promise<void>) {
     if (busy) return
     setBusy(true)
@@ -3864,12 +3871,14 @@ function BulkActionBar({
   return (
     <>
       <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 bg-gray-900 text-white rounded-xl shadow-2xl flex items-center gap-2 px-3 py-2">
-        <span className="text-sm font-medium px-1">Выбрано: {count}</span>
+        <span className="text-sm font-medium px-1">
+          {empty ? 'Отметьте сделки галочками' : `Выбрано: ${count}`}
+        </span>
         <div className="w-px h-5 bg-white/20 mx-1" />
 
         <button
           type="button"
-          disabled={busy}
+          disabled={noop}
           onClick={() => setOpenMenu('task')}
           className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
         >
@@ -3877,7 +3886,7 @@ function BulkActionBar({
         </button>
 
         <select
-          disabled={busy}
+          disabled={noop}
           defaultValue=""
           onChange={e => {
             const v = e.target.value
@@ -3892,7 +3901,7 @@ function BulkActionBar({
 
         <button
           type="button"
-          disabled={busy}
+          disabled={noop}
           onClick={() => setOpenMenu('field')}
           className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
         >
@@ -3901,7 +3910,7 @@ function BulkActionBar({
 
         <button
           type="button"
-          disabled={busy}
+          disabled={noop}
           onClick={() => setOpenMenu('tags')}
           className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
         >
@@ -3909,7 +3918,7 @@ function BulkActionBar({
         </button>
 
         <select
-          disabled={busy}
+          disabled={noop}
           defaultValue=""
           onChange={e => {
             const v = e.target.value
@@ -3926,7 +3935,7 @@ function BulkActionBar({
 
         <button
           type="button"
-          disabled={busy}
+          disabled={noop}
           onClick={() => wrap(onDelete)}
           className="text-xs px-2.5 py-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-60"
         >
