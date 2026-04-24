@@ -1046,6 +1046,69 @@ export default function CRMKanbanPage() {
             setBulkSelected(new Set())
             load()
           }}
+          onAddTask={async ({ title, dueAt, assignedTo }) => {
+            // Одна задача на каждую выбранную сделку. patient_id копируем
+            // из сделки, чтобы задача показывалась и в карточке пациента.
+            const ids = Array.from(bulkSelected)
+            const selectedDeals = deals.filter(d => ids.includes(d.id))
+            const payload = selectedDeals.map(d => ({
+              clinic_id: clinicId,
+              title,
+              due_at: dueAt,
+              assigned_to: assignedTo ?? d.responsible_user_id ?? profile?.id ?? null,
+              created_by: profile?.id ?? null,
+              deal_id: d.id,
+              patient_id: d.patient_id ?? null,
+              type: 'follow_up',
+              priority: 'normal',
+              status: 'new',
+            }))
+            const { error } = await supabase.from('tasks').insert(payload)
+            if (error) { alert(error.message); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onEditTags={async ({ addList, removeList, replaceList }) => {
+            const ids = Array.from(bulkSelected)
+            const selectedDeals = deals.filter(d => ids.includes(d.id))
+            // Обновляем каждую сделку отдельно — у каждой свой текущий
+            // набор tags, простого UPDATE массовым SQL не сделать.
+            for (const d of selectedDeals) {
+              let next: string[]
+              if (replaceList) {
+                next = replaceList
+              } else {
+                const cur = new Set(d.tags ?? [])
+                for (const t of addList ?? []) cur.add(t)
+                for (const t of removeList ?? []) cur.delete(t)
+                next = Array.from(cur)
+              }
+              const { error } = await supabase.from('deals').update({ tags: next }).eq('id', d.id)
+              if (error) { alert(error.message); return }
+            }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onEditField={async ({ field, value }) => {
+            const ids = Array.from(bulkSelected)
+            const patch: Record<string, unknown> = {}
+            if (field === 'amount') {
+              const num = value === '' || value == null ? null : Number(value)
+              if (value !== '' && value != null && Number.isNaN(num)) { alert('Сумма должна быть числом'); return }
+              patch.amount = num
+            } else if (field === 'source_id') {
+              patch.source_id = value || null
+            } else if (field === 'city') {
+              patch.contact_city = value || null
+            } else {
+              alert('Неизвестное поле'); return
+            }
+            const { error } = await supabase.from('deals').update(patch).in('id', ids)
+            if (error) { alert(error.message); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          sources={sources}
         />
       )}
 
@@ -3767,77 +3830,374 @@ function BulkActionBar({
   count,
   stages,
   users,
+  sources,
   onMoveStage,
   onAssign,
   onDelete,
+  onAddTask,
+  onEditTags,
+  onEditField,
   onCancel,
 }: {
   count: number
   stages: Stage[]
   users: UserLite[]
+  sources: Array<{ id: string; name: string }>
   onMoveStage: (stageId: string) => Promise<void>
   onAssign: (userId: string) => Promise<void>
   onDelete: () => Promise<void>
+  onAddTask: (p: { title: string; dueAt: string | null; assignedTo: string | null }) => Promise<void>
+  onEditTags: (p: { addList?: string[]; removeList?: string[]; replaceList?: string[] }) => Promise<void>
+  onEditField: (p: { field: 'amount' | 'source_id' | 'city'; value: string | null }) => Promise<void>
   onCancel: () => void
 }) {
   const [busy, setBusy] = useState(false)
+  // Локальный стейт для модалок внутри панели — всё inline, без
+  // отдельного компонента, чтобы не тащить props через три уровня.
+  const [openMenu, setOpenMenu] = useState<null | 'task' | 'tags' | 'field'>(null)
   async function wrap(fn: () => Promise<void>) {
     if (busy) return
     setBusy(true)
     try { await fn() } finally { setBusy(false) }
   }
+
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 bg-gray-900 text-white rounded-xl shadow-2xl flex items-center gap-2 px-3 py-2">
-      <span className="text-sm font-medium px-1">Выбрано: {count}</span>
-      <div className="w-px h-5 bg-white/20 mx-1" />
+    <>
+      <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 bg-gray-900 text-white rounded-xl shadow-2xl flex items-center gap-2 px-3 py-2">
+        <span className="text-sm font-medium px-1">Выбрано: {count}</span>
+        <div className="w-px h-5 bg-white/20 mx-1" />
 
-      <select
-        disabled={busy}
-        defaultValue=""
-        onChange={e => {
-          const v = e.target.value
-          e.currentTarget.value = ''
-          if (v) wrap(() => onMoveStage(v))
-        }}
-        className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
-      >
-        <option value="" disabled>→ В этап</option>
-        {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-      </select>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setOpenMenu('task')}
+          className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
+        >
+          + Задача
+        </button>
 
-      <select
-        disabled={busy}
-        defaultValue=""
-        onChange={e => {
-          const v = e.target.value
-          e.currentTarget.value = ''
-          if (v) wrap(() => onAssign(v))
-        }}
-        className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
-      >
-        <option value="" disabled>Ответственный</option>
-        {users.map(u => (
-          <option key={u.id} value={u.id}>{`${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()}</option>
-        ))}
-      </select>
+        <select
+          disabled={busy}
+          defaultValue=""
+          onChange={e => {
+            const v = e.target.value
+            e.currentTarget.value = ''
+            if (v) wrap(() => onMoveStage(v))
+          }}
+          className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+        >
+          <option value="" disabled>Изм. этап</option>
+          {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
 
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => wrap(onDelete)}
-        className="text-xs px-2.5 py-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-60"
-      >
-        Удалить
-      </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setOpenMenu('field')}
+          className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
+        >
+          Изм. поле
+        </button>
 
-      <div className="w-px h-5 bg-white/20 mx-1" />
-      <button
-        type="button"
-        onClick={onCancel}
-        className="text-xs px-2 py-1.5 rounded hover:bg-white/10"
-      >
-        Отмена
-      </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setOpenMenu('tags')}
+          className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
+        >
+          Ред. теги
+        </button>
+
+        <select
+          disabled={busy}
+          defaultValue=""
+          onChange={e => {
+            const v = e.target.value
+            e.currentTarget.value = ''
+            if (v) wrap(() => onAssign(v))
+          }}
+          className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+        >
+          <option value="" disabled>Ответственный</option>
+          {users.map(u => (
+            <option key={u.id} value={u.id}>{`${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()}</option>
+          ))}
+        </select>
+
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => wrap(onDelete)}
+          className="text-xs px-2.5 py-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-60"
+        >
+          Удалить
+        </button>
+
+        <div className="w-px h-5 bg-white/20 mx-1" />
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs px-2 py-1.5 rounded hover:bg-white/10"
+        >
+          Отмена
+        </button>
+      </div>
+
+      {openMenu === 'task' && (
+        <BulkAddTaskModal
+          count={count}
+          users={users}
+          onCancel={() => setOpenMenu(null)}
+          onConfirm={async (p) => { setOpenMenu(null); await wrap(() => onAddTask(p)) }}
+        />
+      )}
+      {openMenu === 'tags' && (
+        <BulkEditTagsModal
+          count={count}
+          onCancel={() => setOpenMenu(null)}
+          onConfirm={async (p) => { setOpenMenu(null); await wrap(() => onEditTags(p)) }}
+        />
+      )}
+      {openMenu === 'field' && (
+        <BulkEditFieldModal
+          count={count}
+          sources={sources}
+          onCancel={() => setOpenMenu(null)}
+          onConfirm={async (p) => { setOpenMenu(null); await wrap(() => onEditField(p)) }}
+        />
+      )}
+    </>
+  )
+}
+
+// ─── Модалки массовых действий ────────────────────────────────────────────────
+
+function BulkAddTaskModal({
+  count, users, onCancel, onConfirm,
+}: {
+  count: number
+  users: UserLite[]
+  onCancel: () => void
+  onConfirm: (p: { title: string; dueAt: string | null; assignedTo: string | null }) => void
+}) {
+  const [title, setTitle] = useState('')
+  const [due, setDue] = useState('')
+  const [assignedTo, setAssignedTo] = useState<string>('')
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Добавить задачу в {count} сделок</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <label className="block">
+            <span className="text-gray-600">Название</span>
+            <input
+              autoFocus
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+              placeholder="Например: Перезвонить"
+            />
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Срок (необязательно)</span>
+            <input
+              type="datetime-local"
+              value={due}
+              onChange={e => setDue(e.target.value)}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+            />
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Ответственный за задачу</span>
+            <select
+              value={assignedTo}
+              onChange={e => setAssignedTo(e.target.value)}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+            >
+              <option value="">— как у сделки —</option>
+              {users.map(u => (
+                <option key={u.id} value={u.id}>
+                  {`${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded border border-gray-200 text-gray-600 hover:bg-gray-50">Отмена</button>
+          <button
+            disabled={!title.trim()}
+            onClick={() => onConfirm({
+              title: title.trim(),
+              dueAt: due ? new Date(due).toISOString() : null,
+              assignedTo: assignedTo || null,
+            })}
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
+          >
+            Создать {count} задач
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BulkEditTagsModal({
+  count, onCancel, onConfirm,
+}: {
+  count: number
+  onCancel: () => void
+  onConfirm: (p: { addList?: string[]; removeList?: string[]; replaceList?: string[] }) => void
+}) {
+  const [mode, setMode] = useState<'merge' | 'replace'>('merge')
+  const [addRaw, setAddRaw] = useState('')
+  const [removeRaw, setRemoveRaw] = useState('')
+  const [replaceRaw, setReplaceRaw] = useState('')
+  const parse = (s: string) => s.split(/[,;]/).map(t => t.trim()).filter(Boolean)
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Теги для {count} сделок</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <div className="flex items-center gap-4 text-xs">
+            <label className="flex items-center gap-1">
+              <input type="radio" checked={mode === 'merge'} onChange={() => setMode('merge')} />
+              Добавить / удалить
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} />
+              Заменить целиком
+            </label>
+          </div>
+          {mode === 'merge' ? (
+            <>
+              <label className="block">
+                <span className="text-gray-600">Добавить теги (через запятую)</span>
+                <input
+                  value={addRaw}
+                  onChange={e => setAddRaw(e.target.value)}
+                  className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                  placeholder="vip, повторный"
+                />
+              </label>
+              <label className="block">
+                <span className="text-gray-600">Удалить теги (через запятую)</span>
+                <input
+                  value={removeRaw}
+                  onChange={e => setRemoveRaw(e.target.value)}
+                  className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                  placeholder="холодный"
+                />
+              </label>
+            </>
+          ) : (
+            <label className="block">
+              <span className="text-gray-600">Новый набор тегов (через запятую)</span>
+              <input
+                value={replaceRaw}
+                onChange={e => setReplaceRaw(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                placeholder="vip, чекап"
+              />
+            </label>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded border border-gray-200 text-gray-600 hover:bg-gray-50">Отмена</button>
+          <button
+            onClick={() => {
+              if (mode === 'replace') onConfirm({ replaceList: parse(replaceRaw) })
+              else onConfirm({ addList: parse(addRaw), removeList: parse(removeRaw) })
+            }}
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            Применить
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BulkEditFieldModal({
+  count, sources, onCancel, onConfirm,
+}: {
+  count: number
+  sources: Array<{ id: string; name: string }>
+  onCancel: () => void
+  onConfirm: (p: { field: 'amount' | 'source_id' | 'city'; value: string | null }) => void
+}) {
+  const [field, setField] = useState<'amount' | 'source_id' | 'city'>('amount')
+  const [value, setValue] = useState('')
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Изменить поле в {count} сделках</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <label className="block">
+            <span className="text-gray-600">Поле</span>
+            <select
+              value={field}
+              onChange={e => { setField(e.target.value as typeof field); setValue('') }}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+            >
+              <option value="amount">Сумма</option>
+              <option value="source_id">Источник</option>
+              <option value="city">Город</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Новое значение</span>
+            {field === 'source_id' ? (
+              <select
+                value={value}
+                onChange={e => setValue(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+              >
+                <option value="">— очистить —</option>
+                {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            ) : field === 'amount' ? (
+              <input
+                type="number"
+                step="0.01"
+                value={value}
+                onChange={e => setValue(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                placeholder="Пусто = очистить"
+              />
+            ) : (
+              <input
+                value={value}
+                onChange={e => setValue(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                placeholder="Пусто = очистить"
+              />
+            )}
+          </label>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded border border-gray-200 text-gray-600 hover:bg-gray-50">Отмена</button>
+          <button
+            onClick={() => onConfirm({ field, value: value || null })}
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            Применить
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
