@@ -3924,8 +3924,17 @@ function ImportDealsModal({
     headers: { raw: string; mapped: string }[]
   } {
     // Простой CSV parser: ; или , как разделитель, двойные кавычки.
-    const firstLine = text.split(/\r?\n/, 1)[0] ?? ''
-    const delim = (firstLine.match(/;/g)?.length ?? 0) >= (firstLine.match(/,/g)?.length ?? 0) ? ';' : ','
+    // AmoCRM умудряется класть разные разделители в заголовок и в тело
+    // (заголовок через «,», данные через «;»). Поэтому детектим по
+    // нескольким непустым строкам, а не только по первой: побеждает тот
+    // символ, который чаще встречается вне кавычек во всём образце.
+    const sample = text.split(/\r?\n/).slice(0, 20).join('\n')
+    // Грубо убираем содержимое кавычек, чтобы в счёт не попали запятые
+    // внутри полей вида "Иванов, Иван".
+    const stripped = sample.replace(/"[^"]*"/g, '')
+    const semi = (stripped.match(/;/g)?.length ?? 0)
+    const comma = (stripped.match(/,/g)?.length ?? 0)
+    const delim = semi >= comma ? ';' : ','
     const lines: string[][] = []
     let cur: string[] = []
     let cell = ''
