@@ -1315,6 +1315,87 @@ export default function PatientCardPage() {
                   </div>
                 </div>
 
+                {/* Dynamics chart: shown when single analyte is selected */}
+                {resFilterService && (() => {
+                  const points = filtered
+                    .filter(r => r.result_value !== null && !isNaN(Number(r.result_value)))
+                    .map(r => ({
+                      t: new Date(r.result_date).getTime(),
+                      v: Number(r.result_value),
+                      flag: r.flag,
+                      min: r.reference_min,
+                      max: r.reference_max,
+                      unit: r.unit_snapshot,
+                      name: r.service_name_snapshot,
+                    }))
+                    .sort((a, b) => a.t - b.t)
+                  if (points.length < 2) return null
+                  const W = 640, H = 160, PL = 40, PR = 12, PT = 16, PB = 24
+                  const iw = W - PL - PR, ih = H - PT - PB
+                  const tMin = points[0].t, tMax = points[points.length - 1].t
+                  const refMin = points[0].min, refMax = points[0].max
+                  const values = points.map(p => p.v)
+                  let vMin = Math.min(...values), vMax = Math.max(...values)
+                  if (refMin != null) vMin = Math.min(vMin, Number(refMin))
+                  if (refMax != null) vMax = Math.max(vMax, Number(refMax))
+                  if (vMin === vMax) { vMin -= 1; vMax += 1 }
+                  const pad = (vMax - vMin) * 0.1
+                  vMin -= pad; vMax += pad
+                  const xOf = (t: number) => PL + (tMax === tMin ? iw / 2 : ((t - tMin) / (tMax - tMin)) * iw)
+                  const yOf = (v: number) => PT + ih - ((v - vMin) / (vMax - vMin)) * ih
+                  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xOf(p.t).toFixed(1)},${yOf(p.v).toFixed(1)}`).join(' ')
+                  const unit = points[0].unit ? ` ${points[0].unit}` : ''
+                  return (
+                    <div className="bg-white rounded-xl border border-gray-100 p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-sm font-semibold text-gray-900">📈 Динамика: {points[0].name}</h3>
+                        <span className="text-xs text-gray-400">{points.length} значен{points.length === 1 ? 'ие' : points.length < 5 ? 'ия' : 'ий'}</span>
+                      </div>
+                      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-40">
+                        {/* Reference band */}
+                        {refMin != null && refMax != null && (
+                          <rect x={PL} y={yOf(Number(refMax))} width={iw}
+                            height={Math.max(0, yOf(Number(refMin)) - yOf(Number(refMax)))}
+                            fill="#dcfce7" opacity="0.5" />
+                        )}
+                        {/* Axes */}
+                        <line x1={PL} y1={PT} x2={PL} y2={PT + ih} stroke="#e5e7eb" />
+                        <line x1={PL} y1={PT + ih} x2={PL + iw} y2={PT + ih} stroke="#e5e7eb" />
+                        {/* Y labels */}
+                        <text x={PL - 4} y={PT + 4} textAnchor="end" fontSize="10" fill="#9ca3af">{vMax.toFixed(1)}</text>
+                        <text x={PL - 4} y={PT + ih} textAnchor="end" fontSize="10" fill="#9ca3af">{vMin.toFixed(1)}</text>
+                        {refMin != null && (
+                          <text x={PL - 4} y={yOf(Number(refMin)) + 3} textAnchor="end" fontSize="9" fill="#16a34a">{refMin}</text>
+                        )}
+                        {refMax != null && (
+                          <text x={PL - 4} y={yOf(Number(refMax)) + 3} textAnchor="end" fontSize="9" fill="#16a34a">{refMax}</text>
+                        )}
+                        {/* Line */}
+                        <path d={path} fill="none" stroke="#3b82f6" strokeWidth="1.5" />
+                        {/* Points */}
+                        {points.map((p, i) => {
+                          const color = p.flag === 'high' || p.flag === 'critical' ? '#ea580c'
+                                      : p.flag === 'low' ? '#2563eb'
+                                      : '#16a34a'
+                          return (
+                            <g key={i}>
+                              <circle cx={xOf(p.t)} cy={yOf(p.v)} r="3.5" fill={color} />
+                              <title>{new Date(p.t).toLocaleDateString('ru-RU')}: {p.v}{unit}</title>
+                            </g>
+                          )
+                        })}
+                        {/* X labels (first + last) */}
+                        <text x={PL} y={H - 6} fontSize="10" fill="#9ca3af">
+                          {new Date(tMin).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' })}
+                        </text>
+                        <text x={PL + iw} y={H - 6} textAnchor="end" fontSize="10" fill="#9ca3af">
+                          {new Date(tMax).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' })}
+                        </text>
+                      </svg>
+                    </div>
+                  )
+                })()}
+
                 {/* List */}
                 {labResultsLoading ? (
                   <div className="bg-white rounded-xl border border-gray-100 p-8 text-center text-sm text-gray-400">

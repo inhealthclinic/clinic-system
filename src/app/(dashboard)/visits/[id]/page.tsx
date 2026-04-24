@@ -571,7 +571,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
 
         {/* Vitals */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Объективные данные</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold flex items-center justify-center">O</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Объективно — витальные и осмотр</p>
+          </div>
           <div className="grid grid-cols-3 gap-3">
             {[
               { key: 'bp', label: 'АД (сист/диаст)', placeholder: '120/80' },
@@ -593,7 +596,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
 
         {/* Subjective */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Субъективно</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center">S</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Субъективно — жалобы и анамнез</p>
+          </div>
           <div className="space-y-3">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Жалобы</label>
@@ -615,7 +621,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
 
         {/* Diagnosis */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Диагноз</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex items-center justify-center">A</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Оценка — диагноз</p>
+          </div>
           <div className="space-y-3">
             <div className="relative">
               <label className="block text-xs text-gray-500 mb-1">МКБ-10 (поиск по коду или названию)</label>
@@ -657,7 +666,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
         {/* Prescriptions */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Назначения</p>
+            <div className="flex items-center gap-2">
+              <span className="w-6 h-6 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">P</span>
+              <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">План — назначения</p>
+            </div>
             <button type="button" onClick={addPrescription}
               className="text-xs text-blue-600 hover:text-blue-700 font-medium">
               + Добавить
@@ -703,7 +715,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
 
         {/* Recommendations */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Рекомендации</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">P</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">План — рекомендации и контроль</p>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <textarea className={inp + ' resize-none'} rows={2} placeholder="Режим, диета, активность…"
