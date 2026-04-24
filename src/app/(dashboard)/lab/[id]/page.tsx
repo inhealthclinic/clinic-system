@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -235,6 +235,9 @@ function ResultsForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [prevResult, setPrevResult] = useState<ResultEntry[] | null>(null)
+  const [attachments, setAttachments] = useState<{ url: string; caption: string }[]>([])
+  const [uploadingImg, setUploadingImg] = useState(false)
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([])
 
   useEffect(() => {
     if (!item.template_id) return
@@ -254,7 +257,57 @@ function ResultsForm({
   const setValue = (name: string, val: string) =>
     setValues(prev => ({ ...prev, [name]: val }))
 
-  const handleSave = async () => {
+  const { profile } = useAuthStore()
+
+  // Tab/Enter — перейти к следующему полю
+  const handleKey = (idx: number) => (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' || (e.key === 'Tab' && !e.shiftKey)) {
+      const next = inputRefs.current[idx + 1]
+      if (next) {
+        e.preventDefault()
+        next.focus()
+        next.select()
+      }
+    }
+  }
+
+  // Вставка из Excel/таблицы: значения через \n или \t → разложить по полям
+  const handlePaste = (startIdx: number) => (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData('text')
+    if (!text || !/[\n\t]/.test(text.trim())) return
+    e.preventDefault()
+    const parts = text.trim().split(/[\n\t]+/).map(s => s.trim()).filter(Boolean)
+    setValues(prev => {
+      const next = { ...prev }
+      parts.forEach((v, i) => {
+        const p = parameters[startIdx + i]
+        if (p) next[p.name] = v
+      })
+      return next
+    })
+  }
+
+  // Загрузка фото в Supabase Storage (bucket 'lab-attachments')
+  const handleImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingImg(true)
+    setError('')
+    const path = `${clinicId}/${item.order_id}/${item.id}/${Date.now()}_${file.name}`
+    const { error: upErr } = await supabase.storage
+      .from('lab-attachments').upload(path, file, { upsert: false })
+    if (upErr) {
+      setError('Загрузка: ' + upErr.message)
+      setUploadingImg(false)
+      return
+    }
+    const { data } = supabase.storage.from('lab-attachments').getPublicUrl(path)
+    setAttachments(prev => [...prev, { url: data.publicUrl, caption: file.name }])
+    setUploadingImg(false)
+    e.target.value = ''
+  }
+
+  const doSave = async (verify: boolean) => {
     if (parameters.length === 0) {
       setError('Нет параметров для ввода')
       return
@@ -294,14 +347,23 @@ function ResultsForm({
       return
     }
 
-    await supabase
-      .from('lab_order_items')
-      .update({ status: 'completed' })
-      .eq('id', item.id)
+    const patch: Record<string, unknown> = {
+      status: verify ? 'verified' : 'completed',
+      attachments,
+    }
+    if (verify) {
+      patch.verified_at = new Date().toISOString()
+      patch.verified_by = profile?.id ?? null
+    }
+
+    await supabase.from('lab_order_items').update(patch).eq('id', item.id)
 
     setSaving(false)
     onSaved()
   }
+
+  const handleSaveDraft  = () => doSave(false)
+  const handleVerify     = () => doSave(true)
 
   const inp =
     'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
@@ -318,24 +380,45 @@ function ResultsForm({
     <div className="mt-3 border border-blue-100 rounded-xl bg-blue-50/30 p-4 space-y-4">
       <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Ввод результатов</p>
 
+      <p className="text-[11px] text-gray-500 -mt-2">
+        💡 Tab / Enter — перейти к следующему полю · Вставьте столбец из Excel в первое поле — разложится по всем
+      </p>
+
       <div className="space-y-3">
-        {parameters.map(p => {
+        {parameters.map((p, idx) => {
           const val = values[p.name] ?? ''
           const flag = val !== '' ? calcFlagWithGender(val, p, patientGender) : null
           const prevVal = prevResult?.find(r => r.parameter === p.name)
+          const flagRing: Record<string, string> = {
+            normal:   'border-green-300 bg-green-50',
+            low:      'border-blue-300 bg-blue-50 text-blue-800',
+            high:     'border-orange-300 bg-orange-50 text-orange-800',
+            critical: 'border-red-400 bg-red-50 text-red-800 font-semibold ring-2 ring-red-200',
+          }
+          const flagArrow: Record<string, string> = { low: '↓', high: '↑', critical: '‼' }
           return (
             <div key={p.name} className="flex items-center gap-3">
               <div className="flex-1">
                 <label className="block text-xs text-gray-500 mb-1">{p.name}</label>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    step="any"
-                    value={val}
-                    onChange={e => setValue(p.name, e.target.value)}
-                    className={inp}
-                    placeholder="Значение"
-                  />
+                  <div className="relative flex-1">
+                    <input
+                      ref={el => { inputRefs.current[idx] = el }}
+                      type="number"
+                      step="any"
+                      value={val}
+                      onChange={e => setValue(p.name, e.target.value)}
+                      onKeyDown={handleKey(idx)}
+                      onPaste={handlePaste(idx)}
+                      className={`w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition ${flag ? flagRing[flag] : 'border-gray-200'}`}
+                      placeholder="Значение"
+                    />
+                    {flag && flag !== 'normal' && (
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-sm font-bold pointer-events-none">
+                        {flagArrow[flag]}
+                      </span>
+                    )}
+                  </div>
                   {p.unit && <span className="text-xs text-gray-400 whitespace-nowrap">{p.unit}</span>}
                 </div>
               </div>
@@ -388,13 +471,50 @@ function ResultsForm({
         </p>
       )}
 
-      <div className="flex justify-end">
+      {/* Вложения (фото мазка/геля/скан) */}
+      <div>
+        <div className="flex items-center gap-3 mb-2">
+          <label className="text-xs font-medium text-gray-500">Вложения (фото мазка, геля, скан)</label>
+          <label className="text-xs text-blue-600 hover:text-blue-800 cursor-pointer">
+            {uploadingImg ? 'Загрузка…' : '+ Добавить'}
+            <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handleImage} disabled={uploadingImg} />
+          </label>
+        </div>
+        {attachments.length > 0 && (
+          <div className="flex gap-2 flex-wrap">
+            {attachments.map((a, i) => (
+              <div key={i} className="relative group">
+                <a href={a.url} target="_blank" rel="noopener noreferrer">
+                  {a.url.match(/\.(jpe?g|png|gif|webp)$/i)
+                    ? <img src={a.url} className="h-20 w-20 object-cover rounded-lg border border-gray-200" alt={a.caption} />
+                    : <div className="h-20 w-20 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center text-xs text-gray-400">PDF</div>}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))}
+                  className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition">
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-end gap-2">
         <button
-          onClick={handleSave}
+          onClick={handleSaveDraft}
           disabled={saving}
-          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-700 text-sm font-medium rounded-lg transition-colors"
         >
-          {saving ? 'Сохранение...' : 'Сохранить результаты'}
+          {saving ? '...' : 'Сохранить черновик'}
+        </button>
+        <button
+          onClick={handleVerify}
+          disabled={saving}
+          className="px-5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          {saving ? 'Сохранение...' : 'Верифицировать и отправить'}
         </button>
       </div>
     </div>
