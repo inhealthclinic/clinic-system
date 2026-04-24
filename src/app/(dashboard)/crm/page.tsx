@@ -3861,6 +3861,9 @@ function ImportDealsModal({
   const supabase = useMemo(() => createClient(), [])
   const [rows, setRows] = useState<Record<string, string>[]>([])
   const [fileName, setFileName] = useState<string>('')
+  const [detectedHeaders, setDetectedHeaders] = useState<
+    { raw: string; mapped: string }[]
+  >([])
   const [busy, setBusy] = useState(false)
   const [report, setReport] = useState<{
     total: number
@@ -3916,7 +3919,10 @@ function ImportDealsModal({
     return (raw ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
   }
 
-  function parseCsv(text: string): Record<string, string>[] {
+  function parseCsv(text: string): {
+    rows: Record<string, string>[]
+    headers: { raw: string; mapped: string }[]
+  } {
     // Простой CSV parser: ; или , как разделитель, двойные кавычки.
     const firstLine = text.split(/\r?\n/, 1)[0] ?? ''
     const delim = (firstLine.match(/;/g)?.length ?? 0) >= (firstLine.match(/,/g)?.length ?? 0) ? ';' : ','
@@ -3939,22 +3945,52 @@ function ImportDealsModal({
       }
     }
     if (cell.length || cur.length) { cur.push(cell); lines.push(cur) }
-    if (lines.length === 0) return []
-    const headers = (lines.shift() ?? []).map(h =>
-      ALIASES[h.trim().toLowerCase().replace(/^\uFEFF/, '')] ?? h.trim().toLowerCase()
+    if (lines.length === 0) return { rows: [], headers: [] }
+    const rawHeaders = (lines.shift() ?? []).map(h =>
+      h.trim().toLowerCase().replace(/^\uFEFF/, '')
     )
-    return lines
+    const headers = rawHeaders.map(resolveHeader)
+    const parsed = lines
       .filter(r => r.some(c => c.trim().length > 0))
       .map(r => {
         const obj: Record<string, string> = {}
-        headers.forEach((h, i) => { obj[h] = (r[i] ?? '').trim() })
+        headers.forEach((h, i) => {
+          // Если несколько CSV-колонок мапятся в один канонический ключ
+          // (например «Контакт. Имя» и «Контакт. Фамилия» → patient),
+          // склеиваем через пробел, чтобы не потерять данные.
+          const val = (r[i] ?? '').trim()
+          if (!val) return
+          obj[h] = obj[h] ? `${obj[h]} ${val}`.trim() : val
+        })
         return obj
       })
+    const mapping = rawHeaders.map((raw, i) => ({ raw, mapped: headers[i] }))
+    return { rows: parsed, headers: mapping }
+  }
+
+  // Определяем канонический ключ колонки. Сначала точное совпадение по
+  // ALIASES, потом — нечёткий матчинг по подстроке, чтобы поймать
+  // развёрнутые заголовки amoCRM вида «Рабочий телефон контакта» или
+  // «Контакт. Имя».
+  function resolveHeader(h: string): string {
+    if (ALIASES[h]) return ALIASES[h]
+    // external_id — проверяем первым, т.к. "ID контакта" не должно уйти в patient
+    if (/^id$|id.*сделк|id.*amo|amocrm|external/i.test(h)) return 'external_id'
+    if (/телефон|phone|моб\b|мобильн/i.test(h)) return 'phone'
+    if (/контакт|клиент|пациент|\bфио\b|полное имя|имя|фамили/i.test(h)) return 'patient'
+    if (/названи|сделк|title|\bname\b/i.test(h)) return 'name'
+    if (/бюджет|сумма|стоимост|budget|amount|price/i.test(h)) return 'amount'
+    if (/город|city/i.test(h)) return 'city'
+    if (/примечан|коммент|заметк|описани|notes/i.test(h)) return 'notes'
+    if (/тег|tag/i.test(h)) return 'tags'
+    return h
   }
 
   async function onFile(file: File) {
     const text = await file.text()
-    setRows(parseCsv(text))
+    const parsed = parseCsv(text)
+    setRows(parsed.rows)
+    setDetectedHeaders(parsed.headers)
     setFileName(file.name)
     setReport(null)
   }
@@ -4146,6 +4182,36 @@ function ImportDealsModal({
               Файл: <span className="text-gray-800">{fileName}</span> · распознано строк: <b>{rows.length}</b>
             </div>
           )}
+          {detectedHeaders.length > 0 && !report && (() => {
+            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags']
+            const mappedSet = new Set(detectedHeaders.map(h => h.mapped))
+            const missingCritical = ['name', 'patient', 'phone'].filter(k => !mappedSet.has(k))
+            return (
+              <div className="text-xs border border-gray-100 rounded-md p-2 bg-gray-50">
+                <div className="text-gray-700 font-medium mb-1">Распознанные колонки:</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+                  {detectedHeaders.map((h, i) => {
+                    const isCanonical = canonical.includes(h.mapped)
+                    return (
+                      <div key={i} className="flex items-center gap-1 text-gray-600">
+                        <span className="truncate max-w-[140px]" title={h.raw}>«{h.raw}»</span>
+                        <span className="text-gray-400">→</span>
+                        <span className={isCanonical ? 'text-green-700 font-mono' : 'text-gray-400 font-mono'}>
+                          {isCanonical ? h.mapped : '—'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {missingCritical.length > 0 && (
+                  <div className="mt-2 text-amber-700">
+                    Не найдены колонки: <b>{missingCritical.join(', ')}</b>.
+                    Строки без этих полей будут пропущены.
+                  </div>
+                )}
+              </div>
+            )
+          })()}
           {rows.length > 0 && !report && (
             <div className="border border-gray-100 rounded-md overflow-hidden max-h-56 overflow-y-auto">
               <table className="w-full text-xs">
