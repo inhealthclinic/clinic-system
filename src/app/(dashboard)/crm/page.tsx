@@ -174,6 +174,27 @@ export default function CRMKanbanPage() {
   // Поиск по воронке: имя сделки / пациента / телефон / тег / город / заметка.
   const [listSearch, setListSearch] = useState('')
 
+  // Фильтр «Только мои / Все сделки» — разделение видимости между
+  // менеджерами. По умолчанию manager видит только свои сделки
+  // (responsible_user_id = profile.id); admin/owner — все.
+  // Выбор запоминается в localStorage.
+  const roleSlug = profile?.role?.slug ?? ''
+  const isManagerOnly = roleSlug === 'manager'
+  const [ownerFilter, setOwnerFilter] = useState<'mine' | 'all'>(
+    isManagerOnly ? 'mine' : 'all'
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const v = window.localStorage.getItem('crm.ownerFilter')
+    if (v === 'mine' || v === 'all') setOwnerFilter(v)
+    else setOwnerFilter(isManagerOnly ? 'mine' : 'all')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roleSlug])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('crm.ownerFilter', ownerFilter)
+  }, [ownerFilter])
+
   // Сортировка карточек внутри этапа и в таблице. Как в амоCRM — список
   // опций + направление ↑/↓. Выбор запоминаем в localStorage.
   type SortField = 'updated_at' | 'stage_entered_at' | 'created_at' | 'name' | 'amount'
@@ -283,9 +304,9 @@ export default function CRMKanbanPage() {
   const load = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
-    const [p, d, r, ls, up, doc, cl] = await Promise.all([
-      supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
-      supabase.from('deals').select(`
+    // Базовый запрос сделок. При ownerFilter='mine' ограничиваем по
+    // responsible_user_id на стороне БД (не в памяти).
+    let dealsQuery = supabase.from('deals').select(`
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
         responsible_user_id, source_id, amount,
         preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
@@ -294,7 +315,14 @@ export default function CRMKanbanPage() {
         patient:patients(id, full_name, phones, birth_date, city),
         responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
         doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
-      `).eq('clinic_id', clinicId).is('deleted_at', null).order('stage_entered_at', { ascending: false }).limit(1000),
+      `).eq('clinic_id', clinicId).is('deleted_at', null)
+    if (ownerFilter === 'mine' && profile?.id) {
+      dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
+    }
+    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(1000)
+    const [p, d, r, ls, up, doc, cl] = await Promise.all([
+      supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
+      dealsQuery,
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
@@ -325,7 +353,7 @@ export default function CRMKanbanPage() {
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
-  }, [clinicId, supabase, activePipelineId])
+  }, [clinicId, supabase, activePipelineId, ownerFilter, profile?.id])
 
   useEffect(() => { load() }, [load])
 
@@ -670,12 +698,50 @@ export default function CRMKanbanPage() {
           )}
         </div>
 
+        {/* Фильтр «Только мои / Все сделки». По умолчанию manager видит
+            только свои; admin/owner — все. Сегментированный toggle, стиль
+            как у других контролов в хедере. */}
+        <div
+          role="group"
+          aria-label="Фильтр сделок по ответственному"
+          className="inline-flex rounded-md border border-gray-200 bg-white p-0.5 text-sm"
+        >
+          <button
+            type="button"
+            onClick={() => setOwnerFilter('mine')}
+            className={`px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'mine'
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+            aria-pressed={ownerFilter === 'mine'}
+            title="Показывать только сделки, где я ответственный"
+          >
+            Только мои
+          </button>
+          <button
+            type="button"
+            onClick={() => setOwnerFilter('all')}
+            className={`px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'all'
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+            aria-pressed={ownerFilter === 'all'}
+            title="Показывать все сделки клиники"
+          >
+            Все сделки
+          </button>
+        </div>
+
         <button
           onClick={() => openDeal({
             id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
             pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
             stage: activeStages[0]?.code ?? null, funnel: activePipeline?.code ?? 'leads',
-            status: 'open', responsible_user_id: null, source_id: null, amount: null,
+            status: 'open',
+            responsible_user_id: ownerFilter === 'mine' ? (profile?.id ?? null) : null,
+            source_id: null, amount: null,
             preferred_doctor_id: null, appointment_type: null, loss_reason_id: null,
             contact_phone: null, contact_city: null, notes: null, tags: [],
             custom_fields: {},
