@@ -3915,6 +3915,10 @@ function ImportDealsModal({
     // birth_date — дата рождения пациента (формат DD.MM.YYYY)
     'дата рождения': 'birth_date', 'др': 'birth_date',
     'birth date': 'birth_date', 'birthday': 'birth_date', 'birth_date': 'birth_date',
+    // created_at — дата создания сделки в amoCRM
+    'date': 'created_at', 'дата создания сделки': 'created_at',
+    'дата создания': 'created_at', 'created at': 'created_at',
+    'created_at': 'created_at', 'created': 'created_at',
     // external_id — ID сделки во внешней системе, для upsert при повторном импорте.
     'id': 'external_id', 'id сделки': 'external_id',
     'id amocrm': 'external_id', 'id амо': 'external_id', 'id амокрм': 'external_id',
@@ -3959,6 +3963,32 @@ function ImportDealsModal({
     if (mi < 1 || mi > 12) return null
     if (di < 1 || di > 31) return null
     return `${y}-${mm}-${dd}`
+  }
+
+  // Парсинг даты-времени создания сделки из amoCRM / Google Sheets.
+  // Принимаем DD.MM.YYYY [HH:MM[:SS]] (а также через «/» или «-»),
+  // и уже готовые ISO-строки. Возвращаем ISO с таймзоной +05:00
+  // (Казахстан), чтобы Postgres сохранил правильный момент времени.
+  function parseCreatedAt(raw: string): string | null {
+    const s = (raw ?? '').trim()
+    if (!s) return null
+    // Уже ISO? Оставляем как есть — Postgres разберёт.
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s
+    const m = s.match(
+      /^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/,
+    )
+    if (!m) return null
+    const [, d, mo, y, hh, mm2, ss] = m
+    const yy = Number(y)
+    const mi = Number(mo)
+    const di = Number(d)
+    if (yy < 1900 || yy > 2100) return null
+    if (mi < 1 || mi > 12) return null
+    if (di < 1 || di > 31) return null
+    const H = (hh ?? '00').padStart(2, '0')
+    const M = (mm2 ?? '00').padStart(2, '0')
+    const S = (ss ?? '00').padStart(2, '0')
+    return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}T${H}:${M}:${S}+05:00`
   }
 
   function parseCsv(text: string): {
@@ -4070,6 +4100,8 @@ function ImportDealsModal({
     // birth_date — раньше других (чтобы «дата рождения» не утекла в общий
     // `^дата` exclude ниже).
     if (/^дата рожд|день рожд|^др$|birth/i.test(h)) return 'birth_date'
+    // created_at — дата создания сделки amoCRM (колонка «date», «Дата создания сделки»)
+    if (/^date$|^дата создания|^created/i.test(h)) return 'created_at'
     if (/^(дата|кем |источник|utm_|roistat|компан|должност|возраст|email|факс|sendapi|instagram|tiktok|telegram|vkontakte|\bref\b|ref source|from$|gcl|_ym|yclid|fbclid|openstat|referrer|тип записи|анкета|причина|врач|соглашение|пол\b)/i.test(h)) {
       return h
     }
@@ -4168,7 +4200,7 @@ function ImportDealsModal({
 
     // Список нераспознанных колонок — для отчёта.
     const unrecognizedHeaders = detectedHeaders
-      .filter(h => !['name','patient','phone','amount','external_id','city','notes','tags','stage','pipeline','responsible','birth_date'].includes(h.mapped))
+      .filter(h => !['name','patient','phone','amount','external_id','city','notes','tags','stage','pipeline','responsible','birth_date','created_at'].includes(h.mapped))
       .map(h => h.raw)
 
     for (let idx = 0; idx < rows.length; idx++) {
@@ -4186,6 +4218,7 @@ function ImportDealsModal({
         const phoneNorm = normalizePhone(r['phone'] ?? '')
         const externalId = (r['external_id'] ?? '').trim()
         const birthIso = parseBirthDate(r['birth_date'] ?? '')
+        const createdAtIso = parseCreatedAt(r['created_at'] ?? '')
         const cityRaw = (r['city'] ?? '').trim()
 
         // Правило: нужна хотя бы какая-то идентификация — ФИО пациента
@@ -4347,6 +4380,10 @@ function ImportDealsModal({
           stage: legacyStage,
           status: 'open',
         }
+        // created_at ставим ТОЛЬКО при вставке новой сделки — чтобы
+        // при повторном импорте (update по external_id) не затереть
+        // реальный момент создания в нашей системе.
+        if (createdAtIso) dealPayload.created_at = createdAtIso
 
         // ── 5. Upsert по external_id, если он указан в CSV ────────────
         if (externalId) {
@@ -4428,7 +4465,7 @@ function ImportDealsModal({
           <div>
             <p className="text-gray-600 mb-2">
               Загрузите CSV (разделитель «;» или «,»). Первая строка — заголовки. Распознаются:
-              <span className="font-mono text-xs text-gray-500"> id_amoCRM, ответственный, название, теги, этап, воронка, пациент, телефон, дата_рождения, город</span>.
+              <span className="font-mono text-xs text-gray-500"> id_amoCRM, ответственный, название, теги, этап, воронка, пациент, телефон, дата_рождения, город, date</span>.
             </p>
             <p className="text-xs text-gray-500 mb-2">
               Пациенты ищутся сначала по телефону, затем по ФИО. Если не найдены — создаются автоматически.
@@ -4447,7 +4484,7 @@ function ImportDealsModal({
             </div>
           )}
           {detectedHeaders.length > 0 && !report && (() => {
-            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags', 'stage', 'pipeline', 'responsible', 'birth_date']
+            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags', 'stage', 'pipeline', 'responsible', 'birth_date', 'created_at']
             const mappedSet = new Set(detectedHeaders.map(h => h.mapped))
             const missingCritical = ['name', 'patient', 'phone'].filter(k => !mappedSet.has(k))
             return (
