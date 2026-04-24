@@ -443,7 +443,7 @@ export default function LabReferencesPage() {
                         ? sexEdit.max
                         : (sexRow?.max_value != null ? String(sexRow.max_value) : '')
                       const isDef = panelMode === 'default'
-                      const dirty = isDef ? dirtyDef : dirtySex
+                      const dirty = isDef ? dirtyDef : (dirtyDef || dirtySex)
                       return (
                         <tr key={c.id} className={dirty ? 'bg-yellow-50' : ''}>
                           <td className="px-3 py-1.5">
@@ -454,7 +454,7 @@ export default function LabReferencesPage() {
                             </button>
                           </td>
                           <td className="px-2 py-1.5">
-                            <input className={inpSm} disabled={!isDef}
+                            <input className={inpSm}
                               value={(val('default_unit') as string | null) ?? ''}
                               onChange={onChange('default_unit')} />
                           </td>
@@ -481,27 +481,29 @@ export default function LabReferencesPage() {
                             )}
                           </td>
                           <td className="px-2 py-1.5">
-                            <input className={inpSm} disabled={!isDef}
+                            <input className={inpSm}
                               placeholder="напр. отсутствуют"
                               value={(val('reference_text') as string | null) ?? ''}
                               onChange={e => setChildField(c.id, { reference_text: e.target.value || null })} />
                           </td>
                           <td className="px-2 py-1.5">
-                            <input type="number" step="any" className={inpSm} disabled={!isDef}
+                            <input type="number" step="any" className={inpSm}
                               value={(val('critical_low') as number | null) ?? ''}
                               onChange={onChange('critical_low')} />
                           </td>
                           <td className="px-2 py-1.5">
-                            <input type="number" step="any" className={inpSm} disabled={!isDef}
+                            <input type="number" step="any" className={inpSm}
                               value={(val('critical_high') as number | null) ?? ''}
                               onChange={onChange('critical_high')} />
                           </td>
                           <td className="px-2 py-1.5 text-right">
                             {dirty && (
                               <button
-                                onClick={() => isDef
-                                  ? saveChild(c.id)
-                                  : saveSexRow(c.id, panelMode as 'M' | 'F')}
+                                onClick={async () => {
+                                  if (isDef) return saveChild(c.id)
+                                  if (dirtyDef) await saveChild(c.id)
+                                  if (dirtySex) await saveSexRow(c.id, panelMode as 'M' | 'F')
+                                }}
                                 disabled={saving}
                                 className="text-[11px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-2 py-1 rounded">
                                 {saving ? '...' : 'Сохр.'}
