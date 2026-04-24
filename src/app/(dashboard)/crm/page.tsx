@@ -172,7 +172,15 @@ export default function CRMKanbanPage() {
   }, [viewMode])
 
   // Поиск по воронке: имя сделки / пациента / телефон / тег / город / заметка.
+  // Инпут контролируется listSearch (мгновенный отклик при вводе), а тяжёлый
+  // фильтр по списку сделок читает debouncedSearch — обновляется через 300мс
+  // после последнего нажатия, чтобы не пересчитывать фильтр на каждую букву.
   const [listSearch, setListSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(listSearch), 300)
+    return () => window.clearTimeout(t)
+  }, [listSearch])
 
   // Фильтр «Только мои / Все сделки» — разделение видимости между
   // менеджерами. По умолчанию manager видит только свои сделки
@@ -428,7 +436,7 @@ export default function CRMKanbanPage() {
   }, [sortField, sortDir])
 
   const dealsByStage = useMemo(() => {
-    const q = listSearch.trim().toLowerCase()
+    const q = debouncedSearch.trim().toLowerCase()
     const map = new Map<string, DealRow[]>()
     for (const s of activeStages) map.set(s.id, [])
     for (const d of deals) {
@@ -440,18 +448,18 @@ export default function CRMKanbanPage() {
     }
     for (const arr of map.values()) arr.sort(compareDeals)
     return map
-  }, [deals, activeStages, activePipelineId, listSearch, matchesSearch, compareDeals])
+  }, [deals, activeStages, activePipelineId, debouncedSearch, matchesSearch, compareDeals])
 
   // Плоский список для табличного вида.
   const tableDeals = useMemo(() => {
-    const q = listSearch.trim().toLowerCase()
+    const q = debouncedSearch.trim().toLowerCase()
     const activeStageIds = new Set(activeStages.map(s => s.id))
     return deals
       .filter(d => d.pipeline_id === activePipelineId)
       .filter(d => d.stage_id != null && activeStageIds.has(d.stage_id))
       .filter(d => matchesSearch(d, q))
       .sort(compareDeals)
-  }, [deals, activePipelineId, activeStages, listSearch, matchesSearch, compareDeals])
+  }, [deals, activePipelineId, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
   // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
   useEffect(() => {
@@ -997,7 +1005,7 @@ export default function CRMKanbanPage() {
                 {tableDeals.length === 0 && (
                   <tr>
                     <td colSpan={bulkMode ? 8 : 7} className="px-3 py-8 text-center text-sm text-gray-400">
-                      {listSearch ? 'Ничего не найдено' : 'Нет сделок в этой воронке'}
+                      {debouncedSearch ? 'Ничего не найдено' : 'Нет сделок в этой воронке'}
                     </td>
                   </tr>
                 )}
