@@ -1091,6 +1091,7 @@ export default function CRMKanbanPage() {
           clinicId={clinicId}
           pipelineId={activePipelineId}
           defaultStageId={activeStages[0]?.id ?? null}
+          stages={activeStages}
           onClose={() => setShowImportModal(false)}
           onDone={() => { setShowImportModal(false); load() }}
         />
@@ -3849,12 +3850,14 @@ function ImportDealsModal({
   clinicId,
   pipelineId,
   defaultStageId,
+  stages,
   onClose,
   onDone,
 }: {
   clinicId: string
   pipelineId: string
   defaultStageId: string | null
+  stages: Stage[]
   onClose: () => void
   onDone: () => void
 }) {
@@ -3872,7 +3875,10 @@ function ImportDealsModal({
     patientsCreated: number
     dealsCreated: number
     dealsUpdated: number
+    stageMatched: number
+    responsibleMatched: number
     skipped: number
+    unrecognizedHeaders: string[]
     errors: string[]
   } | null>(null)
 
@@ -3904,6 +3910,12 @@ function ImportDealsModal({
     'id': 'external_id', 'id сделки': 'external_id',
     'id amocrm': 'external_id', 'id амо': 'external_id', 'id амокрм': 'external_id',
     'внешний id': 'external_id', 'external_id': 'external_id', 'external id': 'external_id',
+    // stage — этап сделки, мапим на существующий pipeline_stage по названию
+    'этап': 'stage', 'этап сделки': 'stage', 'стадия': 'stage',
+    'статус': 'stage', 'stage': 'stage', 'status': 'stage',
+    // responsible — ответственный менеджер (попытаемся найти user_profile)
+    'ответственный': 'responsible', 'менеджер': 'responsible',
+    'responsible': 'responsible', 'owner': 'responsible',
   }
 
   // Нормализация телефона: цифры, ведущая 8 → 7, убираем + и спецсимволы.
@@ -3986,7 +3998,7 @@ function ImportDealsModal({
     // Сначала отсекаем явно ненужные колонки amoCRM, чтобы они не
     // ловились по случайной подстроке («Компания контакта» → не patient,
     // «Дата создания сделки» → не name, «Sendapi телефон» → не phone).
-    if (/^(дата|кем |этап |воронка|ответствен|источник|utm_|roistat|компан|должност|возраст|email|факс|sendapi|instagram|tiktok|telegram|vkontakte|\bref\b|ref source|from$|gcl|_ym|yclid|fbclid|openstat|referrer|birthday|день рожд|тип записи|анкета|причина|врач|соглашение|пол\b)/i.test(h)) {
+    if (/^(дата|кем |воронка|источник|utm_|roistat|компан|должност|возраст|email|факс|sendapi|instagram|tiktok|telegram|vkontakte|\bref\b|ref source|from$|gcl|_ym|yclid|fbclid|openstat|referrer|birthday|день рожд|тип записи|анкета|причина|врач|соглашение|пол\b)/i.test(h)) {
       return h
     }
     // external_id — первым, чтобы "ID" ушёл сюда, а не в patient через «имя»
@@ -3998,6 +4010,12 @@ function ImportDealsModal({
     if (/^город$|^city$/i.test(h)) return 'city'
     if (/примечан|коммент|заметк|описани|^notes$/i.test(h)) return 'notes'
     if (/^тег|^tags?$/i.test(h)) return 'tags'
+    // stage / responsible — в самом конце, чтобы не перетягивать phone/patient.
+    // «Ответственный за контакт» уже ушёл в exclude через `контакт` ниже —
+    // но точнее: проверяем стоп-слово `контакт` внутри значения.
+    if (/^этап|^стади|^статус$|^stage$|^status$/i.test(h)) return 'stage'
+    if (/контакт/i.test(h)) return h // "ответственный за контакт" и пр. — игнор
+    if (/^ответствен|^менеджер$|^responsible$|^owner$/i.test(h)) return 'responsible'
     return h
   }
 
@@ -4034,8 +4052,27 @@ function ImportDealsModal({
     let patientsCreated = 0
     let dealsCreated = 0
     let dealsUpdated = 0
+    let stageMatched = 0
+    let responsibleMatched = 0
     let skipped = 0
     const errors: string[] = []
+
+    // Предзагружаем список пользователей клиники — нужен для маппинга
+    // «ответственный» из CSV на user_profile.id. Дёшево один раз, чем
+    // запрос на каждую строку.
+    let clinicUsers: { id: string; full_name: string | null }[] = []
+    if (detectedHeaders.some(h => h.mapped === 'responsible')) {
+      const { data: us } = await supabase
+        .from('user_profiles')
+        .select('id, full_name')
+        .eq('clinic_id', clinicId)
+      clinicUsers = us ?? []
+    }
+
+    // Список нераспознанных колонок — для отчёта.
+    const unrecognizedHeaders = detectedHeaders
+      .filter(h => !['name','patient','phone','amount','external_id','city','notes','tags','stage','responsible'].includes(h.mapped))
+      .map(h => h.raw)
 
     for (const r of rows) {
       try {
@@ -4108,12 +4145,36 @@ function ImportDealsModal({
         const amount = amountRaw
           ? Number(amountRaw.replace(/[^\d.,-]/g, '').replace(',', '.'))
           : null
+        // Маппинг этапа: ищем pipeline_stage по названию (case-insensitive,
+        // trim). Если не нашли — fallback на defaultStageId.
+        let stageId: string | null = defaultStageId
+        const stageRaw = (r['stage'] ?? '').trim()
+        if (stageRaw) {
+          const needle = stageRaw.toLowerCase()
+          const match = stages.find(s => s.name.trim().toLowerCase() === needle)
+          if (match) { stageId = match.id; stageMatched++ }
+        }
+
+        // Маппинг ответственного: по full_name в user_profiles клиники.
+        // Если не нашли — null, но считаем строку успешной (сделка создастся
+        // без ответственного, менеджер добьёт вручную).
+        let responsibleId: string | null = null
+        const responsibleRaw = (r['responsible'] ?? '').trim()
+        if (responsibleRaw && clinicUsers.length > 0) {
+          const needle = normalizeName(responsibleRaw)
+          const match = clinicUsers.find(
+            u => u.full_name && normalizeName(u.full_name) === needle
+          )
+          if (match) { responsibleId = match.id; responsibleMatched++ }
+        }
+
         const dealPayload: Record<string, unknown> = {
           clinic_id: clinicId,
           pipeline_id: pipelineId,
-          stage_id: defaultStageId,
+          stage_id: stageId,
           name: dealName || patientNameRaw || null,
           patient_id: patientId,
+          responsible_user_id: responsibleId,
           contact_phone: phoneNorm || (r['phone'] ?? null) || null,
           contact_city: r['city'] || null,
           notes: r['notes'] || null,
@@ -4177,7 +4238,10 @@ function ImportDealsModal({
       patientsCreated,
       dealsCreated,
       dealsUpdated,
+      stageMatched,
+      responsibleMatched,
       skipped,
+      unrecognizedHeaders,
       errors: errors.slice(0, 15),
     })
     setBusy(false)
@@ -4195,7 +4259,7 @@ function ImportDealsModal({
           <div>
             <p className="text-gray-600 mb-2">
               Загрузите CSV (разделитель «;» или «,»). Первая строка — заголовки. Распознаются:
-              <span className="font-mono text-xs text-gray-500"> название, пациент, телефон, город, сумма, заметка, теги, id_amoCRM</span>.
+              <span className="font-mono text-xs text-gray-500"> название, пациент, телефон, город, сумма, заметка, теги, id_amoCRM, этап, ответственный</span>.
             </p>
             <p className="text-xs text-gray-500 mb-2">
               Пациенты ищутся сначала по телефону, затем по ФИО. Если не найдены — создаются автоматически.
@@ -4214,7 +4278,7 @@ function ImportDealsModal({
             </div>
           )}
           {detectedHeaders.length > 0 && !report && (() => {
-            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags']
+            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags', 'stage', 'responsible']
             const mappedSet = new Set(detectedHeaders.map(h => h.mapped))
             const missingCritical = ['name', 'patient', 'phone'].filter(k => !mappedSet.has(k))
             return (
@@ -4283,6 +4347,25 @@ function ImportDealsModal({
               <div>— создано: <b className="text-green-700">{report.dealsCreated}</b></div>
               <div>— обновлено (по external_id): <b className="text-green-700">{report.dealsUpdated}</b></div>
               <div>— пропущено с ошибкой: <b className="text-amber-700">{report.skipped}</b></div>
+              {(report.stageMatched > 0 || report.responsibleMatched > 0) && (
+                <>
+                  <div className="text-gray-500 mt-2">Дополнительно</div>
+                  {report.stageMatched > 0 && (
+                    <div>— этап сопоставлен: <b className="text-green-700">{report.stageMatched}</b></div>
+                  )}
+                  {report.responsibleMatched > 0 && (
+                    <div>— ответственный сопоставлен: <b className="text-green-700">{report.responsibleMatched}</b></div>
+                  )}
+                </>
+              )}
+              {report.unrecognizedHeaders.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">Нераспознанные колонки ({report.unrecognizedHeaders.length}):</div>
+                  <div className="text-xs text-gray-500 font-mono break-words">
+                    {report.unrecognizedHeaders.map(h => `«${h}»`).join(', ')}
+                  </div>
+                </div>
+              )}
               {report.errors.length > 0 && (
                 <div>
                   <div className="text-gray-500 mt-2">Детализация ошибок (первые 15):</div>
