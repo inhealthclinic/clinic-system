@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { Patient, Appointment } from '@/types'
 import PatientHistory from '@/components/PatientHistory'
+import PatientTimeline from '@/components/patients/PatientTimeline'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ const STATUS_CLR: Record<string, string> = {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-type Tab = 'profile' | 'medcard' | 'lab' | 'finance' | 'history'
+type Tab = 'profile' | 'timeline' | 'medcard' | 'lab' | 'finance' | 'history'
 
 // ─── lab order types ──────────────────────────────────────────────────────────
 
@@ -502,6 +503,7 @@ export default function PatientCardPage() {
   // ── tab definitions
   const TABS: { key: Tab; label: string }[] = [
     { key: 'profile', label: 'Профиль' },
+    { key: 'timeline', label: 'Лента' },
     { key: 'medcard', label: 'Медкарта' },
     { key: 'lab', label: 'Анализы' },
     { key: 'finance', label: 'Финансы' },
@@ -1586,6 +1588,11 @@ export default function PatientCardPage() {
             </>
           )}
         </div>
+      )}
+
+      {/* ── Tab: Лента ──────────────────────────────────────────────────────── */}
+      {activeTab === 'timeline' && (
+        <PatientTimeline patientId={patient.id} />
       )}
 
       {/* ── Tab: История ────────────────────────────────────────────────────── */}
