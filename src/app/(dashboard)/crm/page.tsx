@@ -4186,7 +4186,12 @@ function ImportDealsModal({
     let allStages: { id: string; name: string; pipeline_id: string }[] = stages.map(s => ({
       id: s.id, name: s.name, pipeline_id: s.pipeline_id,
     }))
-    if (detectedHeaders.some(h => h.mapped === 'pipeline')) {
+    // Загружаем воронки/этапы ВСЕГДА (а не только если в CSV есть колонка
+    // «воронка»): нужно, чтобы этап из CSV, совпавший с этапом другой
+    // воронки клиники, автоматически уводил сделку туда. Иначе все
+    // строки уходят в активную воронку UI, и stage из другой воронки
+    // улетает в fallback.
+    {
       const [{ data: pls }, { data: sts }] = await Promise.all([
         supabase.from('pipelines').select('id, name').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
         supabase.from('pipeline_stages').select('id, name, pipeline_id').eq('is_active', true).order('sort_order'),
@@ -4307,35 +4312,51 @@ function ImportDealsModal({
           }
         }
 
-        // Маппинг этапа внутри выбранной воронки. Если значение из CSV
-        // не нашлось — fallback на первый этап этой воронки + запомним
-        // имя в unknownStages для отчёта.
-        const pipelineStages = allStages.filter(s => s.pipeline_id === targetPipelineId)
-        const fallbackStageId =
-          targetPipelineId === pipelineId
-            ? defaultStageId
-            : (pipelineStages[0]?.id ?? defaultStageId)
-        let stageId: string | null = fallbackStageId
+        // Маппинг этапа: сперва ищем в целевой воронке, если не нашли —
+        // глобально по всем активным этапам клиники (этапы amoCRM часто
+        // живут в отдельной воронке «2 этап», и CSV «воронка» при этом
+        // может быть пустой). Если нашли в другой — подхватываем эту
+        // воронку (targetPipelineId меняется).
         const stageRaw = (r['stage'] ?? '').trim()
         let matchedStageName: string | null = null
+        let stageId: string | null = null
         if (stageRaw) {
           const needle = normalizeName(stageRaw)
-          const match = pipelineStages.find(s => normalizeName(s.name) === needle)
-          if (match) {
-            stageId = match.id
-            matchedStageName = match.name
+          const localStages = allStages.filter(s => s.pipeline_id === targetPipelineId)
+          const local = localStages.find(s => normalizeName(s.name) === needle)
+          if (local) {
+            stageId = local.id
+            matchedStageName = local.name
             stageMatched++
           } else {
-            stageFallback++
-            unknownStages.add(stageRaw)
+            // Глобальный поиск по всем воронкам клиники.
+            const global = allStages.find(s => normalizeName(s.name) === needle)
+            if (global) {
+              targetPipelineId = global.pipeline_id
+              stageId = global.id
+              matchedStageName = global.name
+              stageMatched++
+            } else {
+              unknownStages.add(stageRaw)
+              stageFallback++
+            }
           }
+        }
+        // Fallback для этапа: первый этап выбранной воронки (после
+        // возможного переключения выше).
+        if (!stageId) {
+          const localStages = allStages.filter(s => s.pipeline_id === targetPipelineId)
+          stageId =
+            targetPipelineId === pipelineId
+              ? defaultStageId
+              : (localStages[0]?.id ?? defaultStageId)
         }
         // Legacy колонка deals.stage (TEXT NOT NULL) — нужна до миграции
         // на чистые pipeline_stages. Берём имя сопоставленного этапа,
         // иначе исходное значение из CSV, иначе имя fallback-этапа,
         // иначе 'new'.
         const fallbackStageName =
-          pipelineStages.find(s => s.id === stageId)?.name ??
+          allStages.find(s => s.id === stageId)?.name ??
           stageRaw ??
           'new'
         const legacyStage = matchedStageName || stageRaw || fallbackStageName || 'new'
@@ -4398,8 +4419,10 @@ function ImportDealsModal({
             throw new Error(`поиск сделки по external_id: ${selErr.message}`)
           }
           if (existing) {
-            // Обновляем существующую сделку. stage_id/pipeline_id
-            // не трогаем — чтобы не откатить прогресс менеджера.
+            // Обновляем существующую сделку. stage_id/pipeline_id тоже
+            // тянем из CSV — у amoCRM-импорта это источник истины
+            // (этапы могут быть в другой воронке клиники; сценарий
+            // «добавили недостающие этапы и перезапустили импорт»).
             const { error: upErr } = await supabase
               .from('deals')
               .update({
@@ -4410,6 +4433,10 @@ function ImportDealsModal({
                 notes: dealPayload.notes,
                 tags: dealPayload.tags,
                 amount: dealPayload.amount,
+                pipeline_id: targetPipelineId,
+                stage_id: stageId,
+                stage: legacyStage,
+                responsible_user_id: responsibleId,
               })
               .eq('id', existing.id)
             if (upErr) throw new Error(`обновление сделки: ${upErr.message}`)
