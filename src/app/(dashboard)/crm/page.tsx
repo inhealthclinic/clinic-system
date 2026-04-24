@@ -3942,39 +3942,67 @@ function ImportDealsModal({
     headers: { raw: string; mapped: string }[]
   } {
     // Простой CSV parser: ; или , как разделитель, двойные кавычки.
-    // AmoCRM умудряется класть разные разделители в заголовок и в тело
-    // (заголовок через «,», данные через «;»). Поэтому детектим по
-    // нескольким непустым строкам, а не только по первой: побеждает тот
-    // символ, который чаще встречается вне кавычек во всём образце.
-    const sample = text.split(/\r?\n/).slice(0, 20).join('\n')
-    // Грубо убираем содержимое кавычек, чтобы в счёт не попали запятые
-    // внутри полей вида "Иванов, Иван".
-    const stripped = sample.replace(/"[^"]*"/g, '')
-    const semi = (stripped.match(/;/g)?.length ?? 0)
-    const comma = (stripped.match(/,/g)?.length ?? 0)
-    const delim = semi >= comma ? ';' : ','
-    const lines: string[][] = []
-    let cur: string[] = []
-    let cell = ''
-    let inQ = false
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i]
-      if (inQ) {
-        if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++ }
-        else if (ch === '"') { inQ = false }
-        else { cell += ch }
-      } else {
-        if (ch === '"') inQ = true
-        else if (ch === delim) { cur.push(cell); cell = '' }
-        else if (ch === '\n') { cur.push(cell); lines.push(cur); cur = []; cell = '' }
-        else if (ch === '\r') { /* skip */ }
-        else cell += ch
+    // AmoCRM/Google Sheets умудряется класть РАЗНЫЕ разделители в
+    // заголовок и в тело (заголовок через «,», данные через «;» — или
+    // наоборот). Поэтому сначала режем текст на логические строки с
+    // учётом кавычек, потом детектим разделитель ОТДЕЛЬНО для заголовка
+    // и для данных, и каждую строку парсим своим разделителем.
+    const rawLines: string[] = []
+    {
+      let buf = ''
+      let inQ = false
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i]
+        if (ch === '"') {
+          if (inQ && text[i + 1] === '"') { buf += '""'; i++ }
+          else { inQ = !inQ; buf += '"' }
+        } else if (!inQ && ch === '\n') {
+          rawLines.push(buf)
+          buf = ''
+        } else if (ch === '\r' && !inQ) {
+          // skip
+        } else {
+          buf += ch
+        }
       }
+      if (buf.length) rawLines.push(buf)
     }
-    if (cell.length || cur.length) { cur.push(cell); lines.push(cur) }
-    if (lines.length === 0) return { rows: [], headers: [] }
+    const nonEmpty = rawLines.filter(l => l.trim().length > 0)
+    if (nonEmpty.length === 0) return { rows: [], headers: [] }
+
+    const pickDelim = (s: string): ',' | ';' => {
+      const stripped = s.replace(/"[^"]*"/g, '')
+      const semi = (stripped.match(/;/g)?.length ?? 0)
+      const comma = (stripped.match(/,/g)?.length ?? 0)
+      return semi > comma ? ';' : ','
+    }
+    const headerDelim = pickDelim(nonEmpty[0])
+    const dataDelim = pickDelim(nonEmpty.slice(1, 21).join('\n'))
+
+    const splitLine = (line: string, delim: string): string[] => {
+      const out: string[] = []
+      let cell = ''
+      let inQ = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (inQ) {
+          if (ch === '"' && line[i + 1] === '"') { cell += '"'; i++ }
+          else if (ch === '"') { inQ = false }
+          else { cell += ch }
+        } else {
+          if (ch === '"') inQ = true
+          else if (ch === delim) { out.push(cell); cell = '' }
+          else { cell += ch }
+        }
+      }
+      out.push(cell)
+      return out
+    }
+
+    const headerRow = splitLine(nonEmpty[0], headerDelim)
+    const lines: string[][] = nonEmpty.slice(1).map(l => splitLine(l, dataDelim))
     // Нормализация заголовка: BOM → пробелы → lowercase → collapse.
-    const rawHeaders = (lines.shift() ?? []).map(h =>
+    const rawHeaders = headerRow.map(h =>
       h.replace(/^\uFEFF/, '').trim().replace(/\s+/g, ' ').toLowerCase()
     )
     const headers = rawHeaders.map(resolveHeader)
