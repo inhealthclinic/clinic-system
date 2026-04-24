@@ -8,6 +8,7 @@
  */
 
 import { useEffect } from 'react'
+import Link from 'next/link'
 
 // Inline SVG: кружок с «!». lucide-react в проекте не используется,
 // держимся единого стиля — SVG прямо в JSX.
@@ -71,12 +72,12 @@ export default function CRMError({
           >
             Обновить
           </button>
-          <a
+          <Link
             href="/"
             className="px-4 py-2 rounded-md border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium transition-colors"
           >
             На главную
-          </a>
+          </Link>
         </div>
 
         {error?.digest && (
