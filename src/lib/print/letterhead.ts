@@ -23,6 +23,8 @@ export interface PrintDoctor {
   specialization: string | null
   certificates: Array<{ name?: string; number?: string }> | null
   phone: string | null
+  signature_url: string | null
+  prescription_header: string | null
 }
 
 export interface PrintPatient {
@@ -52,7 +54,7 @@ export async function loadPrintMeta(
       .select('name, address, phone, email, logo_url, settings')
       .eq('id', clinicId).single(),
     sb.from('doctors')
-      .select('first_name, last_name, middle_name, phone, certificates, specialization:specializations(name)')
+      .select('first_name, last_name, middle_name, phone, certificates, signature_url, prescription_header, specialization:specializations(name)')
       .eq('id', doctorId).single(),
     sb.from('patients')
       .select('full_name, birth_date, iin, phones')
@@ -70,6 +72,8 @@ export async function loadPrintMeta(
       phone: (doctor as any)?.phone ?? null,
       certificates: (doctor as any)?.certificates ?? null,
       specialization: (doctor as any)?.specialization?.name ?? null,
+      signature_url: (doctor as any)?.signature_url ?? null,
+      prescription_header: (doctor as any)?.prescription_header ?? null,
     },
     patient: (patient as PrintPatient) ?? {
       full_name: '', birth_date: null, iin: null, phones: [],
@@ -142,6 +146,14 @@ export function renderLetterhead(clinic: PrintClinic): string {
 export function renderSignature(doctor: PrintDoctor): string {
   const cert = doctor.certificates?.[0]
   const certLine = cert?.number ? `Сертификат № ${esc(cert.number)}` : ''
+  const headerLine = doctor.prescription_header
+    ? `<div class="sig-sub">${esc(doctor.prescription_header)}</div>`
+    : ''
+  const signatureBlock = doctor.signature_url
+    ? `<img src="${esc(doctor.signature_url)}" alt="подпись" class="sig-img" />
+       <div class="sig-label">Подпись</div>`
+    : `<div class="sig-line"></div>
+       <div class="sig-label">Подпись</div>`
   return `
     <div class="signature">
       <div class="sig-doctor">
@@ -149,10 +161,10 @@ export function renderSignature(doctor: PrintDoctor): string {
         <div class="sig-name">${esc(doctorFullName(doctor))}</div>
         ${doctor.specialization ? `<div class="sig-sub">${esc(doctor.specialization)}</div>` : ''}
         ${certLine ? `<div class="sig-sub">${certLine}</div>` : ''}
+        ${headerLine}
       </div>
       <div class="sig-stamp">
-        <div class="sig-line"></div>
-        <div class="sig-label">Подпись</div>
+        ${signatureBlock}
       </div>
       <div class="sig-stamp">
         <div class="sig-mp">М.П.</div>
@@ -192,6 +204,7 @@ export const PRINT_CSS = `
   .sig-name { font-size: 12pt; font-weight: 600; margin-top: 2px; }
   .sig-sub { font-size: 10pt; color: #4b5563; }
   .sig-line { border-bottom: 1px solid #0f172a; height: 24px; margin-bottom: 4px; }
+  .sig-img { max-height: 60px; max-width: 140px; object-fit: contain; display: block; margin-bottom: 4px; }
   .sig-mp { border: 1.5px dashed #9ca3af; border-radius: 50%; width: 80px; height: 80px; display: flex; align-items: center; justify-content: center; color: #9ca3af; font-size: 11pt; margin: 0 auto; }
   .footer-note { margin-top: 28px; text-align: center; color: #9ca3af; font-size: 9pt; border-top: 1px solid #e5e7eb; padding-top: 8px; }
   @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
