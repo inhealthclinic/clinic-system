@@ -3854,7 +3854,16 @@ function ImportDealsModal({
   const [rows, setRows] = useState<Record<string, string>[]>([])
   const [fileName, setFileName] = useState<string>('')
   const [busy, setBusy] = useState(false)
-  const [report, setReport] = useState<{ created: number; skipped: number; errors: string[] } | null>(null)
+  const [report, setReport] = useState<{
+    total: number
+    foundByPhone: number
+    foundByName: number
+    patientsCreated: number
+    dealsCreated: number
+    dealsUpdated: number
+    skipped: number
+    errors: string[]
+  } | null>(null)
 
   // Нормализация заголовков столбцов: кириллица/пробелы/регистр → канонические ключи.
   const ALIASES: Record<string, string> = {
@@ -3865,6 +3874,22 @@ function ImportDealsModal({
     'сумма': 'amount', 'amount': 'amount', 'budget': 'amount',
     'заметка': 'notes', 'комментарий': 'notes', 'notes': 'notes',
     'теги': 'tags', 'tags': 'tags',
+    // Внешний ID для upsert при повторном импорте.
+    'id amocrm': 'external_id', 'id амо': 'external_id', 'id амокрм': 'external_id',
+    'внешний id': 'external_id', 'external_id': 'external_id', 'external id': 'external_id',
+  }
+
+  // Нормализация телефона: цифры, ведущая 8 → 7, убираем + и спецсимволы.
+  // Результат — строка из цифр, например '77071234567'. Пустую строку
+  // возвращаем, если нет хотя бы 7 цифр (значит это не телефон).
+  function normalizePhone(raw: string): string {
+    const digits = (raw ?? '').replace(/\D+/g, '')
+    if (digits.length < 7) return ''
+    return digits.replace(/^8/, '7')
+  }
+
+  function normalizeName(raw: string): string {
+    return (raw ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
   }
 
   function parseCsv(text: string): Record<string, string>[] {
@@ -3913,20 +3938,92 @@ function ImportDealsModal({
   async function runImport() {
     if (busy || rows.length === 0) return
     setBusy(true)
-    let created = 0, skipped = 0
+    let foundByPhone = 0
+    let foundByName = 0
+    let patientsCreated = 0
+    let dealsCreated = 0
+    let dealsUpdated = 0
+    let skipped = 0
     const errors: string[] = []
+
     for (const r of rows) {
       try {
-        const name = r['name']?.trim() || r['patient']?.trim() || ''
-        if (!name && !r['phone']) { skipped++; continue }
+        const dealName = (r['name'] ?? '').trim()
+        const patientNameRaw = (r['patient'] ?? '').trim()
+        const phoneNorm = normalizePhone(r['phone'] ?? '')
+        const externalId = (r['external_id'] ?? '').trim()
+
+        // Правило: нужна хотя бы какая-то идентификация — ФИО пациента
+        // или телефон или название сделки. Иначе пустая строка.
+        if (!dealName && !patientNameRaw && !phoneNorm) {
+          skipped++
+          errors.push(`Строка без ФИО/телефона/названия — пропущена`)
+          continue
+        }
+
+        // ── 1. Ищем пациента по нормализованному телефону ──────────────
+        let patientId: string | null = null
+        if (phoneNorm) {
+          const { data: byPhone, error: pErr } = await supabase
+            .from('patients')
+            .select('id')
+            .eq('clinic_id', clinicId)
+            .contains('phones', [phoneNorm])
+            .is('deleted_at', null)
+            .limit(1)
+            .maybeSingle()
+          if (pErr && pErr.code !== 'PGRST116') {
+            throw new Error(`поиск по телефону: ${pErr.message}`)
+          }
+          if (byPhone) { patientId = byPhone.id; foundByPhone++ }
+        }
+
+        // ── 2. Если не нашли — ищем по ФИО (точное совпадение после trim+lowercase) ──
+        if (!patientId && patientNameRaw) {
+          const nameNorm = normalizeName(patientNameRaw)
+          const { data: byName, error: nErr } = await supabase
+            .from('patients')
+            .select('id, full_name')
+            .eq('clinic_id', clinicId)
+            .ilike('full_name', patientNameRaw) // ilike без wildcards = case-insensitive exact
+            .is('deleted_at', null)
+            .limit(5)
+          if (nErr) throw new Error(`поиск по имени: ${nErr.message}`)
+          const match = (byName ?? []).find(p => normalizeName(p.full_name) === nameNorm)
+          if (match) { patientId = match.id; foundByName++ }
+        }
+
+        // ── 3. Не нашли — создаём нового пациента, если есть ФИО или телефон ──
+        if (!patientId && (patientNameRaw || phoneNorm)) {
+          const fullName = patientNameRaw || `Без имени (${phoneNorm || '—'})`
+          const { data: newPat, error: insPErr } = await supabase
+            .from('patients')
+            .insert({
+              clinic_id: clinicId,
+              full_name: fullName,
+              phones: phoneNorm ? [phoneNorm] : [],
+              gender: 'other', // обязательное поле в схеме; при желании админ поправит
+            })
+            .select('id')
+            .single()
+          if (insPErr) throw new Error(`создание пациента: ${insPErr.message}`)
+          patientId = newPat.id
+          patientsCreated++
+        }
+
+        // ── 4. Собираем payload сделки ────────────────────────────────
         const tags = (r['tags'] ?? '').split(/[;,]/).map(x => x.trim()).filter(Boolean)
-        const amount = r['amount'] ? Number(r['amount'].replace(/[^\d.,-]/g, '').replace(',', '.')) : null
-        const payload: Record<string, unknown> = {
+        const amountRaw = r['amount']
+        const amount = amountRaw
+          ? Number(amountRaw.replace(/[^\d.,-]/g, '').replace(',', '.'))
+          : null
+        const dealPayload: Record<string, unknown> = {
           clinic_id: clinicId,
           pipeline_id: pipelineId,
           stage_id: defaultStageId,
-          name: name || null,
-          contact_phone: r['phone'] || null,
+          name: dealName || patientNameRaw || null,
+          patient_id: patientId,
+          contact_phone: phoneNorm || (r['phone'] ?? null) || null,
           contact_city: r['city'] || null,
           notes: r['notes'] || null,
           tags: tags.length ? tags : [],
@@ -3934,15 +4031,64 @@ function ImportDealsModal({
           funnel: 'leads',
           status: 'open',
         }
-        const { error } = await supabase.from('deals').insert(payload)
-        if (error) { errors.push(`${name || r['phone'] || '—'}: ${error.message}`); skipped++ }
-        else created++
+
+        // ── 5. Upsert по external_id, если он указан в CSV ────────────
+        if (externalId) {
+          const { data: existing, error: selErr } = await supabase
+            .from('deals')
+            .select('id')
+            .eq('clinic_id', clinicId)
+            .eq('external_id', externalId)
+            .limit(1)
+            .maybeSingle()
+          if (selErr && selErr.code !== 'PGRST116') {
+            throw new Error(`поиск сделки по external_id: ${selErr.message}`)
+          }
+          if (existing) {
+            // Обновляем существующую сделку. stage_id/pipeline_id
+            // не трогаем — чтобы не откатить прогресс менеджера.
+            const { error: upErr } = await supabase
+              .from('deals')
+              .update({
+                name: dealPayload.name,
+                patient_id: patientId,
+                contact_phone: dealPayload.contact_phone,
+                contact_city: dealPayload.contact_city,
+                notes: dealPayload.notes,
+                tags: dealPayload.tags,
+                amount: dealPayload.amount,
+              })
+              .eq('id', existing.id)
+            if (upErr) throw new Error(`обновление сделки: ${upErr.message}`)
+            dealsUpdated++
+            continue
+          }
+          // Сделки с таким external_id ещё нет — создаём с ним.
+          dealPayload.external_id = externalId
+        }
+
+        // ── 6. Вставка новой сделки ───────────────────────────────────
+        const { error: insDErr } = await supabase.from('deals').insert(dealPayload)
+        if (insDErr) throw new Error(`создание сделки: ${insDErr.message}`)
+        dealsCreated++
       } catch (e: unknown) {
-        errors.push(String(e))
         skipped++
+        const msg = e instanceof Error ? e.message : String(e)
+        const who = (r['name'] || r['patient'] || r['phone'] || '—').trim()
+        errors.push(`${who}: ${msg}`)
       }
     }
-    setReport({ created, skipped, errors: errors.slice(0, 10) })
+
+    setReport({
+      total: rows.length,
+      foundByPhone,
+      foundByName,
+      patientsCreated,
+      dealsCreated,
+      dealsUpdated,
+      skipped,
+      errors: errors.slice(0, 15),
+    })
     setBusy(false)
   }
 
@@ -3958,7 +4104,11 @@ function ImportDealsModal({
           <div>
             <p className="text-gray-600 mb-2">
               Загрузите CSV (разделитель «;» или «,»). Первая строка — заголовки. Распознаются:
-              <span className="font-mono text-xs text-gray-500"> название, пациент, телефон, город, сумма, заметка, теги</span>.
+              <span className="font-mono text-xs text-gray-500"> название, пациент, телефон, город, сумма, заметка, теги, id_amoCRM</span>.
+            </p>
+            <p className="text-xs text-gray-500 mb-2">
+              Пациенты ищутся сначала по телефону, затем по ФИО. Если не найдены — создаются автоматически.
+              Если в CSV указан <span className="font-mono">id_amoCRM</span>, повторный импорт обновит существующую сделку, а не создаст дубликат.
             </p>
             <input
               type="file"
@@ -4001,12 +4151,21 @@ function ImportDealsModal({
           )}
           {report && (
             <div className="bg-gray-50 border border-gray-100 rounded-md p-3 text-xs space-y-1">
-              <div>Создано: <b className="text-green-700">{report.created}</b></div>
-              <div>Пропущено: <b className="text-amber-700">{report.skipped}</b></div>
+              <div>Всего строк обработано: <b>{report.total}</b></div>
+              <div className="h-1" />
+              <div className="text-gray-500 font-medium">Пациенты</div>
+              <div>— найдено по телефону: <b className="text-gray-800">{report.foundByPhone}</b></div>
+              <div>— найдено по имени: <b className="text-gray-800">{report.foundByName}</b></div>
+              <div>— создано новых: <b className="text-blue-700">{report.patientsCreated}</b></div>
+              <div className="h-1" />
+              <div className="text-gray-500 font-medium">Сделки</div>
+              <div>— создано: <b className="text-green-700">{report.dealsCreated}</b></div>
+              <div>— обновлено (по external_id): <b className="text-green-700">{report.dealsUpdated}</b></div>
+              <div>— пропущено с ошибкой: <b className="text-amber-700">{report.skipped}</b></div>
               {report.errors.length > 0 && (
                 <div>
-                  <div className="text-gray-500 mt-2">Ошибки (первые 10):</div>
-                  <ul className="list-disc pl-4 text-red-700">
+                  <div className="text-gray-500 mt-2">Детализация ошибок (первые 15):</div>
+                  <ul className="list-disc pl-4 text-red-700 space-y-0.5">
                     {report.errors.map((e, i) => <li key={i}>{e}</li>)}
                   </ul>
                 </div>
