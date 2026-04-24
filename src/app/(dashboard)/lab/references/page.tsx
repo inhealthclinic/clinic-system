@@ -450,7 +450,7 @@ export default function LabReferencesPage() {
                             <button
                               onClick={() => setSelectedId(c.id)}
                               className="text-left text-gray-900 hover:text-blue-600 hover:underline">
-                              {c.name}
+                              {c.name.replace(/\s*\((?:ОАК|ОАМ|кал)\)\s*$/i, '')}
                             </button>
                           </td>
                           <td className="px-2 py-1.5">
