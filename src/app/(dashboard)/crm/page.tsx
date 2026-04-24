@@ -4284,17 +4284,28 @@ function ImportDealsModal({
             : (pipelineStages[0]?.id ?? defaultStageId)
         let stageId: string | null = fallbackStageId
         const stageRaw = (r['stage'] ?? '').trim()
+        let matchedStageName: string | null = null
         if (stageRaw) {
           const needle = normalizeName(stageRaw)
           const match = pipelineStages.find(s => normalizeName(s.name) === needle)
           if (match) {
             stageId = match.id
+            matchedStageName = match.name
             stageMatched++
           } else {
             stageFallback++
             unknownStages.add(stageRaw)
           }
         }
+        // Legacy колонка deals.stage (TEXT NOT NULL) — нужна до миграции
+        // на чистые pipeline_stages. Берём имя сопоставленного этапа,
+        // иначе исходное значение из CSV, иначе имя fallback-этапа,
+        // иначе 'new'.
+        const fallbackStageName =
+          pipelineStages.find(s => s.id === stageId)?.name ??
+          stageRaw ??
+          'new'
+        const legacyStage = matchedStageName || stageRaw || fallbackStageName || 'new'
 
         // Маппинг ответственного: по full_name в user_profiles клиники.
         // Если не нашли — null, запоминаем в unknownResponsibles.
@@ -4333,6 +4344,7 @@ function ImportDealsModal({
           tags: tags.length ? tags : [],
           amount: amount != null && !Number.isNaN(amount) ? amount : null,
           funnel: 'leads',
+          stage: legacyStage,
           status: 'open',
         }
 
