@@ -4238,6 +4238,18 @@ function ImportDealsModal({
   >([])
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  // Все воронки и этапы клиники — нужны для ручного маппинга этапов из CSV
+  // на реальные этапы выбранной воронки (автоматический матч по имени
+  // не работает, если в CRM названия сокращены, напр. «Назн 1 конс»
+  // vs «НАЗНАЧЕНО ПЕРВИЧНАЯ КОНСУЛЬТАЦИЯ»).
+  const [allPipelines, setAllPipelines] = useState<{ id: string; name: string }[]>([])
+  const [allStagesState, setAllStagesState] = useState<
+    { id: string; name: string; pipeline_id: string }[]
+  >(stages.map(s => ({ id: s.id, name: s.name, pipeline_id: s.pipeline_id })))
+  const [targetPipelineId, setTargetPipelineId] = useState<string>(pipelineId)
+  // Ручной маппинг: CSV-имя этапа → stageId в targetPipelineId
+  // (null = «в первый этап воронки»).
+  const [stageMap, setStageMap] = useState<Record<string, string | null>>({})
   const [report, setReport] = useState<{
     total: number
     foundByPhone: number
@@ -4255,6 +4267,52 @@ function ImportDealsModal({
     unknownPipelines: string[]
     errors: string[]
   } | null>(null)
+
+  // Один раз подгружаем воронки и все этапы клиники, чтобы UI мог
+  // предложить ручной маппинг CSV-этапов.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const [{ data: pls }, { data: sts }] = await Promise.all([
+        supabase.from('pipelines').select('id, name').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
+        supabase.from('pipeline_stages').select('id, name, pipeline_id').eq('is_active', true).order('sort_order'),
+      ])
+      if (cancelled) return
+      if (pls) setAllPipelines(pls)
+      if (sts) setAllStagesState(sts)
+    })()
+    return () => { cancelled = true }
+  }, [supabase, clinicId])
+
+  // Уникальные имена этапов, встретившиеся в CSV (в исходном регистре).
+  const uniqueCsvStages = useMemo(() => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const r of rows) {
+      const s = (r['stage'] ?? '').trim()
+      if (!s || seen.has(s)) continue
+      seen.add(s)
+      out.push(s)
+    }
+    return out
+  }, [rows])
+
+  // Инициализируем/пересчитываем stageMap при смене файла или воронки:
+  // пытаемся автоматически сопоставить по имени, иначе — null (первый этап).
+  useEffect(() => {
+    if (uniqueCsvStages.length === 0) { setStageMap({}); return }
+    const pipelineStages = allStagesState.filter(s => s.pipeline_id === targetPipelineId)
+    const byNorm = new Map(pipelineStages.map(s => [normalizeName(s.name), s.id]))
+    const next: Record<string, string | null> = {}
+    for (const raw of uniqueCsvStages) {
+      const needle = normalizeName(raw)
+      const auto = byNorm.get(needle)
+        ?? allStagesState.find(s => normalizeName(s.name) === needle && s.pipeline_id === targetPipelineId)?.id
+      next[raw] = auto ?? null
+    }
+    setStageMap(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uniqueCsvStages, targetPipelineId, allStagesState])
 
   // Нормализация заголовков столбцов: кириллица/пробелы/регистр → канонические ключи.
   // AmoCRM экспортирует с развёрнутыми названиями («Название сделки», «Основной
@@ -4676,60 +4734,39 @@ function ImportDealsModal({
         const amount = amountRaw
           ? Number(amountRaw.replace(/[^\d.,-]/g, '').replace(',', '.'))
           : null
-        // Маппинг воронки: если в CSV есть колонка «воронка» и значение
-        // совпадает с одной из активных воронок клиники — переключаем
-        // сделку туда. Иначе — используем активную воронку из UI.
-        let targetPipelineId = pipelineId
+        // Воронка — берём выбранную пользователем в UI импорта
+        // (таблица маппинга «CSV-этап → этап воронки» привязана именно
+        // к этой воронке). Отдельную колонку «воронка» из CSV больше
+        // не учитываем — пользователь сам явно выбирает, куда лить.
         const pipelineRaw = (r['pipeline'] ?? '').trim()
-        if (pipelineRaw && pipelines.length > 0) {
+        if (pipelineRaw) {
           const needle = normalizeName(pipelineRaw)
-          const match = pipelines.find(p => normalizeName(p.name) === needle)
-          if (match) targetPipelineId = match.id
-          else {
-            // Воронка из CSV не найдена — fallback на первую активную.
-            targetPipelineId = firstPipelineId
-            unknownPipelines.add(pipelineRaw)
-          }
+          const known = pipelines.some(p => normalizeName(p.name) === needle)
+          if (!known) unknownPipelines.add(pipelineRaw)
         }
+        const effectivePipelineId = targetPipelineId
 
-        // Маппинг этапа: сперва ищем в целевой воронке, если не нашли —
-        // глобально по всем активным этапам клиники (этапы amoCRM часто
-        // живут в отдельной воронке «2 этап», и CSV «воронка» при этом
-        // может быть пустой). Если нашли в другой — подхватываем эту
-        // воронку (targetPipelineId меняется).
+        // Этап: берём явный маппинг из UI. Если в маппинге null —
+        // значит «в первый этап воронки» (stageFallback).
         const stageRaw = (r['stage'] ?? '').trim()
         let matchedStageName: string | null = null
         let stageId: string | null = null
         if (stageRaw) {
-          const needle = normalizeName(stageRaw)
-          const localStages = allStages.filter(s => s.pipeline_id === targetPipelineId)
-          const local = localStages.find(s => normalizeName(s.name) === needle)
-          if (local) {
-            stageId = local.id
-            matchedStageName = local.name
+          const mapped = stageMap[stageRaw] ?? null
+          if (mapped) {
+            const hit = allStages.find(s => s.id === mapped)
+            stageId = mapped
+            matchedStageName = hit?.name ?? null
             stageMatched++
           } else {
-            // Глобальный поиск по всем воронкам клиники.
-            const global = allStages.find(s => normalizeName(s.name) === needle)
-            if (global) {
-              targetPipelineId = global.pipeline_id
-              stageId = global.id
-              matchedStageName = global.name
-              stageMatched++
-            } else {
-              unknownStages.add(stageRaw)
-              stageFallback++
-            }
+            unknownStages.add(stageRaw)
+            stageFallback++
           }
         }
-        // Fallback для этапа: первый этап выбранной воронки (после
-        // возможного переключения выше).
+        // Fallback — первый этап выбранной воронки.
         if (!stageId) {
-          const localStages = allStages.filter(s => s.pipeline_id === targetPipelineId)
-          stageId =
-            targetPipelineId === pipelineId
-              ? defaultStageId
-              : (localStages[0]?.id ?? defaultStageId)
+          const localStages = allStages.filter(s => s.pipeline_id === effectivePipelineId)
+          stageId = localStages[0]?.id ?? defaultStageId
         }
         // Legacy колонка deals.stage (TEXT NOT NULL) — нужна до миграции
         // на чистые pipeline_stages. Берём имя сопоставленного этапа,
@@ -4920,6 +4957,74 @@ function ImportDealsModal({
               </div>
             )
           })()}
+          {rows.length > 0 && !report && allPipelines.length > 0 && (
+            <div className="border border-gray-100 rounded-md p-3 space-y-2">
+              <div className="text-xs text-gray-700 font-medium">
+                Воронка для импорта
+              </div>
+              <select
+                value={targetPipelineId}
+                onChange={e => setTargetPipelineId(e.target.value)}
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+              >
+                {allPipelines.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              {uniqueCsvStages.length > 0 && (
+                <>
+                  <div className="text-xs text-gray-700 font-medium pt-2">
+                    Маппинг этапов CSV → этапы воронки
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Названия в CRM часто сокращены («Назн 1 конс»), а в CSV —
+                    полные («НАЗНАЧЕНО ПЕРВИЧНАЯ КОНСУЛЬТАЦИЯ»). Сопоставьте
+                    вручную — маппинг запомнится только на этот импорт.
+                  </div>
+                  <div className="max-h-56 overflow-y-auto border border-gray-100 rounded">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 text-gray-500">
+                        <tr>
+                          <th className="px-2 py-1 text-left">Из CSV</th>
+                          <th className="px-2 py-1 text-left">→ Этап воронки</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {uniqueCsvStages.map(raw => {
+                          const pipelineStages = allStagesState.filter(
+                            s => s.pipeline_id === targetPipelineId
+                          )
+                          const value = stageMap[raw] ?? ''
+                          return (
+                            <tr key={raw} className="border-t border-gray-100">
+                              <td className="px-2 py-1 text-gray-700 truncate max-w-[220px]" title={raw}>
+                                «{raw}»
+                              </td>
+                              <td className="px-2 py-1">
+                                <select
+                                  value={value}
+                                  onChange={e => setStageMap(prev => ({
+                                    ...prev,
+                                    [raw]: e.target.value || null,
+                                  }))}
+                                  className="w-full border border-gray-200 rounded px-1 py-0.5"
+                                >
+                                  <option value="">— первый этап —</option>
+                                  {pipelineStages.map(s => (
+                                    <option key={s.id} value={s.id}>{s.name}</option>
+                                  ))}
+                                </select>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {rows.length > 0 && !report && (
             <div className="border border-gray-100 rounded-md overflow-hidden max-h-56 overflow-y-auto">
               <table className="w-full text-xs">
