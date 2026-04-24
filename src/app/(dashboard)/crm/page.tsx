@@ -3882,6 +3882,7 @@ function ImportDealsModal({
     unrecognizedHeaders: string[]
     unknownStages: string[]
     unknownResponsibles: string[]
+    unknownPipelines: string[]
     errors: string[]
   } | null>(null)
 
@@ -3910,6 +3911,9 @@ function ImportDealsModal({
     'описание': 'notes', 'notes': 'notes',
     // tags
     'теги': 'tags', 'tags': 'tags',
+    // birth_date — дата рождения пациента (формат DD.MM.YYYY)
+    'дата рождения': 'birth_date', 'др': 'birth_date',
+    'birth date': 'birth_date', 'birthday': 'birth_date', 'birth_date': 'birth_date',
     // external_id — ID сделки во внешней системе, для upsert при повторном импорте.
     'id': 'external_id', 'id сделки': 'external_id',
     'id amocrm': 'external_id', 'id амо': 'external_id', 'id амокрм': 'external_id',
@@ -3935,6 +3939,25 @@ function ImportDealsModal({
 
   function normalizeName(raw: string): string {
     return (raw ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+  }
+
+  // Парсинг даты рождения из формата DD.MM.YYYY (как экспортирует amoCRM /
+  // Google Sheets) в ISO YYYY-MM-DD для колонки patients.birth_date (DATE).
+  // Также принимаем DD/MM/YYYY и DD-MM-YYYY. Невалидная/пустая → null.
+  function parseBirthDate(raw: string): string | null {
+    const s = (raw ?? '').trim()
+    if (!s) return null
+    const m = s.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$/)
+    if (!m) return null
+    const [, d, mo, y] = m
+    const dd = d.padStart(2, '0')
+    const mm = mo.padStart(2, '0')
+    const yy = Number(y)
+    const di = Number(dd), mi = Number(mm)
+    if (yy < 1900 || yy > 2100) return null
+    if (mi < 1 || mi > 12) return null
+    if (di < 1 || di > 31) return null
+    return `${y}-${mm}-${dd}`
   }
 
   function parseCsv(text: string): {
@@ -4001,9 +4024,12 @@ function ImportDealsModal({
 
     const headerRow = splitLine(nonEmpty[0], headerDelim)
     const lines: string[][] = nonEmpty.slice(1).map(l => splitLine(l, dataDelim))
-    // Нормализация заголовка: BOM → пробелы → lowercase → collapse.
+    // Нормализация заголовка: BOM → _ в пробел → пробелы → lowercase → collapse.
+    // Подчёркивание в `_` → пробел, чтобы `id_amoCRM` и `дата_рождения`
+    // (формат Google Sheets export) ловились теми же alias'ами, что
+    // `id amoCRM` и `дата рождения`.
     const rawHeaders = headerRow.map(h =>
-      h.replace(/^\uFEFF/, '').trim().replace(/\s+/g, ' ').toLowerCase()
+      h.replace(/^\uFEFF/, '').trim().replace(/_/g, ' ').replace(/\s+/g, ' ').toLowerCase()
     )
     const headers = rawHeaders.map(resolveHeader)
     const parsed = lines
@@ -4040,7 +4066,10 @@ function ImportDealsModal({
     // Сначала отсекаем явно ненужные колонки amoCRM, чтобы они не
     // ловились по случайной подстроке («Компания контакта» → не patient,
     // «Дата создания сделки» → не name, «Sendapi телефон» → не phone).
-    if (/^(дата|кем |источник|utm_|roistat|компан|должност|возраст|email|факс|sendapi|instagram|tiktok|telegram|vkontakte|\bref\b|ref source|from$|gcl|_ym|yclid|fbclid|openstat|referrer|birthday|день рожд|тип записи|анкета|причина|врач|соглашение|пол\b)/i.test(h)) {
+    // birth_date — раньше других (чтобы «дата рождения» не утекла в общий
+    // `^дата` exclude ниже).
+    if (/^дата рожд|день рожд|^др$|birth/i.test(h)) return 'birth_date'
+    if (/^(дата|кем |источник|utm_|roistat|компан|должност|возраст|email|факс|sendapi|instagram|tiktok|telegram|vkontakte|\bref\b|ref source|from$|gcl|_ym|yclid|fbclid|openstat|referrer|тип записи|анкета|причина|врач|соглашение|пол\b)/i.test(h)) {
       return h
     }
     // external_id — первым, чтобы "ID" ушёл сюда, а не в patient через «имя»
@@ -4102,6 +4131,7 @@ function ImportDealsModal({
     const errors: string[] = []
     const unknownStages = new Set<string>()
     const unknownResponsibles = new Set<string>()
+    const unknownPipelines = new Set<string>()
 
     // Предзагружаем список пользователей клиники — нужен для маппинга
     // «ответственный» из CSV на user_profile.id. Дёшево один раз, чем
@@ -4124,16 +4154,19 @@ function ImportDealsModal({
     }))
     if (detectedHeaders.some(h => h.mapped === 'pipeline')) {
       const [{ data: pls }, { data: sts }] = await Promise.all([
-        supabase.from('pipelines').select('id, name').eq('clinic_id', clinicId).eq('is_active', true),
-        supabase.from('pipeline_stages').select('id, name, pipeline_id').eq('is_active', true),
+        supabase.from('pipelines').select('id, name').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
+        supabase.from('pipeline_stages').select('id, name, pipeline_id').eq('is_active', true).order('sort_order'),
       ])
       pipelines = pls ?? []
       if (sts) allStages = sts
     }
+    // Первая активная воронка клиники — fallback, если в CSV указана
+    // воронка, которой нет в системе.
+    const firstPipelineId = pipelines[0]?.id ?? pipelineId
 
     // Список нераспознанных колонок — для отчёта.
     const unrecognizedHeaders = detectedHeaders
-      .filter(h => !['name','patient','phone','amount','external_id','city','notes','tags','stage','pipeline','responsible'].includes(h.mapped))
+      .filter(h => !['name','patient','phone','amount','external_id','city','notes','tags','stage','pipeline','responsible','birth_date'].includes(h.mapped))
       .map(h => h.raw)
 
     for (const r of rows) {
@@ -4142,6 +4175,8 @@ function ImportDealsModal({
         const patientNameRaw = (r['patient'] ?? '').trim()
         const phoneNorm = normalizePhone(r['phone'] ?? '')
         const externalId = (r['external_id'] ?? '').trim()
+        const birthIso = parseBirthDate(r['birth_date'] ?? '')
+        const cityRaw = (r['city'] ?? '').trim()
 
         // Правило: нужна хотя бы какая-то идентификация — ФИО пациента
         // или телефон или название сделки. Иначе пустая строка.
@@ -4168,16 +4203,20 @@ function ImportDealsModal({
           if (byPhone) { patientId = byPhone.id; foundByPhone++ }
         }
 
-        // ── 2. Если не нашли — ищем по ФИО (точное совпадение после trim+lowercase) ──
+        // ── 2. Если не нашли — ищем по ФИО + дате рождения (если есть ДР) ──
+        //   Без ДР матч по одному только ФИО рискован (однофамильцы),
+        //   но если ДР не пришла в CSV — ограничиваемся ФИО.
         if (!patientId && patientNameRaw) {
           const nameNorm = normalizeName(patientNameRaw)
-          const { data: byName, error: nErr } = await supabase
+          let q = supabase
             .from('patients')
-            .select('id, full_name')
+            .select('id, full_name, birth_date')
             .eq('clinic_id', clinicId)
             .ilike('full_name', patientNameRaw) // ilike без wildcards = case-insensitive exact
             .is('deleted_at', null)
             .limit(5)
+          if (birthIso) q = q.eq('birth_date', birthIso)
+          const { data: byName, error: nErr } = await q
           if (nErr) throw new Error(`поиск по имени: ${nErr.message}`)
           const match = (byName ?? []).find(p => normalizeName(p.full_name) === nameNorm)
           if (match) { patientId = match.id; foundByName++ }
@@ -4192,6 +4231,8 @@ function ImportDealsModal({
               clinic_id: clinicId,
               full_name: fullName,
               phones: phoneNorm ? [phoneNorm] : [],
+              birth_date: birthIso,
+              city: cityRaw || null,
               gender: 'other', // обязательное поле в схеме; при желании админ поправит
             })
             .select('id')
@@ -4216,6 +4257,11 @@ function ImportDealsModal({
           const needle = normalizeName(pipelineRaw)
           const match = pipelines.find(p => normalizeName(p.name) === needle)
           if (match) targetPipelineId = match.id
+          else {
+            // Воронка из CSV не найдена — fallback на первую активную.
+            targetPipelineId = firstPipelineId
+            unknownPipelines.add(pipelineRaw)
+          }
         }
 
         // Маппинг этапа внутри выбранной воронки. Если значение из CSV
@@ -4257,15 +4303,22 @@ function ImportDealsModal({
           }
         }
 
+        // Имя сделки: если в CSV пусто — генерируем «Сделка #<external_id>»;
+        // если и external_id нет — падаем на ФИО пациента.
+        const effectiveName =
+          dealName ||
+          (externalId ? `Сделка #${externalId}` : '') ||
+          patientNameRaw ||
+          null
         const dealPayload: Record<string, unknown> = {
           clinic_id: clinicId,
           pipeline_id: targetPipelineId,
           stage_id: stageId,
-          name: dealName || patientNameRaw || null,
+          name: effectiveName,
           patient_id: patientId,
           responsible_user_id: responsibleId,
           contact_phone: phoneNorm || (r['phone'] ?? null) || null,
-          contact_city: r['city'] || null,
+          contact_city: cityRaw || null,
           notes: r['notes'] || null,
           tags: tags.length ? tags : [],
           amount: amount != null && !Number.isNaN(amount) ? amount : null,
@@ -4334,6 +4387,7 @@ function ImportDealsModal({
       unrecognizedHeaders,
       unknownStages: Array.from(unknownStages),
       unknownResponsibles: Array.from(unknownResponsibles),
+      unknownPipelines: Array.from(unknownPipelines),
       errors: errors.slice(0, 15),
     })
     setBusy(false)
@@ -4351,7 +4405,7 @@ function ImportDealsModal({
           <div>
             <p className="text-gray-600 mb-2">
               Загрузите CSV (разделитель «;» или «,»). Первая строка — заголовки. Распознаются:
-              <span className="font-mono text-xs text-gray-500"> название, пациент, телефон, город, сумма, заметка, теги, id_amoCRM, этап, ответственный</span>.
+              <span className="font-mono text-xs text-gray-500"> id_amoCRM, ответственный, название, теги, этап, воронка, пациент, телефон, дата_рождения, город</span>.
             </p>
             <p className="text-xs text-gray-500 mb-2">
               Пациенты ищутся сначала по телефону, затем по ФИО. Если не найдены — создаются автоматически.
@@ -4370,7 +4424,7 @@ function ImportDealsModal({
             </div>
           )}
           {detectedHeaders.length > 0 && !report && (() => {
-            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags', 'stage', 'pipeline', 'responsible']
+            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags', 'stage', 'pipeline', 'responsible', 'birth_date']
             const mappedSet = new Set(detectedHeaders.map(h => h.mapped))
             const missingCritical = ['name', 'patient', 'phone'].filter(k => !mappedSet.has(k))
             return (
@@ -4469,6 +4523,14 @@ function ImportDealsModal({
                   <div className="text-gray-500">Неизвестные ответственные ({report.unknownResponsibles.length}):</div>
                   <div className="text-xs text-amber-700 break-words">
                     {report.unknownResponsibles.map(s => `«${s}»`).join(', ')}
+                  </div>
+                </div>
+              )}
+              {report.unknownPipelines.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">Неизвестные воронки ({report.unknownPipelines.length}):</div>
+                  <div className="text-xs text-amber-700 break-words">
+                    {report.unknownPipelines.map(s => `«${s}»`).join(', ')}
                   </div>
                 </div>
               )}
