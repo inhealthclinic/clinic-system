@@ -3868,6 +3868,7 @@ function ImportDealsModal({
     { raw: string; mapped: string }[]
   >([])
   const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [report, setReport] = useState<{
     total: number
     foundByPhone: number
@@ -4119,6 +4120,7 @@ function ImportDealsModal({
   async function runImport() {
     if (busy || rows.length === 0) return
     setBusy(true)
+    setProgress({ done: 0, total: rows.length })
     let foundByPhone = 0
     let foundByName = 0
     let patientsCreated = 0
@@ -4169,7 +4171,15 @@ function ImportDealsModal({
       .filter(h => !['name','patient','phone','amount','external_id','city','notes','tags','stage','pipeline','responsible','birth_date'].includes(h.mapped))
       .map(h => h.raw)
 
-    for (const r of rows) {
+    for (let idx = 0; idx < rows.length; idx++) {
+      const r = rows[idx]
+      // Даём браузеру перерисовать UI каждые 10 строк — иначе всё
+      // выглядит как «зависание» (278 строк × ~3 запроса ≈ минута
+      // сетевых round-trip'ов в однопоточной JS-нитке).
+      if (idx > 0 && idx % 10 === 0) {
+        setProgress({ done: idx, total: rows.length })
+        await new Promise(res => setTimeout(res, 0))
+      }
       try {
         const dealName = (r['name'] ?? '').trim()
         const patientNameRaw = (r['patient'] ?? '').trim()
@@ -4391,6 +4401,7 @@ function ImportDealsModal({
       errors: errors.slice(0, 15),
     })
     setBusy(false)
+    setProgress(null)
   }
 
   return (
@@ -4563,7 +4574,9 @@ function ImportDealsModal({
               disabled={busy || rows.length === 0}
               className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
             >
-              {busy ? 'Импортируем…' : `Импортировать ${rows.length}`}
+              {busy
+                ? (progress ? `Импортируем ${progress.done} / ${progress.total}…` : 'Импортируем…')
+                : `Импортировать ${rows.length}`}
             </button>
           ) : (
             <button
