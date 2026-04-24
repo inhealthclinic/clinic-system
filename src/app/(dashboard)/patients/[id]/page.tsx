@@ -8,6 +8,7 @@ import { useAuthStore } from '@/lib/stores/authStore'
 import type { Patient, Appointment } from '@/types'
 import PatientHistory from '@/components/PatientHistory'
 import PatientTimeline from '@/components/patients/PatientTimeline'
+import PatientVaccinations from '@/components/patients/PatientVaccinations'
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ const STATUS_CLR: Record<string, string> = {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-type Tab = 'profile' | 'timeline' | 'medcard' | 'lab' | 'finance' | 'history'
+type Tab = 'profile' | 'timeline' | 'medcard' | 'lab' | 'vaccinations' | 'finance' | 'history'
 
 // ─── lab order types ──────────────────────────────────────────────────────────
 
@@ -506,6 +507,7 @@ export default function PatientCardPage() {
     { key: 'timeline', label: 'Лента' },
     { key: 'medcard', label: 'Медкарта' },
     { key: 'lab', label: 'Анализы' },
+    { key: 'vaccinations', label: 'Прививки' },
     { key: 'finance', label: 'Финансы' },
     { key: 'history', label: 'История' },
   ]
@@ -1593,6 +1595,11 @@ export default function PatientCardPage() {
       {/* ── Tab: Лента ──────────────────────────────────────────────────────── */}
       {activeTab === 'timeline' && (
         <PatientTimeline patientId={patient.id} />
+      )}
+
+      {/* ── Tab: Прививки ───────────────────────────────────────────────────── */}
+      {activeTab === 'vaccinations' && (
+        <PatientVaccinations patientId={patient.id} />
       )}
 
       {/* ── Tab: История ────────────────────────────────────────────────────── */}
