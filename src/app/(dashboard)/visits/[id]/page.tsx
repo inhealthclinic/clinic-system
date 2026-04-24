@@ -217,6 +217,20 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
   const [icdHits, setIcdHits]     = useState<ICD10Hit[]>([])
   const icdDebRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  /* Prescription bundles */
+  type Bundle = {
+    id: string
+    name: string
+    icd10_hint: string | null
+    prescriptions: Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>
+    use_count: number
+    doctor_id: string | null
+  }
+  const [bundles, setBundles] = useState<Bundle[]>([])
+  const [bundlesOpen, setBundlesOpen] = useState(false)
+  const [saveBundleOpen, setSaveBundleOpen] = useState(false)
+  const [newBundleName, setNewBundleName] = useState('')
+
   const [form, setForm] = useState({
     complaints: '', anamnesis: '', objective: '',
     bp: '', pulse: '', temperature: '', spo2: '', weight: '', height: '',
@@ -262,6 +276,52 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
       .maybeSingle()
       .then(({ data }) => { if (data) setLastRecord(data as typeof lastRecord) })
   }, [visit.id])
+
+  /* Load prescription bundles (doctor's own + clinic-shared) */
+  useEffect(() => {
+    if (!visit.clinic_id) return
+    supabase.from('prescription_bundles')
+      .select('id, name, icd10_hint, prescriptions, use_count, doctor_id')
+      .eq('clinic_id', visit.clinic_id)
+      .eq('is_active', true)
+      .or(`doctor_id.eq.${visit.doctor.id},doctor_id.is.null`)
+      .order('use_count', { ascending: false })
+      .limit(50)
+      .then(({ data }) => setBundles((data ?? []) as Bundle[]))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visit.clinic_id, visit.doctor.id])
+
+  const applyBundle = async (b: Bundle) => {
+    setForm(f => ({
+      ...f,
+      prescriptions: [...f.prescriptions, ...b.prescriptions.map(p => ({
+        drug_name: p.drug_name, dosage: p.dosage,
+        frequency: p.frequency, duration: p.duration ?? '',
+      }))],
+    }))
+    setBundlesOpen(false)
+    // bump use_count
+    await supabase.from('prescription_bundles')
+      .update({ use_count: b.use_count + 1 })
+      .eq('id', b.id)
+    setBundles(prev => prev.map(x => x.id === b.id ? { ...x, use_count: x.use_count + 1 } : x))
+  }
+
+  const saveCurrentAsBundle = async () => {
+    if (!newBundleName.trim() || form.prescriptions.length === 0) return
+    const { data } = await supabase.from('prescription_bundles').insert({
+      clinic_id: visit.clinic_id,
+      doctor_id: visit.doctor.id,
+      name: newBundleName.trim(),
+      icd10_hint: form.icd10_code || null,
+      prescriptions: form.prescriptions.filter(p => p.drug_name.trim()),
+    }).select().single()
+    if (data) {
+      setBundles(prev => [data as Bundle, ...prev])
+    }
+    setNewBundleName('')
+    setSaveBundleOpen(false)
+  }
 
   const searchICD = (q: string) => {
     setIcdQuery(q)
@@ -670,10 +730,69 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
               <span className="w-6 h-6 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">P</span>
               <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">План — назначения</p>
             </div>
-            <button type="button" onClick={addPrescription}
-              className="text-xs text-blue-600 hover:text-blue-700 font-medium">
-              + Добавить
-            </button>
+            <div className="flex items-center gap-2 relative">
+              {bundles.length > 0 && (
+                <>
+                  <button type="button" onClick={() => setBundlesOpen(v => !v)}
+                    className="text-xs text-purple-600 hover:text-purple-700 font-medium border border-purple-200 hover:border-purple-400 rounded px-2 py-1">
+                    ⭐ Шаблоны ({bundles.length})
+                  </button>
+                  {bundlesOpen && (
+                    <div className="absolute right-0 top-8 z-20 w-80 bg-white border border-gray-200 rounded-lg shadow-lg max-h-80 overflow-auto">
+                      <div className="sticky top-0 bg-gray-50 px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-gray-600">Выбрать шаблон</span>
+                        <button type="button" onClick={() => setBundlesOpen(false)} className="text-gray-400 hover:text-gray-600 text-sm">×</button>
+                      </div>
+                      {bundles.map(b => (
+                        <button key={b.id} type="button" onClick={() => applyBundle(b)}
+                          className="w-full text-left px-3 py-2 hover:bg-purple-50 border-b border-gray-50">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-medium text-gray-900 truncate">{b.name}</span>
+                            {b.icd10_hint && (
+                              <span className="text-[10px] font-mono bg-blue-50 text-blue-700 px-1 rounded">{b.icd10_hint}</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-gray-500 truncate mt-0.5">
+                            {b.prescriptions.map(p => p.drug_name).filter(Boolean).join(', ')}
+                          </p>
+                          <p className="text-[10px] text-gray-400 mt-0.5">
+                            {b.doctor_id ? '👤 мой' : '🏥 клиника'} · использован {b.use_count}×
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {form.prescriptions.length > 0 && (
+                <>
+                  <button type="button" onClick={() => setSaveBundleOpen(v => !v)}
+                    className="text-xs text-gray-500 hover:text-gray-700 font-medium border border-gray-200 hover:border-gray-400 rounded px-2 py-1"
+                    title="Сохранить текущие назначения как шаблон">
+                    💾
+                  </button>
+                  {saveBundleOpen && (
+                    <div className="absolute right-0 top-8 z-20 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+                      <p className="text-xs font-semibold text-gray-600 mb-2">Сохранить как шаблон</p>
+                      <input value={newBundleName} onChange={e => setNewBundleName(e.target.value)}
+                        placeholder="Напр. «Гипертония I ст.»" className={inp + ' mb-2'} />
+                      <div className="flex gap-2 justify-end">
+                        <button type="button" onClick={() => { setSaveBundleOpen(false); setNewBundleName('') }}
+                          className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
+                        <button type="button" onClick={saveCurrentAsBundle} disabled={!newBundleName.trim()}
+                          className="text-xs bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-3 py-1 rounded">
+                          Сохранить
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              <button type="button" onClick={addPrescription}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+                + Добавить
+              </button>
+            </div>
           </div>
           {form.prescriptions.length === 0 && (
             <p className="text-sm text-gray-400">Нет назначений</p>
