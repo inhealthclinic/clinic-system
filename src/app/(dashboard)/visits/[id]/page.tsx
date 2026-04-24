@@ -231,6 +231,26 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
   const [saveBundleOpen, setSaveBundleOpen] = useState(false)
   const [newBundleName, setNewBundleName] = useState('')
 
+  /* Medical record templates */
+  type MRTemplate = {
+    id: string
+    name: string
+    icd10_code: string | null
+    icd10_name: string | null
+    complaints: string | null
+    anamnesis: string | null
+    objective: string | null
+    diagnosis_text: string | null
+    recommendations: string | null
+    prescriptions: Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>
+    use_count: number
+    doctor_id: string | null
+  }
+  const [tpls, setTpls] = useState<MRTemplate[]>([])
+  const [tplsOpen, setTplsOpen] = useState(false)
+  const [saveTplOpen, setSaveTplOpen] = useState(false)
+  const [newTplName, setNewTplName] = useState('')
+
   const [form, setForm] = useState({
     complaints: '', anamnesis: '', objective: '',
     bp: '', pulse: '', temperature: '', spo2: '', weight: '', height: '',
@@ -305,6 +325,62 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
       .update({ use_count: b.use_count + 1 })
       .eq('id', b.id)
     setBundles(prev => prev.map(x => x.id === b.id ? { ...x, use_count: x.use_count + 1 } : x))
+  }
+
+  /* Load medrecord templates */
+  useEffect(() => {
+    if (!visit.clinic_id) return
+    supabase.from('medrecord_templates')
+      .select('id,name,icd10_code,icd10_name,complaints,anamnesis,objective,diagnosis_text,recommendations,prescriptions,use_count,doctor_id')
+      .eq('clinic_id', visit.clinic_id)
+      .eq('is_active', true)
+      .or(`doctor_id.eq.${visit.doctor.id},doctor_id.is.null`)
+      .order('use_count', { ascending: false })
+      .limit(50)
+      .then(({ data }) => setTpls((data ?? []) as MRTemplate[]))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visit.clinic_id, visit.doctor.id])
+
+  const applyTemplate = async (t: MRTemplate) => {
+    setForm(f => ({
+      ...f,
+      complaints:      t.complaints      ?? f.complaints,
+      anamnesis:       t.anamnesis       ?? f.anamnesis,
+      objective:       t.objective       ?? f.objective,
+      icd10_code:      t.icd10_code      ?? f.icd10_code,
+      icd10_name:      t.icd10_name      ?? f.icd10_name,
+      diagnosis_text:  t.diagnosis_text  ?? f.diagnosis_text,
+      recommendations: t.recommendations ?? f.recommendations,
+      prescriptions: [...f.prescriptions, ...(t.prescriptions ?? []).map(p => ({
+        drug_name: p.drug_name, dosage: p.dosage,
+        frequency: p.frequency, duration: p.duration ?? '',
+      }))],
+    }))
+    if (t.icd10_code) setIcdQuery(`${t.icd10_code} — ${t.icd10_name ?? ''}`)
+    setTplsOpen(false)
+    await supabase.from('medrecord_templates')
+      .update({ use_count: t.use_count + 1 }).eq('id', t.id)
+    setTpls(prev => prev.map(x => x.id === t.id ? { ...x, use_count: x.use_count + 1 } : x))
+  }
+
+  const saveCurrentAsTemplate = async () => {
+    if (!newTplName.trim()) return
+    const { data } = await supabase.from('medrecord_templates').insert({
+      clinic_id: visit.clinic_id,
+      doctor_id: visit.doctor.id,
+      name: newTplName.trim(),
+      icd10_code: form.icd10_code || null,
+      icd10_name: form.icd10_name || null,
+      complaints: form.complaints || null,
+      anamnesis: form.anamnesis || null,
+      objective: form.objective || null,
+      diagnosis_text: form.diagnosis_text || null,
+      recommendations: form.recommendations || null,
+      prescriptions: form.prescriptions.filter(p => p.drug_name.trim()),
+    }).select().single()
+    if (data) setTpls(prev => [data as MRTemplate, ...prev])
+    setNewTplName('')
+    setSaveTplOpen(false)
   }
 
   const saveCurrentAsBundle = async () => {
@@ -471,11 +547,12 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
     <div className="bg-white rounded-xl border border-gray-100 p-6 mt-4 text-sm text-gray-400 text-center">Загрузка медзаписи...</div>
   )
 
-  /* ── Last visit collapsible panel ── */
+  /* ── Last visit: inline-бейдж + sticky-панель справа при раскрытии ── */
   const LastVisitPanel = () => lastRecord ? (
-    <div className="mb-4 border border-blue-100 rounded-xl overflow-hidden">
+    <>
+      {/* Inline-бейдж (виден всегда, чтобы было на что жать) */}
       <button onClick={() => setShowLastVisit(v => !v)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-blue-50 hover:bg-blue-100 transition-colors text-left">
+        className="mb-4 w-full flex items-center justify-between px-4 py-3 bg-blue-50 hover:bg-blue-100 border border-blue-100 rounded-xl transition-colors text-left">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-blue-700">📋 Последний визит</span>
           <span className="text-xs text-blue-500">
@@ -484,39 +561,88 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
           {lastRecord.icd10_code && (
             <span className="text-xs font-mono bg-blue-200 text-blue-800 px-1.5 rounded">{lastRecord.icd10_code}</span>
           )}
+          <span className="text-xs text-blue-400 ml-2">{showLastVisit ? '· скрыть боковую панель' : '· открыть рядом →'}</span>
         </div>
-        <svg width="14" height="14" className={`text-blue-400 transition-transform ${showLastVisit ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24">
-          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
       </button>
+      {/* Sticky side panel */}
       {showLastVisit && (
-        <div className="px-4 py-3 bg-white space-y-2">
-          {lastRecord.diagnosis_text && (
-            <p className="text-sm text-gray-700"><span className="text-xs text-gray-400 mr-2">Диагноз:</span>{lastRecord.diagnosis_text}</p>
-          )}
-          {lastRecord.prescriptions?.length > 0 && (
-            <div>
-              <p className="text-xs text-gray-400 mb-1">Назначения:</p>
-              <div className="flex flex-wrap gap-1">
-                {lastRecord.prescriptions.map((p, i) => (
-                  <span key={i} className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{p.drug_name} {p.dosage}</span>
-                ))}
+        <div className="hidden xl:block fixed right-4 top-24 w-80 max-h-[calc(100vh-7rem)] overflow-auto z-30 bg-white border border-blue-200 rounded-xl shadow-lg">
+          <div className="sticky top-0 bg-blue-50 border-b border-blue-100 px-4 py-3 flex items-center justify-between">
+            <span className="text-xs font-semibold text-blue-700">📋 Прошлый визит</span>
+            <button onClick={() => setShowLastVisit(false)} className="text-blue-400 hover:text-blue-700 text-sm">×</button>
+          </div>
+          <div className="px-4 py-3 space-y-3 text-sm">
+            <p className="text-xs text-gray-500">
+              {new Date(lastRecord.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
+              {lastRecord.icd10_code && <span className="ml-2 font-mono bg-blue-50 text-blue-700 px-1.5 rounded">{lastRecord.icd10_code}</span>}
+            </p>
+            {lastRecord.diagnosis_text && (
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Диагноз</p>
+                <p className="text-gray-800">{lastRecord.diagnosis_text}</p>
               </div>
-              <button onClick={() => {
-                setForm(f => ({ ...f, prescriptions: [...f.prescriptions, ...lastRecord.prescriptions.map(p => ({
-                  drug_name: p.drug_name, dosage: p.dosage, frequency: p.frequency, duration: ''
-                }))] }))
-              }} className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">
-                + Скопировать назначения
-              </button>
-            </div>
-          )}
-          {lastRecord.recommendations && (
-            <p className="text-sm text-gray-600"><span className="text-xs text-gray-400 mr-2">Рекомендации:</span>{lastRecord.recommendations}</p>
-          )}
+            )}
+            {lastRecord.prescriptions?.length > 0 && (
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Назначения</p>
+                <div className="space-y-1">
+                  {lastRecord.prescriptions.map((p, i) => (
+                    <div key={i} className="text-xs bg-gray-50 rounded px-2 py-1">
+                      <span className="font-medium text-gray-800">{p.drug_name}</span>
+                      {p.dosage && <span className="text-gray-600 ml-1">{p.dosage}</span>}
+                      {p.frequency && <span className="text-gray-400 ml-1">· {p.frequency}</span>}
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => {
+                  setForm(f => ({ ...f, prescriptions: [...f.prescriptions, ...lastRecord.prescriptions.map(p => ({
+                    drug_name: p.drug_name, dosage: p.dosage, frequency: p.frequency, duration: ''
+                  }))] }))
+                }} className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                  + Скопировать всё
+                </button>
+              </div>
+            )}
+            {lastRecord.recommendations && (
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Рекомендации</p>
+                <p className="text-gray-700 text-xs">{lastRecord.recommendations}</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
-    </div>
+      {/* Mobile/tablet fallback — старый раскрывающийся блок */}
+      {showLastVisit && (
+        <div className="xl:hidden mb-4 border border-blue-100 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 bg-white space-y-2">
+            {lastRecord.diagnosis_text && (
+              <p className="text-sm text-gray-700"><span className="text-xs text-gray-400 mr-2">Диагноз:</span>{lastRecord.diagnosis_text}</p>
+            )}
+            {lastRecord.prescriptions?.length > 0 && (
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Назначения:</p>
+                <div className="flex flex-wrap gap-1">
+                  {lastRecord.prescriptions.map((p, i) => (
+                    <span key={i} className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{p.drug_name} {p.dosage}</span>
+                  ))}
+                </div>
+                <button onClick={() => {
+                  setForm(f => ({ ...f, prescriptions: [...f.prescriptions, ...lastRecord.prescriptions.map(p => ({
+                    drug_name: p.drug_name, dosage: p.dosage, frequency: p.frequency, duration: ''
+                  }))] }))
+                }} className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                  + Скопировать назначения
+                </button>
+              </div>
+            )}
+            {lastRecord.recommendations && (
+              <p className="text-sm text-gray-600"><span className="text-xs text-gray-400 mr-2">Рекомендации:</span>{lastRecord.recommendations}</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   ) : null
 
   /* ── View mode ── */
@@ -617,13 +743,71 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
   /* ── Edit / Create mode ── */
   return (
     <div className="bg-white rounded-xl border border-gray-100 overflow-hidden mt-4">
-      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between relative">
         <h3 className="text-sm font-semibold text-gray-900">
           {record ? 'Редактировать запись' : 'Медицинская запись'}
         </h3>
-        {record && (
-          <button onClick={() => setEditing(false)} className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
-        )}
+        <div className="flex items-center gap-2 relative">
+          <button type="button" onClick={() => setTplsOpen(v => !v)}
+            className="text-xs text-purple-600 hover:text-purple-700 border border-purple-200 hover:border-purple-400 rounded px-2 py-1">
+            📝 Шаблон {tpls.length > 0 && `(${tpls.length})`}
+          </button>
+          {tplsOpen && (
+            <div className="absolute right-0 top-8 z-30 w-96 bg-white border border-gray-200 rounded-lg shadow-lg max-h-96 overflow-auto">
+              <div className="sticky top-0 bg-gray-50 px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-600">Шаблоны медзаписи</span>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => { setSaveTplOpen(true); setTplsOpen(false) }}
+                    className="text-xs text-purple-600 hover:text-purple-700">+ Сохранить текущую</button>
+                  <button type="button" onClick={() => setTplsOpen(false)} className="text-gray-400 hover:text-gray-600">×</button>
+                </div>
+              </div>
+              {tpls.length === 0 ? (
+                <p className="px-3 py-4 text-xs text-gray-400 text-center">
+                  Пусто. Нажмите «Сохранить текущую», чтобы создать первый шаблон из заполненной записи.
+                </p>
+              ) : tpls.map(t => (
+                <button key={t.id} type="button" onClick={() => applyTemplate(t)}
+                  className="w-full text-left px-3 py-2 hover:bg-purple-50 border-b border-gray-50">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-gray-900 truncate">{t.name}</span>
+                    {t.icd10_code && (
+                      <span className="text-[10px] font-mono bg-blue-50 text-blue-700 px-1 rounded">{t.icd10_code}</span>
+                    )}
+                  </div>
+                  {t.diagnosis_text && (
+                    <p className="text-xs text-gray-500 truncate mt-0.5">{t.diagnosis_text}</p>
+                  )}
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    {t.doctor_id ? '👤 мой' : '🏥 клиника'} · {t.use_count}×
+                    {t.prescriptions?.length > 0 && ` · ${t.prescriptions.length} назнач.`}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+          {saveTplOpen && (
+            <div className="absolute right-0 top-8 z-30 w-80 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+              <p className="text-xs font-semibold text-gray-600 mb-2">Сохранить медзапись как шаблон</p>
+              <input value={newTplName} onChange={e => setNewTplName(e.target.value)}
+                placeholder="Напр. «ОРВИ — стандарт»" className={inp + ' mb-2'} />
+              <p className="text-[10px] text-gray-400 mb-2">
+                Сохранится: жалобы, анамнез, объективно, диагноз (+ICD-10), рекомендации, все назначения.
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button type="button" onClick={() => { setSaveTplOpen(false); setNewTplName('') }}
+                  className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
+                <button type="button" onClick={saveCurrentAsTemplate} disabled={!newTplName.trim()}
+                  className="text-xs bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-3 py-1 rounded">
+                  Сохранить
+                </button>
+              </div>
+            </div>
+          )}
+          {record && (
+            <button onClick={() => setEditing(false)} className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
+          )}
+        </div>
       </div>
       <div className="p-5 space-y-5">
 

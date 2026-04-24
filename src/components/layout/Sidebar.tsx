@@ -48,6 +48,28 @@ const NAV: NavItem[] = [
     ),
   },
   {
+    label: 'Мои пациенты',
+    href: '/doctor/patients',
+    roles: ['doctor'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M20 21v-2a4 4 0 00-3-3.87M4 21v-2a4 4 0 013-3.87" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="1.5"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Моя статистика',
+    href: '/doctor/analytics',
+    roles: ['doctor'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M3 3v18h18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M7 14l4-4 4 4 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+  },
+  {
     label: 'Расписание',
     href: '/schedule',
     roles: ['admin', 'doctor', 'nurse', 'manager'],
@@ -197,6 +219,8 @@ export function Sidebar({ onClose }: SidebarProps) {
     if (href === '/settings/clinic') {
       return pathname.startsWith('/settings')
     }
+    // /doctor root должен матчиться точно, чтобы /doctor/patients не подсвечивал оба пункта
+    if (href === '/doctor') return pathname === '/doctor'
     return pathname.startsWith(href)
   }
 
