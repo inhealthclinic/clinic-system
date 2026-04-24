@@ -49,12 +49,32 @@ function monthRange(offset: number): { from: string; to: string; label: string }
   }
 }
 
+type DoctorOpt = { id: string; first_name: string; last_name: string }
+
 export default function DoctorAnalyticsPage() {
   const supabase = createClient()
   const { profile } = useAuthStore()
   const [doctorId, setDoctorId] = useState<string | null>(null)
+  const [isOwnDoctor, setIsOwnDoctor] = useState(false)
+  const [allDoctors, setAllDoctors] = useState<DoctorOpt[]>([])
   const [monthOffset, setMonthOffset] = useState(0)  // 0 = текущий, -1 = прошлый
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!profile?.clinic_id || !profile.id) return
+    ;(async () => {
+      const [ownRes, allRes] = await Promise.all([
+        supabase.from('doctors').select('id')
+          .eq('user_id', profile.id).eq('clinic_id', profile.clinic_id).maybeSingle(),
+        supabase.from('doctors').select('id, first_name, last_name')
+          .eq('clinic_id', profile.clinic_id).eq('is_active', true).order('last_name'),
+      ])
+      const own = (ownRes.data as { id: string } | null)?.id ?? null
+      setIsOwnDoctor(!!own)
+      setAllDoctors((allRes.data ?? []) as DoctorOpt[])
+      setDoctorId(own ?? (allRes.data?.[0]?.id ?? null))
+    })()
+  }, [supabase, profile?.id, profile?.clinic_id])
   const [stats, setStats] = useState<Stats>({
     visits_total: 0, visits_completed: 0,
     unique_patients: 0, returning_patients: 0, revenue: 0,
@@ -65,15 +85,9 @@ export default function DoctorAnalyticsPage() {
   const range = useMemo(() => monthRange(monthOffset), [monthOffset])
 
   const load = useCallback(async () => {
-    if (!profile?.clinic_id || !profile.id) return
+    if (!profile?.clinic_id || !doctorId) return
     setLoading(true)
-
-    const { data: doc } = await supabase
-      .from('doctors').select('id')
-      .eq('user_id', profile.id).eq('clinic_id', profile.clinic_id).maybeSingle()
-    const dId = (doc as { id: string } | null)?.id ?? null
-    setDoctorId(dId)
-    if (!dId) { setLoading(false); return }
+    const dId = doctorId
 
     // Визиты за месяц
     const { data: vs } = await supabase
@@ -155,27 +169,42 @@ export default function DoctorAnalyticsPage() {
     setPayroll((py as Payroll | null) ?? null)
 
     setLoading(false)
-  }, [supabase, profile?.id, profile?.clinic_id, range.from, range.to])
+  }, [supabase, profile?.clinic_id, doctorId, range.from, range.to])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { if (doctorId) void load() }, [load, doctorId])
 
   if (!profile) return null
-  if (!loading && !doctorId) {
+  if (!doctorId && allDoctors.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
-        <p className="text-sm text-gray-400">Ваш профиль не привязан к врачу.</p>
+        <p className="text-sm text-gray-400">В клинике ещё нет врачей.</p>
       </div>
     )
   }
+
+  const selectedDoctor = allDoctors.find(d => d.id === doctorId)
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Моя эффективность</h1>
-          <p className="text-xs text-gray-500 capitalize">{range.label}</p>
+          <h1 className="text-xl font-semibold text-gray-900">
+            {isOwnDoctor ? 'Моя эффективность' : 'Эффективность врача'}
+          </h1>
+          <p className="text-xs text-gray-500 capitalize">
+            {range.label}
+            {!isOwnDoctor && selectedDoctor && <> · {selectedDoctor.last_name} {selectedDoctor.first_name}</>}
+          </p>
         </div>
         <div className="flex items-center gap-2">
+          {!isOwnDoctor && allDoctors.length > 1 && (
+            <select value={doctorId ?? ''} onChange={e => setDoctorId(e.target.value)}
+              className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              {allDoctors.map(d => (
+                <option key={d.id} value={d.id}>{d.last_name} {d.first_name}</option>
+              ))}
+            </select>
+          )}
           <button onClick={() => setMonthOffset(o => o - 1)}
             className="px-2 py-1 border border-gray-200 rounded-lg text-sm hover:bg-gray-50">←</button>
           <button onClick={() => setMonthOffset(0)} disabled={monthOffset === 0}

@@ -82,10 +82,14 @@ function ageOf(dob: string | null): string {
   return `${a} л.`
 }
 
+type DoctorOpt = { id: string; first_name: string; last_name: string }
+
 export default function DoctorDayPage() {
   const supabase = createClient()
   const { profile } = useAuthStore()
   const [doctorId, setDoctorId] = useState<string | null>(null)
+  const [isOwnDoctor, setIsOwnDoctor] = useState(false)
+  const [allDoctors, setAllDoctors] = useState<DoctorOpt[]>([])
   const [loading, setLoading] = useState(true)
 
   const [today, setToday] = useState<TodayAppt[]>([])
@@ -93,20 +97,30 @@ export default function DoctorDayPage() {
   const [labReady, setLabReady] = useState<LabReady[]>([])
   const [controls, setControls] = useState<ControlItem[]>([])
 
-  const load = useCallback(async () => {
+  // Детектим «свою» карточку врача и подгружаем список всех врачей клиники (для админа/владельца)
+  useEffect(() => {
     if (!profile?.clinic_id || !profile.id) return
+    ;(async () => {
+      const [ownRes, allRes] = await Promise.all([
+        supabase.from('doctors').select('id')
+          .eq('user_id', profile.id).eq('clinic_id', profile.clinic_id).maybeSingle(),
+        supabase.from('doctors').select('id, first_name, last_name')
+          .eq('clinic_id', profile.clinic_id)
+          .eq('is_active', true)
+          .order('last_name'),
+      ])
+      const own = (ownRes.data as { id: string } | null)?.id ?? null
+      setIsOwnDoctor(!!own)
+      setAllDoctors((allRes.data ?? []) as DoctorOpt[])
+      // Если есть свой — выбираем его, иначе первого из списка (для админа)
+      setDoctorId(own ?? (allRes.data?.[0]?.id ?? null))
+    })()
+  }, [supabase, profile?.id, profile?.clinic_id])
+
+  const load = useCallback(async () => {
+    if (!profile?.clinic_id || !doctorId) return
     setLoading(true)
-
-    // Узнаём doctor_id для текущего пользователя
-    const { data: doc } = await supabase
-      .from('doctors').select('id')
-      .eq('user_id', profile.id)
-      .eq('clinic_id', profile.clinic_id)
-      .maybeSingle()
-
-    const dId = (doc as { id: string } | null)?.id ?? null
-    setDoctorId(dId)
-    if (!dId) { setLoading(false); return }
+    const dId = doctorId
 
     const todayStr = new Date().toISOString().slice(0, 10)
 
@@ -195,9 +209,9 @@ export default function DoctorDayPage() {
     })))
 
     setLoading(false)
-  }, [supabase, profile?.id, profile?.clinic_id])
+  }, [supabase, profile?.clinic_id, doctorId])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { if (doctorId) void load() }, [load, doctorId])
 
   // Следующий пациент = ближайший appointment со статусом scheduled/confirmed/arrived
   const nextAppt = useMemo(() => {
@@ -214,28 +228,38 @@ export default function DoctorDayPage() {
 
   if (!profile) return null
 
-  if (!loading && !doctorId) {
+  if (!doctorId && allDoctors.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
-        <p className="text-sm text-gray-400">
-          Ваш профиль не привязан к врачу. Попросите администратора создать карточку врача.
-        </p>
+        <p className="text-sm text-gray-400">В клинике ещё нет врачей.</p>
       </div>
     )
   }
+
+  const selectedDoctor = allDoctors.find(d => d.id === doctorId)
 
   return (
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Мой день</h1>
+          <h1 className="text-xl font-semibold text-gray-900">
+            {isOwnDoctor ? 'Мой день' : 'День врача'}
+          </h1>
           <p className="text-xs text-gray-500">
             {new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}
-            {' · '}
-            Привет, {profile.first_name}
+            {isOwnDoctor && <> · Привет, {profile.first_name}</>}
+            {!isOwnDoctor && selectedDoctor && <> · {selectedDoctor.last_name} {selectedDoctor.first_name}</>}
           </p>
         </div>
+        {!isOwnDoctor && allDoctors.length > 1 && (
+          <select value={doctorId ?? ''} onChange={e => setDoctorId(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+            {allDoctors.map(d => (
+              <option key={d.id} value={d.id}>{d.last_name} {d.first_name}</option>
+            ))}
+          </select>
+        )}
         <div className="flex items-center gap-2">
           <Link href="/schedule" className="text-sm text-blue-600 hover:text-blue-800">Расписание →</Link>
           <button onClick={load} className="text-xs px-3 py-1.5 bg-white border border-gray-200 hover:bg-gray-50 rounded-lg">

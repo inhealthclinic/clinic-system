@@ -32,25 +32,39 @@ function ageOf(dob: string | null): string {
   return `${a} л.`
 }
 
+type DoctorOpt = { id: string; first_name: string; last_name: string }
+
 export default function MyPatientsPage() {
   const supabase = createClient()
   const { profile } = useAuthStore()
   const [doctorId, setDoctorId] = useState<string | null>(null)
+  const [isOwnDoctor, setIsOwnDoctor] = useState(false)
+  const [allDoctors, setAllDoctors] = useState<DoctorOpt[]>([])
   const [rows, setRows] = useState<MyPatient[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [onlyControl, setOnlyControl] = useState(false)
 
-  const load = useCallback(async () => {
+  useEffect(() => {
     if (!profile?.clinic_id || !profile.id) return
-    setLoading(true)
+    ;(async () => {
+      const [ownRes, allRes] = await Promise.all([
+        supabase.from('doctors').select('id')
+          .eq('user_id', profile.id).eq('clinic_id', profile.clinic_id).maybeSingle(),
+        supabase.from('doctors').select('id, first_name, last_name')
+          .eq('clinic_id', profile.clinic_id).eq('is_active', true).order('last_name'),
+      ])
+      const own = (ownRes.data as { id: string } | null)?.id ?? null
+      setIsOwnDoctor(!!own)
+      setAllDoctors((allRes.data ?? []) as DoctorOpt[])
+      setDoctorId(own ?? (allRes.data?.[0]?.id ?? null))
+    })()
+  }, [supabase, profile?.id, profile?.clinic_id])
 
-    const { data: doc } = await supabase
-      .from('doctors').select('id')
-      .eq('user_id', profile.id).eq('clinic_id', profile.clinic_id).maybeSingle()
-    const dId = (doc as { id: string } | null)?.id ?? null
-    setDoctorId(dId)
-    if (!dId) { setLoading(false); return }
+  const load = useCallback(async () => {
+    if (!profile?.clinic_id || !doctorId) return
+    setLoading(true)
+    const dId = doctorId
 
     // Все медзаписи этого врача — группируем по пациенту
     const { data: recs } = await supabase
@@ -95,9 +109,9 @@ export default function MyPatientsPage() {
     }
     setRows(Array.from(byPatient.values()).sort((a, b) => b.last_visit_at.localeCompare(a.last_visit_at)))
     setLoading(false)
-  }, [supabase, profile?.id, profile?.clinic_id])
+  }, [supabase, profile?.clinic_id, doctorId])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { if (doctorId) void load() }, [load, doctorId])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -113,24 +127,39 @@ export default function MyPatientsPage() {
 
   if (!profile) return null
 
-  if (!loading && !doctorId) {
+  if (!doctorId && allDoctors.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
-        <p className="text-sm text-gray-400">
-          Ваш профиль не привязан к врачу.
-        </p>
+        <p className="text-sm text-gray-400">В клинике ещё нет врачей.</p>
       </div>
     )
   }
+
+  const selectedDoctor = allDoctors.find(d => d.id === doctorId)
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Мои пациенты</h1>
-          <p className="text-xs text-gray-500">{rows.length} пациентов · у которых был хотя бы один ваш приём</p>
+          <h1 className="text-xl font-semibold text-gray-900">
+            {isOwnDoctor ? 'Мои пациенты' : 'Пациенты врача'}
+          </h1>
+          <p className="text-xs text-gray-500">
+            {rows.length} пациентов
+            {!isOwnDoctor && selectedDoctor && <> · {selectedDoctor.last_name} {selectedDoctor.first_name}</>}
+          </p>
         </div>
-        <Link href="/doctor" className="text-sm text-blue-600 hover:text-blue-800">← Мой день</Link>
+        <div className="flex items-center gap-2">
+          {!isOwnDoctor && allDoctors.length > 1 && (
+            <select value={doctorId ?? ''} onChange={e => setDoctorId(e.target.value)}
+              className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              {allDoctors.map(d => (
+                <option key={d.id} value={d.id}>{d.last_name} {d.first_name}</option>
+              ))}
+            </select>
+          )}
+          <Link href="/doctor" className="text-sm text-blue-600 hover:text-blue-800">← Мой день</Link>
+        </div>
       </div>
 
       <div className="bg-white border border-gray-100 rounded-xl p-3 flex items-center gap-2 flex-wrap">
