@@ -241,6 +241,10 @@ export default function CRMKanbanPage() {
   // Массовые действия — множественный выбор строк в таблице.
   const [bulkMode, setBulkMode] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
+  // Подтверждение массового удаления — отдельная модалка с typed-confirm
+  // ('УДАЛИТЬ'), чтобы случайный клик не сносил пол-воронки. Реальный кейс:
+  // менеджер выделил 278 сделок и нажал «Удалить» → потеряли всю CRM.
+  const [bulkDeletePending, setBulkDeletePending] = useState(false)
 
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
@@ -1039,15 +1043,11 @@ export default function CRMKanbanPage() {
             setBulkSelected(new Set())
             load()
           }}
-          onDelete={async () => {
-            const ids = Array.from(bulkSelected)
-            if (!confirm(`Удалить ${ids.length} сделок? Они пропадут из канбана, но останутся в истории (soft delete).`)) return
-            const { error } = await supabase.from('deals')
-              .update({ deleted_at: new Date().toISOString() })
-              .in('id', ids)
-            if (error) { alert(error.message); return }
-            setBulkSelected(new Set())
-            load()
+          onDelete={() => {
+            // Не удаляем сразу. Открываем модалку с typed-confirm —
+            // см. BulkDeleteConfirmModal ниже.
+            if (bulkSelected.size === 0) return
+            setBulkDeletePending(true)
           }}
           onAddTask={async ({ title, dueAt, assignedTo }) => {
             // Одна задача на каждую выбранную сделку. patient_id копируем
@@ -1112,6 +1112,24 @@ export default function CRMKanbanPage() {
             load()
           }}
           sources={sources}
+        />
+      )}
+
+      {/* Подтверждение массового удаления (typed-confirm). */}
+      {bulkDeletePending && (
+        <BulkDeleteConfirmModal
+          count={bulkSelected.size}
+          onCancel={() => setBulkDeletePending(false)}
+          onConfirm={async () => {
+            const ids = Array.from(bulkSelected)
+            const { error } = await supabase.from('deals')
+              .update({ deleted_at: new Date().toISOString() })
+              .in('id', ids)
+            if (error) { alert(error.message); return }
+            setBulkDeletePending(false)
+            setBulkSelected(new Set())
+            load()
+          }}
         />
       )}
 
@@ -3848,7 +3866,7 @@ function BulkActionBar({
   sources: Array<{ id: string; name: string }>
   onMoveStage: (stageId: string) => Promise<void>
   onAssign: (userId: string) => Promise<void>
-  onDelete: () => Promise<void>
+  onDelete: () => void | Promise<void>
   onAddTask: (p: { title: string; dueAt: string | null; assignedTo: string | null }) => Promise<void>
   onEditTags: (p: { addList?: string[]; removeList?: string[]; replaceList?: string[] }) => Promise<void>
   onEditField: (p: { field: 'amount' | 'source_id' | 'city'; value: string | null }) => Promise<void>
@@ -3862,7 +3880,7 @@ function BulkActionBar({
   // Режим уже виден (сама плашка), а в подписи — подсказка.
   const empty = count === 0
   const noop = busy || empty
-  async function wrap(fn: () => Promise<void>) {
+  async function wrap(fn: () => void | Promise<void>) {
     if (busy) return
     setBusy(true)
     try { await fn() } finally { setBusy(false) }
@@ -3980,6 +3998,87 @@ function BulkActionBar({
 }
 
 // ─── Модалки массовых действий ────────────────────────────────────────────────
+
+/**
+ * Подтверждение массового soft-delete сделок.
+ *
+ * Зачем typed-confirm, а не обычный confirm():
+ * - реальный кейс: менеджер случайно выделил всю воронку (278 сделок)
+ *   и снёс одним кликом, восстанавливать пришлось через SQL;
+ * - native confirm() слишком легко проскочить «по инерции» (Enter).
+ *
+ * Кнопка «Удалить» активна только когда юзер ввёл «УДАЛИТЬ» строго
+ * заглавными — это даёт паузу подумать.
+ */
+function BulkDeleteConfirmModal({
+  count, onCancel, onConfirm,
+}: {
+  count: number
+  onCancel: () => void
+  onConfirm: () => void | Promise<void>
+}) {
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ok = typed === 'УДАЛИТЬ'
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4"
+      onMouseDown={e => { if (e.target === e.currentTarget && !busy) onCancel() }}
+    >
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-red-700">
+            Удалить {count} сделок?
+          </h3>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none disabled:opacity-50"
+          >×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <p className="text-gray-700">
+            Сделки пропадут из канбана и таблицы. Они останутся в БД (soft-delete) —
+            восстановить можно из «Корзины».
+          </p>
+          <p className="text-gray-700">
+            Чтобы подтвердить, введите{' '}
+            <code className="px-1 py-0.5 bg-gray-100 rounded font-mono text-xs">УДАЛИТЬ</code>:
+          </p>
+          <input
+            autoFocus
+            value={typed}
+            onChange={e => setTyped(e.target.value)}
+            disabled={busy}
+            placeholder="УДАЛИТЬ"
+            className="w-full border border-gray-200 rounded px-2 py-1.5 font-mono uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500"
+          />
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 text-sm text-gray-700 disabled:opacity-50"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            disabled={!ok || busy}
+            onClick={async () => {
+              setBusy(true)
+              try { await onConfirm() } finally { setBusy(false) }
+            }}
+            className="px-4 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:bg-red-300 disabled:cursor-not-allowed"
+          >
+            {busy ? 'Удаляю…' : `Удалить ${count}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function BulkAddTaskModal({
   count, users, onCancel, onConfirm,
