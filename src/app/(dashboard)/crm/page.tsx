@@ -4266,6 +4266,7 @@ function ImportDealsModal({
     unknownResponsibles: string[]
     unknownPipelines: string[]
     errors: string[]
+    dbDistribution: { pipeline: string; count: number }[]
   } | null>(null)
 
   // Если родитель сменил активную воронку (пользователь кликнул другую
@@ -4612,6 +4613,11 @@ function ImportDealsModal({
     const unknownStages = new Set<string>()
     const unknownResponsibles = new Set<string>()
     const unknownPipelines = new Set<string>()
+    // Собираем external_id всех импортированных сделок — после прохода
+    // делаем sanity-check: сколько фактически в каждой воронке. Помогает
+    // отлавливать кейсы, когда update вроде прошёл без ошибки, но
+    // pipeline_id в БД остался старый (триггеры, RLS, FK и т.п.).
+    const importedExternalIds: string[] = []
 
     // Предзагружаем список пользователей клиники — нужен для маппинга
     // «ответственный» из CSV на user_profile.id. Дёшево один раз, чем
@@ -4668,6 +4674,7 @@ function ImportDealsModal({
         const patientNameRaw = (r['patient'] ?? '').trim()
         const phoneNorm = normalizePhone(r['phone'] ?? '')
         const externalId = (r['external_id'] ?? '').trim()
+        if (externalId) importedExternalIds.push(externalId)
         const birthIso = parseBirthDate(r['birth_date'] ?? '')
         const createdAtIso = parseCreatedAt(r['created_at'] ?? '')
         const cityRaw = (r['city'] ?? '').trim()
@@ -4786,18 +4793,30 @@ function ImportDealsModal({
           'new'
         const legacyStage = matchedStageName || stageRaw || fallbackStageName || 'new'
 
-        // Маппинг ответственного: по full_name в user_profiles клиники.
-        // Если не нашли — null, запоминаем в unknownResponsibles.
+        // Маппинг ответственного.
+        // amoCRM экспортирует часто только имя («Жанат», «Сулу»), а в
+        // нашей БД — full_name «Алимаева Жанат». Поэтому матчим по
+        // токенам: каждое слово CSV ищем как любую часть полного имени
+        // (имя/фамилия/отчество). Совпадение — если ВСЕ слова из CSV
+        // нашлись среди слов full_name. Если в CSV одно слово и
+        // совпадает строго один пользователь — берём его; иначе
+        // считаем неизвестным (чтобы не назначить «Жанат» на чужого).
         let responsibleId: string | null = null
         const responsibleRaw = (r['responsible'] ?? '').trim()
         if (responsibleRaw) {
           if (clinicUsers.length > 0) {
-            const needle = normalizeName(responsibleRaw)
-            const match = clinicUsers.find(
-              u => u.full_name && normalizeName(u.full_name) === needle
-            )
-            if (match) { responsibleId = match.id; responsibleMatched++ }
-            else unknownResponsibles.add(responsibleRaw)
+            const csvTokens = normalizeName(responsibleRaw).split(' ').filter(Boolean)
+            const candidates = clinicUsers.filter(u => {
+              if (!u.full_name) return false
+              const dbTokens = new Set(normalizeName(u.full_name).split(' ').filter(Boolean))
+              return csvTokens.every(t => dbTokens.has(t))
+            })
+            if (candidates.length === 1) {
+              responsibleId = candidates[0].id
+              responsibleMatched++
+            } else {
+              unknownResponsibles.add(responsibleRaw)
+            }
           } else {
             unknownResponsibles.add(responsibleRaw)
           }
@@ -4890,6 +4909,31 @@ function ImportDealsModal({
       }
     }
 
+    // Sanity-check: где фактически лежат импортированные сделки.
+    // Группируем по pipeline_id и резолвим имя воронки. Если результат
+    // не совпадает с ожиданием пользователя — сразу видно, в какую
+    // воронку реально приземлилось.
+    const dbDistribution: { pipeline: string; count: number }[] = []
+    if (importedExternalIds.length > 0) {
+      // Supabase ограничивает .in() ~1000 элементов — у нас обычно меньше.
+      const { data: verifyData } = await supabase
+        .from('deals')
+        .select('pipeline_id')
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .in('external_id', importedExternalIds.slice(0, 1000))
+      const counts = new Map<string, number>()
+      for (const row of verifyData ?? []) {
+        const pid = (row as { pipeline_id: string | null }).pipeline_id ?? '—'
+        counts.set(pid, (counts.get(pid) ?? 0) + 1)
+      }
+      for (const [pid, count] of counts) {
+        const name = allPipelines.find(p => p.id === pid)?.name ?? `(${pid.slice(0, 8)}…)`
+        dbDistribution.push({ pipeline: name, count })
+      }
+      dbDistribution.sort((a, b) => b.count - a.count)
+    }
+
     setReport({
       total: rows.length,
       foundByPhone,
@@ -4906,6 +4950,7 @@ function ImportDealsModal({
       unknownResponsibles: Array.from(unknownResponsibles),
       unknownPipelines: Array.from(unknownPipelines),
       errors: errors.slice(0, 15),
+      dbDistribution,
     })
     setBusy(false)
     setProgress(null)
@@ -5095,6 +5140,16 @@ function ImportDealsModal({
                     <div>— ответственный сопоставлен: <b className="text-green-700">{report.responsibleMatched}</b></div>
                   )}
                 </>
+              )}
+              {report.dbDistribution.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">В БД сейчас (по факту):</div>
+                  <div className="text-xs text-gray-800">
+                    {report.dbDistribution.map((d, i) => (
+                      <div key={i}>— <b>{d.pipeline}</b>: {d.count}</div>
+                    ))}
+                  </div>
+                </div>
               )}
               {report.unknownStages.length > 0 && (
                 <div className="mt-2">
