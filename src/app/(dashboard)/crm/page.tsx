@@ -1467,6 +1467,7 @@ const EVENT_LABEL: Record<string, string> = {
   deal_lost:          'Сделка потеряна',
   message_in:         'Входящее',
   message_out:        'Исходящее',
+  call_logged:        'Звонок',
 }
 
 // ── Шаблон сообщения «Получить предоплату» ───────────────────────────────
@@ -1496,6 +1497,7 @@ const EVENT_COLOR: Record<string, string> = {
   deal_lost:          '#dc2626',
   message_in:         '#0ea5e9',
   message_out:        '#22c55e',
+  call_logged:        '#f59e0b',
 }
 
 function DealModal({
@@ -1602,9 +1604,12 @@ function DealModal({
   const [search, setSearch] = useState('')
   const [msgDraft, setMsgDraft] = useState('')
   const msgChannel: MessageRow['channel'] = 'whatsapp'
-  const [composerMode, setComposerMode] = useState<'chat'|'note'|'task'>('chat')
+  const [composerMode, setComposerMode] = useState<'chat'|'note'|'task'|'call'>('chat')
   const [composerTaskDue, setComposerTaskDue] = useState('')
   const [composerTaskAssignee, setComposerTaskAssignee] = useState('')
+  // Параметры режима «Звонок»: входящий/исходящий + длительность (мм:сс).
+  const [callDirection, setCallDirection] = useState<'inbound' | 'outbound'>('outbound')
+  const [callDurationMin, setCallDurationMin] = useState<string>('')
   // «Записать на приём» — модалка из /schedule, переиспользованная.
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
@@ -2045,6 +2050,38 @@ function DealModal({
         }
         return
       }
+      if (composerMode === 'call') {
+        // Звонок: запись в crm_interactions + событие в timeline.
+        const summary = body
+        setMsgDraft('')
+        const durMin = callDurationMin.trim() ? Number(callDurationMin) : null
+        const duration_s = durMin != null && !Number.isNaN(durMin) && durMin >= 0
+          ? Math.round(durMin * 60)
+          : null
+        const { error: iErr } = await supabase.from('crm_interactions').insert({
+          clinic_id: form.clinic_id,
+          deal_id: form.id,
+          patient_id: form.patient_id,
+          type: 'call',
+          direction: callDirection,
+          summary,
+          duration_s,
+          created_by: profile?.id ?? null,
+        })
+        if (iErr) { alert(iErr.message); setMsgDraft(body); return }
+        // Событие в timeline. payload содержит то, что покажет таб «Хронология».
+        await supabase.from('deal_events').insert({
+          deal_id: form.id,
+          clinic_id: form.clinic_id,
+          kind: 'call_logged',
+          actor_id: profile?.id ?? null,
+          ref_table: 'crm_interactions',
+          payload: { direction: callDirection, summary, duration_s },
+        })
+        setCallDurationMin('')
+        loadRelated()
+        return
+      }
       if (composerMode === 'task') {
         setMsgDraft('')
         const assignee = composerTaskAssignee || profile?.id || null
@@ -2163,6 +2200,14 @@ function DealModal({
         const ch = String(p.channel ?? '')
         const preview = String(p.preview ?? '')
         return `${ch ? `[${ch}] ` : ''}${preview}`
+      }
+      case 'call_logged': {
+        const dir = String(p.direction ?? '') === 'inbound' ? '📥 входящий' : '📤 исходящий'
+        const dur = p.duration_s != null
+          ? ` · ${Math.round(Number(p.duration_s) / 60)} мин`
+          : ''
+        const summary = String(p.summary ?? '')
+        return `${dir}${dur}${summary ? ` · ${summary}` : ''}`
       }
       default:
         return ''
@@ -3254,6 +3299,42 @@ function DealModal({
                           </div>
                         )}
 
+                        {composerMode === 'call' && (
+                          <div className="px-3 pt-2 space-y-2 bg-amber-50 border-t border-amber-200">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="text-gray-500">направление:</span>
+                              <button
+                                type="button"
+                                onClick={() => setCallDirection('outbound')}
+                                className={`px-2 py-0.5 rounded-full border ${
+                                  callDirection === 'outbound'
+                                    ? 'bg-amber-600 text-white border-amber-600'
+                                    : 'bg-white border-amber-200 text-gray-700'
+                                }`}
+                              >📤 исходящий</button>
+                              <button
+                                type="button"
+                                onClick={() => setCallDirection('inbound')}
+                                className={`px-2 py-0.5 rounded-full border ${
+                                  callDirection === 'inbound'
+                                    ? 'bg-amber-600 text-white border-amber-600'
+                                    : 'bg-white border-amber-200 text-gray-700'
+                                }`}
+                              >📥 входящий</button>
+                              <span className="text-gray-500 ml-2">длит., мин:</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={callDurationMin}
+                                onChange={e => setCallDurationMin(e.target.value)}
+                                placeholder="—"
+                                className="w-16 border border-amber-200 rounded px-2 py-0.5 bg-white"
+                              />
+                            </div>
+                          </div>
+                        )}
+
                         {/* Input + send */}
                         <div className="flex gap-2 p-3">
                           <textarea
@@ -3267,6 +3348,7 @@ function DealModal({
                             placeholder={
                               composerMode === 'chat' ? 'Сообщение клиенту…  (⌘+Enter — отправить)' :
                               composerMode === 'note' ? 'Внутреннее примечание — видно только команде' :
+                              composerMode === 'call' ? 'О чём говорили: итог звонка, договорённости…' :
                               'Название задачи…'
                             }
                             rows={composerMode === 'task' ? 1 : 2}
@@ -3280,6 +3362,7 @@ function DealModal({
                             {sending ? '…' :
                              composerMode === 'chat' ? 'Отправить' :
                              composerMode === 'note' ? 'Сохранить' :
+                             composerMode === 'call' ? 'Записать звонок' :
                              'Поставить'}
                           </button>
                         </div>
@@ -3556,18 +3639,20 @@ function formatTaskDueHint(iso: string): string {
   return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
-const COMPOSER_MODES: { value: 'chat'|'note'|'task'; label: string; icon: string }[] = [
+type ComposerMode = 'chat' | 'note' | 'task' | 'call'
+const COMPOSER_MODES: { value: ComposerMode; label: string; icon: string }[] = [
   { value: 'chat', label: 'Чат',        icon: '💬' },
   { value: 'note', label: 'Примечание', icon: '📝' },
   { value: 'task', label: 'Задача',     icon: '✅' },
+  { value: 'call', label: 'Звонок',     icon: '📞' },
 ]
 
 function ComposerModeDropdown({
   value,
   onChange,
 }: {
-  value: 'chat'|'note'|'task'
-  onChange: (m: 'chat'|'note'|'task') => void
+  value: ComposerMode
+  onChange: (m: ComposerMode) => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement | null>(null)
