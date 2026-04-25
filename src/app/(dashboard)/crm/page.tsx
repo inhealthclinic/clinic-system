@@ -1437,6 +1437,25 @@ interface CommentRow {
   author?: { first_name: string; last_name: string | null } | null
 }
 
+// Рендерим аудио-вложения сообщения (голосовые из MediaRecorder).
+// attachments — JSONB-массив произвольной формы; ищем элементы с kind='audio'.
+function MessageAudioAttachments({ attachments }: { attachments: unknown[] | null | undefined }) {
+  if (!Array.isArray(attachments) || attachments.length === 0) return null
+  const audios = attachments.filter((a): a is { url: string; mime?: string; duration_s?: number } => {
+    if (!a || typeof a !== 'object') return false
+    const o = a as Record<string, unknown>
+    return o.kind === 'audio' && typeof o.url === 'string'
+  })
+  if (audios.length === 0) return null
+  return (
+    <div className="mt-1 space-y-1">
+      {audios.map((a, i) => (
+        <audio key={i} controls preload="metadata" src={a.url} className="max-w-full h-8" />
+      ))}
+    </div>
+  )
+}
+
 interface MessageRow {
   id: string
   deal_id: string
@@ -1631,6 +1650,14 @@ function DealModal({
   // Параметры режима «Звонок»: входящий/исходящий + длительность (мм:сс).
   const [callDirection, setCallDirection] = useState<'inbound' | 'outbound'>('outbound')
   const [callDurationMin, setCallDurationMin] = useState<string>('')
+  // Запись голосового сообщения (MediaRecorder). Хранится в Storage,
+  // ссылка летит в attachments сообщения.
+  const [recording, setRecording] = useState(false)
+  const [recElapsed, setRecElapsed] = useState(0)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recChunksRef = useRef<Blob[]>([])
+  const recStartRef = useRef<number>(0)
+  const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // «Записать на приём» — модалка из /schedule, переиспользованная.
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
@@ -1996,6 +2023,112 @@ function DealModal({
     if (error) { alert(error.message); return }
     setCommentDraft('')
     loadRelated()
+  }
+
+  // ─── Запись голосового сообщения ─────────────────────────────────────
+  // Поддерживается в Chrome/Edge/Safari через MediaRecorder. Записываем в
+  // audio/webm (или audio/mp4 на Safari) → upload в bucket deal-attachments
+  // → INSERT в deal_messages с attachments=[{url,mime,kind:'audio'}].
+  // Канал = текущий msgChannel (chat → whatsapp; note → internal).
+  async function startRecording() {
+    if (recording || isNew) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/mp4' // Safari fallback
+      const mr = new MediaRecorder(stream, { mimeType: mime })
+      recChunksRef.current = []
+      mr.ondataavailable = (e) => { if (e.data.size > 0) recChunksRef.current.push(e.data) }
+      mr.onstop = async () => {
+        // Собираем blob, останавливаем все треки микрофона.
+        const blob = new Blob(recChunksRef.current, { type: mime })
+        stream.getTracks().forEach(t => t.stop())
+        const duration_s = Math.max(1, Math.round((Date.now() - recStartRef.current) / 1000))
+        await uploadAndSendVoice(blob, mime, duration_s)
+      }
+      mediaRecorderRef.current = mr
+      recStartRef.current = Date.now()
+      setRecElapsed(0)
+      recTimerRef.current = setInterval(() => {
+        setRecElapsed(Math.round((Date.now() - recStartRef.current) / 1000))
+      }, 250)
+      mr.start()
+      setRecording(true)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      alert(`Не удалось включить микрофон: ${msg}`)
+    }
+  }
+
+  function stopRecording() {
+    if (!recording) return
+    if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null }
+    setRecording(false)
+    mediaRecorderRef.current?.stop()
+  }
+
+  function cancelRecording() {
+    // Остановить трекер, заблокировать onstop через очистку чанков.
+    if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null }
+    recChunksRef.current = []
+    setRecording(false)
+    const mr = mediaRecorderRef.current
+    if (mr && mr.state !== 'inactive') {
+      mr.onstop = null
+      mr.stop()
+      mr.stream.getTracks().forEach(t => t.stop())
+    }
+  }
+
+  async function uploadAndSendVoice(blob: Blob, mime: string, duration_s: number) {
+    setSending(true)
+    try {
+      const ext = mime.includes('mp4') ? 'm4a' : 'webm'
+      const path = `${form.clinic_id}/${form.id}/${Date.now()}.${ext}`
+      const { error: upErr } = await supabase.storage
+        .from('deal-attachments')
+        .upload(path, blob, { contentType: mime, upsert: false })
+      if (upErr) throw upErr
+      const { data: pub } = supabase.storage.from('deal-attachments').getPublicUrl(path)
+      const url = pub.publicUrl
+      const channel: MessageRow['channel'] = composerMode === 'note' ? 'internal' : msgChannel
+      const direction: MessageRow['direction'] = 'out'
+      const body = `🎙️ Голосовое сообщение (${duration_s} сек)`
+      const attachment = {
+        kind: 'audio',
+        url,
+        mime,
+        name: `voice-${duration_s}s.${ext}`,
+        size: blob.size,
+        duration_s,
+      }
+      const { data: inserted, error: insErr } = await supabase
+        .from('deal_messages')
+        .insert({
+          deal_id: form.id,
+          clinic_id: form.clinic_id,
+          direction,
+          channel,
+          author_id: profile?.id ?? null,
+          body,
+          attachments: [attachment],
+        })
+        .select('*, author:user_profiles!deal_messages_author_id_fkey(first_name,last_name)')
+        .single()
+      if (insErr) throw insErr
+      if (inserted) {
+        const m = inserted as unknown as MessageRow
+        setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m])
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      alert(`Не удалось отправить голосовое: ${msg}`)
+    } finally {
+      setSending(false)
+    }
   }
 
   async function sendMessage() {
@@ -3061,6 +3194,7 @@ function DealModal({
                                       )}
                                     </div>
                                     <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                    <MessageAudioAttachments attachments={m.attachments} />
                                     <div className="text-[10px] mt-1 text-gray-500">
                                       {new Date(m.created_at).toLocaleString('ru-RU')}
                                     </div>
@@ -3086,6 +3220,7 @@ function DealModal({
                                     )}
                                   </div>
                                   <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                  <MessageAudioAttachments attachments={m.attachments} />
                                   <div className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
                                     <span>{new Date(m.created_at).toLocaleString('ru-RU')}</span>
                                     {m.direction === 'out' && (
@@ -3375,9 +3510,42 @@ function DealModal({
                             rows={composerMode === 'task' ? 1 : 2}
                             className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
                           />
+                          {(composerMode === 'chat' || composerMode === 'note') && (
+                            recording ? (
+                              <div className="self-end flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={cancelRecording}
+                                  title="Отменить запись"
+                                  className="px-2 py-1.5 text-sm rounded border border-gray-200 hover:bg-gray-50 text-gray-600"
+                                >
+                                  ✕
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={stopRecording}
+                                  title="Остановить и отправить"
+                                  className="px-3 py-1.5 text-sm rounded bg-red-600 hover:bg-red-700 text-white flex items-center gap-1.5"
+                                >
+                                  <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse" />
+                                  {Math.floor(recElapsed / 60)}:{String(recElapsed % 60).padStart(2, '0')}
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={startRecording}
+                                disabled={sending || isNew}
+                                title="Записать голосовое сообщение"
+                                className="self-end px-3 py-1.5 text-sm rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-50"
+                              >
+                                🎙️
+                              </button>
+                            )
+                          )}
                           <button
                             onClick={submitComposer}
-                            disabled={!msgDraft.trim() || sending}
+                            disabled={!msgDraft.trim() || sending || recording}
                             className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
                           >
                             {sending ? '…' :
