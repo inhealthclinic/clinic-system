@@ -2240,7 +2240,7 @@ function DealModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
       <div
-        className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden relative"
+        className="bg-gray-50 shadow-2xl w-full max-w-[1600px] ml-auto flex flex-col h-full overflow-hidden relative"
         onClick={e => e.stopPropagation()}
       >
         {/* Боковая панель непрочитанных — выезжает слева */}
