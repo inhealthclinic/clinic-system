@@ -662,6 +662,11 @@ export default function CRMKanbanPage() {
                   setMoreMenuOpen(false)
                 }}
               />
+              <MoreMenuItem
+                label="Корзина"
+                icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                onClick={() => { router.push('/crm/trash'); setMoreMenuOpen(false) }}
+              />
 
               <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wider text-gray-400 border-t border-gray-100 mt-1">
                 Сортировка
