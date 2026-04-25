@@ -4887,6 +4887,10 @@ function ImportDealsModal({
                 stage_id: stageId,
                 stage: legacyStage,
                 responsible_user_id: responsibleId,
+                // Если в БД сделка с таким external_id была soft-deleted
+                // (например, менеджер очистил воронку через массовое
+                // «Удалить»), повторный импорт CSV возвращает её в строй.
+                deleted_at: null,
               })
               .eq('id', existing.id)
             if (upErr) throw new Error(`обновление сделки: ${upErr.message}`)
