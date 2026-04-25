@@ -401,8 +401,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[greenapi webhook] error:', err)
-    // Возвращаем 200 чтобы GreenAPI не ретраил штормом;
-    // внутренние ошибки логируем и разбираем отдельно.
+    // Возвращаем 200 чтобы GreenAPI не ретраил штормом, но событие
+    // НЕ должно потеряться: пишем в webhook_errors (мигр. 082),
+    // админ увидит непрочитанные в /settings/audit или прямым SELECT.
+    try {
+      const sb = admin()
+      const errMsg = err instanceof Error ? err.message : String(err)
+      const errCode = (err as { code?: string })?.code ?? null
+      const externalId =
+        (wh as { idMessage?: string })?.idMessage ??
+        (wh as { senderData?: { idMessage?: string } })?.senderData?.idMessage ??
+        null
+      await sb.from('webhook_errors').insert({
+        source: 'greenapi',
+        event_type: wh.typeWebhook ?? null,
+        external_id: externalId,
+        error_message: errMsg,
+        error_code: errCode,
+        payload: wh as object,
+        context: null,
+      })
+    } catch (logErr) {
+      // Если даже лог-инсёрт упал — последняя надежда console.error,
+      // оттуда Vercel logs. Большего сделать в этой точке нельзя.
+      console.error('[greenapi webhook] failed to log error:', logErr)
+    }
     return NextResponse.json({ ok: false, error: String(err) })
   }
 }
