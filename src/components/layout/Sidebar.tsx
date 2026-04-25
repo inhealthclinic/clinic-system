@@ -227,11 +227,19 @@ export function Sidebar({ onClose }: SidebarProps) {
   // Бейджик «новые заказы в лабораторию» на пункте Лаборатория.
   const { count: labPending } = useLabPendingOrders()
 
-  // owner видит всё; остальные — только пункты, где их роль перечислена в roles.
+  // owner видит admin-набор + пункты без роли; чисто докторские пункты
+  // (раздел /doctor — «Мой день», «Мои пациенты», «Входящие», «Моя статистика»,
+  // «Мои настройки») и /messages у owner-а скрыты — они дублируют CRM.
+  // Остальные роли — только пункты, где их роль перечислена в roles.
   const roleSlug = profile?.role?.slug
+  const HIDDEN_FOR_OWNER = new Set([
+    '/doctor', '/doctor/patients', '/doctor/tasks',
+    '/doctor/analytics', '/doctor/settings',
+    '/messages',
+  ])
   const visibleNav = NAV.filter(item => {
+    if (roleSlug === 'owner') return !HIDDEN_FOR_OWNER.has(item.href)
     if (!item.roles) return true
-    if (roleSlug === 'owner') return true
     return roleSlug ? item.roles.includes(roleSlug as NonNullable<NavItem['roles']>[number]) : false
   })
 
