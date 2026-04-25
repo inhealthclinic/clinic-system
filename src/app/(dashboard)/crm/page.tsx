@@ -1032,11 +1032,36 @@ export default function CRMKanbanPage() {
         <BulkActionBar
           count={bulkSelected.size}
           stages={activeStages}
+          allStages={stages}
+          pipelines={pipelines}
           users={users}
           onCancel={() => { setBulkMode(false); setBulkSelected(new Set()) }}
           onMoveStage={async (stageId) => {
             const ids = Array.from(bulkSelected)
-            const { error } = await supabase.from('deals').update({ stage_id: stageId }).in('id', ids)
+            // Этап мог быть из другой воронки — обязательно проставляем
+            // консистентный pipeline_id, иначе сделки выпадут из канбана
+            // (фильтрация в kanban идёт по паре pipeline_id+stage_id).
+            const target = stages.find(s => s.id === stageId)
+            const patch: Record<string, unknown> = { stage_id: stageId }
+            if (target?.pipeline_id) patch.pipeline_id = target.pipeline_id
+            if (target?.code) patch.stage = target.code
+            const { error } = await supabase.from('deals').update(patch).in('id', ids)
+            if (error) { alert(error.message); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onMovePipeline={async (pipelineId) => {
+            // Перенос пачки в первый этап выбранной воронки.
+            const targetStage = stages
+              .filter(s => s.pipeline_id === pipelineId && s.is_active)
+              .sort((a, b) => a.sort_order - b.sort_order)[0]
+            if (!targetStage) { alert('В воронке нет активных этапов'); return }
+            const ids = Array.from(bulkSelected)
+            const { error } = await supabase.from('deals').update({
+              pipeline_id: pipelineId,
+              stage_id: targetStage.id,
+              stage: targetStage.code,
+            }).in('id', ids)
             if (error) { alert(error.message); return }
             setBulkSelected(new Set())
             load()
@@ -3855,9 +3880,12 @@ function TemplatesDropdown({
 function BulkActionBar({
   count,
   stages,
+  allStages,
+  pipelines,
   users,
   sources,
   onMoveStage,
+  onMovePipeline,
   onAssign,
   onDelete,
   onAddTask,
@@ -3867,9 +3895,13 @@ function BulkActionBar({
 }: {
   count: number
   stages: Stage[]
+  // Все этапы клиники — для смены воронки в одной операции.
+  allStages: Stage[]
+  pipelines: Pipeline[]
   users: UserLite[]
   sources: Array<{ id: string; name: string }>
   onMoveStage: (stageId: string) => Promise<void>
+  onMovePipeline: (pipelineId: string) => Promise<void>
   onAssign: (userId: string) => Promise<void>
   onDelete: () => void | Promise<void>
   onAddTask: (p: { title: string; dueAt: string | null; assignedTo: string | null }) => Promise<void>
@@ -3917,9 +3949,42 @@ function BulkActionBar({
             if (v) wrap(() => onMoveStage(v))
           }}
           className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+          title="Перенести в этап (любой воронки)"
         >
           <option value="" disabled>Изм. этап</option>
-          {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          {/* Группируем по воронкам, чтобы можно было переносить
+              между воронками одним действием. pipeline_id обновится
+              автоматически (см. onMoveStage в page-level). */}
+          {pipelines.filter(p => p.is_active).map(p => {
+            const stagesInPipe = allStages
+              .filter(s => s.pipeline_id === p.id && s.is_active)
+              .sort((a, b) => a.sort_order - b.sort_order)
+            if (stagesInPipe.length === 0) return null
+            return (
+              <optgroup key={p.id} label={p.name}>
+                {stagesInPipe.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </optgroup>
+            )
+          })}
+        </select>
+
+        <select
+          disabled={noop}
+          defaultValue=""
+          onChange={e => {
+            const v = e.target.value
+            e.currentTarget.value = ''
+            if (v) wrap(() => onMovePipeline(v))
+          }}
+          className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+          title="Перенести в воронку (на её первый этап)"
+        >
+          <option value="" disabled>Изм. воронку</option>
+          {pipelines.filter(p => p.is_active).map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
         </select>
 
         <button
