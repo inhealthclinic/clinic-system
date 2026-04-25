@@ -245,6 +245,9 @@ export default function CRMKanbanPage() {
   // ('УДАЛИТЬ'), чтобы случайный клик не сносил пол-воронки. Реальный кейс:
   // менеджер выделил 278 сделок и нажал «Удалить» → потеряли всю CRM.
   const [bulkDeletePending, setBulkDeletePending] = useState(false)
+  // Быстрое создание сделки — мини-модалка имя+телефон, чтобы не открывать
+  // большой DealModal на каждый входящий звонок.
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false)
 
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
@@ -752,6 +755,13 @@ export default function CRMKanbanPage() {
         </div>
 
         <button
+          onClick={() => setQuickCreateOpen(true)}
+          className="text-sm px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
+          title="Быстрая сделка: имя + телефон"
+        >
+          ⚡ Быстро
+        </button>
+        <button
           onClick={() => openDeal({
             id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
             pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
@@ -1142,6 +1152,20 @@ export default function CRMKanbanPage() {
             load()
           }}
           sources={sources}
+        />
+      )}
+
+      {/* Быстрое создание сделки — мини-модалка имя+телефон. */}
+      {quickCreateOpen && (
+        <QuickCreateDealModal
+          clinicId={clinicId ?? ''}
+          pipelineId={activePipelineId}
+          stageId={activeStages[0]?.id ?? null}
+          stageCode={activeStages[0]?.code ?? null}
+          funnelCode={activePipeline?.code ?? 'leads'}
+          responsibleId={profile?.id ?? null}
+          onCancel={() => setQuickCreateOpen(false)}
+          onCreated={() => { setQuickCreateOpen(false); load() }}
         />
       )}
 
@@ -4143,6 +4167,185 @@ function BulkDeleteConfirmModal({
             className="px-4 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:bg-red-300 disabled:cursor-not-allowed"
           >
             {busy ? 'Удаляю…' : `Удалить ${count}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Быстрое создание сделки: имя + телефон → готово.
+ *
+ * Логика:
+ * - нормализуем телефон (только цифры, 8 → 7),
+ * - ищем пациента по phone в массиве phones; если есть — линкуем,
+ * - если нет — создаём пациента с full_name = «имя» из формы,
+ * - создаём сделку в первом активном этапе текущей воронки,
+ *   ответственный — текущий пользователь.
+ *
+ * Для повседневной работы менеджера: входящий звонок → 5 секунд
+ * на ввод → сделка в работе. Полный DealModal — для деталей.
+ */
+function QuickCreateDealModal({
+  clinicId,
+  pipelineId,
+  stageId,
+  stageCode,
+  funnelCode,
+  responsibleId,
+  onCancel,
+  onCreated,
+}: {
+  clinicId: string
+  pipelineId: string | null
+  stageId: string | null
+  stageCode: string | null
+  funnelCode: string
+  responsibleId: string | null
+  onCancel: () => void
+  onCreated: () => void
+}) {
+  const supabase = useMemo(() => createClient(), [])
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  function normalizePhone(raw: string): string {
+    const digits = (raw ?? '').replace(/\D+/g, '')
+    if (digits.length < 7) return ''
+    return digits.replace(/^8/, '7')
+  }
+
+  async function submit() {
+    setErr(null)
+    const cleanName = name.trim()
+    const phoneNorm = normalizePhone(phone)
+    if (!cleanName) { setErr('Введите имя.'); return }
+    if (!phoneNorm) { setErr('Введите телефон (минимум 7 цифр).'); return }
+    if (!stageId || !pipelineId) { setErr('В воронке нет этапов.'); return }
+
+    setBusy(true)
+    try {
+      // 1. Ищем пациента по телефону.
+      const { data: existing, error: selErr } = await supabase
+        .from('patients')
+        .select('id, full_name, phones')
+        .eq('clinic_id', clinicId)
+        .contains('phones', [phoneNorm])
+        .is('deleted_at', null)
+        .limit(1)
+        .maybeSingle()
+      if (selErr && selErr.code !== 'PGRST116') throw selErr
+
+      let patientId: string
+      if (existing) {
+        patientId = existing.id
+      } else {
+        // 2. Создаём пациента.
+        const { data: created, error: insErr } = await supabase
+          .from('patients')
+          .insert({
+            clinic_id: clinicId,
+            full_name: cleanName,
+            phones: [phoneNorm],
+          })
+          .select('id')
+          .single()
+        if (insErr) throw insErr
+        patientId = created.id
+      }
+
+      // 3. Создаём сделку.
+      const { error: dealErr } = await supabase.from('deals').insert({
+        clinic_id: clinicId,
+        name: cleanName,
+        patient_id: patientId,
+        pipeline_id: pipelineId,
+        stage_id: stageId,
+        stage: stageCode,
+        funnel: funnelCode,
+        status: 'open',
+        responsible_user_id: responsibleId,
+        contact_phone: phoneNorm,
+      })
+      if (dealErr) throw dealErr
+
+      onCreated()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setErr(msg)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4"
+      onMouseDown={e => { if (e.target === e.currentTarget && !busy) onCancel() }}
+    >
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">⚡ Быстрая сделка</h3>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none disabled:opacity-50"
+          >×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <label className="block">
+            <span className="text-gray-600">Имя пациента *</span>
+            <input
+              autoFocus
+              value={name}
+              onChange={e => setName(e.target.value)}
+              disabled={busy}
+              placeholder="Иванов Иван"
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+              onKeyDown={e => { if (e.key === 'Enter') submit() }}
+            />
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Телефон *</span>
+            <input
+              type="tel"
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+              disabled={busy}
+              placeholder="+7 ..."
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5 font-mono"
+              onKeyDown={e => { if (e.key === 'Enter') submit() }}
+            />
+          </label>
+          <p className="text-xs text-gray-500">
+            Если пациент с таким телефоном уже есть — сделка прилинкуется к нему.
+            Иначе создастся новый пациент.
+          </p>
+          {err && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+              {err}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 text-sm text-gray-700 disabled:opacity-50"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={submit}
+            className="px-4 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50"
+          >
+            {busy ? 'Создаю…' : 'Создать сделку'}
           </button>
         </div>
       </div>
