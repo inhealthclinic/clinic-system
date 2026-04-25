@@ -248,6 +248,10 @@ export default function CRMKanbanPage() {
   // Быстрое создание сделки — мини-модалка имя+телефон, чтобы не открывать
   // большой DealModal на каждый входящий звонок.
   const [quickCreateOpen, setQuickCreateOpen] = useState(false)
+  // Глобальный поиск по телефону: ищет ПО ВСЕМ сделкам клиники (не только
+  // загруженные 1000), потому что менеджеру звонят, а сделка может лежать
+  // в другой воронке или ниже в очереди.
+  const [phoneSearchOpen, setPhoneSearchOpen] = useState(false)
 
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
@@ -815,8 +819,16 @@ export default function CRMKanbanPage() {
               value={listSearch}
               onChange={e => setListSearch(e.target.value)}
               placeholder="Поиск по сделкам: имя, телефон, тег, город…"
-              className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
+              className="w-full pl-9 pr-24 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
+            <button
+              type="button"
+              onClick={() => setPhoneSearchOpen(true)}
+              title="Поиск по телефону по всем сделкам клиники (горячая клавиша: /)"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-1 text-[11px] rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
+            >
+              📞 Глобально
+            </button>
           </div>
         </div>
 
@@ -1152,6 +1164,15 @@ export default function CRMKanbanPage() {
             load()
           }}
           sources={sources}
+        />
+      )}
+
+      {/* Глобальный поиск по телефону — по всем сделкам клиники. */}
+      {phoneSearchOpen && (
+        <PhoneSearchModal
+          clinicId={clinicId ?? ''}
+          onCancel={() => setPhoneSearchOpen(false)}
+          onPick={(d) => { setPhoneSearchOpen(false); openDeal(d) }}
         />
       )}
 
@@ -4253,6 +4274,158 @@ function BulkDeleteConfirmModal({
           >
             {busy ? 'Удаляю…' : `Удалить ${count}`}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Глобальный поиск сделки по телефону.
+ *
+ * Сценарий: менеджеру звонит клиент, надо за секунду найти его карточку.
+ * Стандартный поиск на /crm работает только по уже загруженным 1000
+ * сделкам и в рамках активной воронки — этого мало. Здесь идём прямо в
+ * БД по контакт-телефону сделки И по массиву телефонов пациента.
+ */
+function PhoneSearchModal({
+  clinicId,
+  onCancel,
+  onPick,
+}: {
+  clinicId: string
+  onCancel: () => void
+  onPick: (d: DealRow) => void
+}) {
+  const supabase = useMemo(() => createClient(), [])
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<DealRow[]>([])
+  const [loading, setLoading] = useState(false)
+
+  // Цифры из ввода — для сравнения. Работаем только с phoneNorm длиной >= 4.
+  const digits = query.replace(/\D+/g, '').replace(/^8/, '7')
+
+  useEffect(() => {
+    if (digits.length < 4) { setResults([]); return }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      setLoading(true)
+      // 1. По contact_phone сделки.
+      const { data: byContact } = await supabase
+        .from('deals')
+        .select(`
+          id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel,
+          status, responsible_user_id, source_id, amount, preferred_doctor_id,
+          appointment_type, loss_reason_id, contact_phone, contact_city, notes,
+          tags, custom_fields, stage_entered_at, created_at, updated_at,
+          patient:patients(id, full_name, phones, birth_date, city),
+          responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name)
+        `)
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .ilike('contact_phone', `%${digits}%`)
+        .order('updated_at', { ascending: false })
+        .limit(20)
+
+      // 2. По phones пациента (если совпало с пациентом — берём все его сделки).
+      const { data: patients } = await supabase
+        .from('patients')
+        .select('id')
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .contains('phones', [digits])
+        .limit(20)
+      const patientIds = (patients ?? []).map(p => p.id)
+      let byPatient: DealRow[] = []
+      if (patientIds.length > 0) {
+        const { data: dealsByPat } = await supabase
+          .from('deals')
+          .select(`
+            id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel,
+            status, responsible_user_id, source_id, amount, preferred_doctor_id,
+            appointment_type, loss_reason_id, contact_phone, contact_city, notes,
+            tags, custom_fields, stage_entered_at, created_at, updated_at,
+            patient:patients(id, full_name, phones, birth_date, city),
+            responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name)
+          `)
+          .eq('clinic_id', clinicId)
+          .is('deleted_at', null)
+          .in('patient_id', patientIds)
+          .order('updated_at', { ascending: false })
+          .limit(40)
+        byPatient = (dealsByPat ?? []) as unknown as DealRow[]
+      }
+
+      if (cancelled) return
+      // Дедуп по id.
+      const merged = new Map<string, DealRow>()
+      for (const d of (byContact ?? []) as unknown as DealRow[]) merged.set(d.id, d)
+      for (const d of byPatient) merged.set(d.id, d)
+      setResults(Array.from(merged.values()).slice(0, 30))
+      setLoading(false)
+    }, 250)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [supabase, clinicId, digits])
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/40 flex items-start justify-center p-4 pt-24"
+      onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}
+    >
+      <div className="bg-white rounded-xl w-full max-w-xl shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">📞 Поиск по телефону</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-4">
+          <input
+            autoFocus
+            type="tel"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="+7 ..."
+            className="w-full border border-gray-200 rounded px-3 py-2 font-mono text-base focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          <p className="mt-2 text-xs text-gray-500">
+            Ищет среди ВСЕХ сделок клиники, во всех воронках. Включая совпадения по телефонам пациента.
+          </p>
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto border-t border-gray-100">
+          {digits.length < 4 && (
+            <div className="px-5 py-6 text-center text-sm text-gray-400">
+              Введите минимум 4 цифры.
+            </div>
+          )}
+          {digits.length >= 4 && loading && (
+            <div className="px-5 py-6 text-center text-sm text-gray-400">Ищу…</div>
+          )}
+          {digits.length >= 4 && !loading && results.length === 0 && (
+            <div className="px-5 py-6 text-center text-sm text-gray-400">
+              Ничего не найдено.
+            </div>
+          )}
+          {results.map(d => (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => onPick(d)}
+              className="w-full text-left px-5 py-2.5 hover:bg-emerald-50 border-b border-gray-100 last:border-b-0"
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-medium text-gray-900 truncate">
+                  {d.name ?? d.patient?.full_name ?? '(без имени)'}
+                </span>
+                <span className="text-xs text-gray-500 font-mono shrink-0">
+                  {d.contact_phone ?? d.patient?.phones?.[0] ?? '—'}
+                </span>
+              </div>
+              <div className="mt-0.5 text-xs text-gray-500 truncate">
+                {d.patient?.full_name ?? '—'}
+                {d.responsible && ` · ${d.responsible.first_name} ${d.responsible.last_name ?? ''}`}
+                {d.amount != null && ` · ${d.amount.toLocaleString('ru-RU')} ₸`}
+              </div>
+            </button>
+          ))}
         </div>
       </div>
     </div>
