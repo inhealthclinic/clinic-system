@@ -4268,6 +4268,14 @@ function ImportDealsModal({
     errors: string[]
   } | null>(null)
 
+  // Если родитель сменил активную воронку (пользователь кликнул другую
+  // вкладку прямо во время открытой модалки) — синхронизируем выбор
+  // воронки импорта с UI. useState<>(pipelineId) ловит только initial,
+  // поэтому без эффекта state «застывает» на первом значении.
+  useEffect(() => {
+    setTargetPipelineId(pipelineId)
+  }, [pipelineId])
+
   // Один раз подгружаем воронки и все этапы клиники, чтобы UI мог
   // предложить ручной маппинг CSV-этапов.
   useEffect(() => {
@@ -4802,9 +4810,15 @@ function ImportDealsModal({
           (externalId ? `Сделка #${externalId}` : '') ||
           patientNameRaw ||
           null
+        // pipeline_id берём из самого этапа — иначе можем получить
+        // несогласованную пару (pipeline_id одной воронки + stage_id
+        // другой), и канбан отфильтрует такую сделку. После всех
+        // fallback'ов stageId всегда валиден.
+        const finalPipelineId =
+          allStages.find(s => s.id === stageId)?.pipeline_id ?? effectivePipelineId
         const dealPayload: Record<string, unknown> = {
           clinic_id: clinicId,
-          pipeline_id: targetPipelineId,
+          pipeline_id: finalPipelineId,
           stage_id: stageId,
           name: effectiveName,
           patient_id: patientId,
@@ -4850,7 +4864,7 @@ function ImportDealsModal({
                 notes: dealPayload.notes,
                 tags: dealPayload.tags,
                 amount: dealPayload.amount,
-                pipeline_id: targetPipelineId,
+                pipeline_id: finalPipelineId,
                 stage_id: stageId,
                 stage: legacyStage,
                 responsible_user_id: responsibleId,
