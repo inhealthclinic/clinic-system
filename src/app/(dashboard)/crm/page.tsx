@@ -4257,6 +4257,7 @@ function ImportDealsModal({
     patientsCreated: number
     dealsCreated: number
     dealsUpdated: number
+    dealsSkippedDeleted: number
     stageMatched: number
     stageFallback: number
     responsibleMatched: number
@@ -4605,6 +4606,7 @@ function ImportDealsModal({
     let patientsCreated = 0
     let dealsCreated = 0
     let dealsUpdated = 0
+    let dealsSkippedDeleted = 0
     let stageMatched = 0
     let stageFallback = 0
     let responsibleMatched = 0
@@ -4860,13 +4862,21 @@ function ImportDealsModal({
         if (externalId) {
           const { data: existing, error: selErr } = await supabase
             .from('deals')
-            .select('id')
+            .select('id, deleted_at')
             .eq('clinic_id', clinicId)
             .eq('external_id', externalId)
             .limit(1)
             .maybeSingle()
           if (selErr && selErr.code !== 'PGRST116') {
             throw new Error(`поиск сделки по external_id: ${selErr.message}`)
+          }
+          if (existing && existing.deleted_at) {
+            // Сделка с таким external_id когда-то была, но менеджер её
+            // удалил (soft-delete). По требованию — НЕ восстанавливаем,
+            // и новую с тем же external_id вставить не можем (уникальный
+            // partial-индекс). Просто пропускаем.
+            dealsSkippedDeleted++
+            continue
           }
           if (existing) {
             // Обновляем существующую сделку. stage_id/pipeline_id тоже
@@ -4887,10 +4897,6 @@ function ImportDealsModal({
                 stage_id: stageId,
                 stage: legacyStage,
                 responsible_user_id: responsibleId,
-                // Если в БД сделка с таким external_id была soft-deleted
-                // (например, менеджер очистил воронку через массовое
-                // «Удалить»), повторный импорт CSV возвращает её в строй.
-                deleted_at: null,
               })
               .eq('id', existing.id)
             if (upErr) throw new Error(`обновление сделки: ${upErr.message}`)
@@ -4945,6 +4951,7 @@ function ImportDealsModal({
       patientsCreated,
       dealsCreated,
       dealsUpdated,
+      dealsSkippedDeleted,
       stageMatched,
       stageFallback,
       responsibleMatched,
@@ -5127,6 +5134,7 @@ function ImportDealsModal({
               <div className="text-gray-500 font-medium">Сделки</div>
               <div>— создано: <b className="text-green-700">{report.dealsCreated}</b></div>
               <div>— обновлено (по external_id): <b className="text-green-700">{report.dealsUpdated}</b></div>
+              <div>— пропущено удалённых (soft-deleted): <b className="text-gray-700">{report.dealsSkippedDeleted}</b></div>
               <div>— пропущено с ошибкой: <b className="text-amber-700">{report.skipped}</b></div>
               {(report.stageMatched > 0 || report.stageFallback > 0 || report.responsibleMatched > 0) && (
                 <>
