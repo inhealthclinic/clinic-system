@@ -17,6 +17,8 @@ import { createClient } from '@/lib/supabase/client'
 import RolesMatrix from '@/components/settings/RolesMatrix'
 import type { UserProfile, Role } from '@/types'
 
+type UserWithEmail = UserProfile & { email: string | null }
+
 const ROLE_OPTIONS_FALLBACK = [
   { slug: 'owner',   label: 'Админ' },
   { slug: 'admin',   label: 'Администратор' },
@@ -96,25 +98,27 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 // ─── Вкладка «Сотрудники» ───────────────────────────────────────────────────
 
 function UsersTab() {
-  const [users, setUsers]       = useState<UserProfile[]>([])
+  const [users, setUsers]       = useState<UserWithEmail[]>([])
   const [roles, setRoles]       = useState<Role[]>([])
   const [loading, setLoading]   = useState(true)
   const [showInactive, setShowInactive] = useState(false)
   const [createOpen, setCreateOpen]     = useState(false)
-  const [editing, setEditing]   = useState<UserProfile | null>(null)
+  const [editing, setEditing]   = useState<UserWithEmail | null>(null)
 
   const supabase = createClient()
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [u, r] = await Promise.all([
-      supabase
-        .from('user_profiles')
-        .select('*, role:roles(id, slug, name, color)')
-        .order('last_name'),
+    const { data: { session } } = await supabase.auth.getSession()
+    const [uRes, r] = await Promise.all([
+      fetch('/api/settings/users', {
+        headers: session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {},
+      }).then(res => res.ok ? res.json() : { users: [] }).catch(() => ({ users: [] })),
       supabase.from('roles').select('*').order('created_at'),
     ])
-    setUsers((u.data ?? []) as UserProfile[])
+    setUsers((uRes.users ?? []) as UserWithEmail[])
     setRoles((r.data ?? []) as Role[])
     setLoading(false)
   }, [supabase])
@@ -178,7 +182,9 @@ function UsersTab() {
                     {u.last_name} {u.first_name} {u.middle_name ?? ''}
                     {!u.is_active && <span className="ml-2 text-[10px] text-gray-400 uppercase">неактивен</span>}
                   </p>
-                  {u.phone && <p className="text-xs text-gray-400">{u.phone}</p>}
+                  <p className="text-xs text-gray-400 truncate">
+                    {u.email ?? '—'}{u.phone ? ` · ${u.phone}` : ''}
+                  </p>
                 </div>
                 {u.role && (
                   <span
@@ -292,7 +298,7 @@ function CreateModal({
 function EditModal({
   user, roleOptions, onClose, onSaved,
 }: {
-  user: UserProfile
+  user: UserWithEmail
   roleOptions: { slug: string; label: string }[]
   onClose: () => void
   onSaved: () => void
@@ -367,6 +373,15 @@ function EditModal({
         </div>
         <Field label="Отчество">
           <input className={inputCls} value={form.middle_name} onChange={e => setField('middle_name', e.target.value)}/>
+        </Field>
+        <Field label="Email">
+          <input
+            className={`${inputCls} bg-gray-50 text-gray-500`}
+            value={user.email ?? '—'}
+            readOnly
+            title="Email хранится в auth.users и редактируется отдельно"
+          />
+          <p className="text-[11px] text-gray-400 mt-1">Email и пароль меняются через Supabase Auth.</p>
         </Field>
         <Field label="Телефон">
           <input className={inputCls} value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder="+7..."/>

@@ -11,6 +11,78 @@ import { createClient } from '@supabase/supabase-js'
  * а при повторной попытке создания с тем же email получали «already
  * registered».
  */
+/**
+ * GET /api/settings/users
+ *
+ * Возвращает сотрудников клиники вместе с email из auth.users.
+ * Email живёт в auth.users и недоступен по RLS — поэтому ходим
+ * через service-role клиент.
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+    if (!serviceKey || !url) {
+      return NextResponse.json({ error: 'Сервер не настроен' }, { status: 503 })
+    }
+    const admin = createClient(url, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+    const authHeader = req.headers.get('authorization') ?? ''
+    if (!authHeader.toLowerCase().startsWith('bearer ')) {
+      return NextResponse.json({ error: 'Нужна авторизация' }, { status: 401 })
+    }
+    const jwt = authHeader.slice('bearer '.length).trim()
+    const { data: userInfo, error: userErr } = await admin.auth.getUser(jwt)
+    if (userErr || !userInfo?.user) {
+      return NextResponse.json({ error: 'Сессия недействительна' }, { status: 401 })
+    }
+    const { data: caller } = await admin
+      .from('user_profiles')
+      .select('clinic_id')
+      .eq('id', userInfo.user.id)
+      .maybeSingle()
+    if (!caller?.clinic_id) {
+      return NextResponse.json({ error: 'Профиль не найден' }, { status: 403 })
+    }
+
+    const { data: profiles, error } = await admin
+      .from('user_profiles')
+      .select('*, role:roles(id, slug, name, color)')
+      .eq('clinic_id', caller.clinic_id)
+      .order('last_name')
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+
+    // Подтягиваем email-ы пачкой.
+    // listUsers пагинирован (1000 на страницу) — для клиники этого с запасом.
+    const emailById = new Map<string, string>()
+    let page = 1
+    while (true) {
+      const { data: list, error: listErr } = await admin.auth.admin.listUsers({
+        page, perPage: 1000,
+      })
+      if (listErr) break
+      for (const u of list.users) {
+        if (u.email) emailById.set(u.id, u.email)
+      }
+      if (list.users.length < 1000) break
+      page += 1
+      if (page > 10) break // safety
+    }
+
+    const users = (profiles ?? []).map(p => ({
+      ...p,
+      email: emailById.get(p.id) ?? null,
+    }))
+    return NextResponse.json({ users })
+  } catch (err) {
+    console.error('GET /api/settings/users:', err)
+    return NextResponse.json({ error: 'Внутренняя ошибка' }, { status: 500 })
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     // ── 0. Env ───────────────────────────────────────────────
