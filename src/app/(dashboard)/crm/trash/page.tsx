@@ -49,6 +49,8 @@ export default function CRMTrashPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [restoring, setRestoring] = useState(false)
+  const [purging, setPurging] = useState(false)
+  const isOwner = profile?.role?.slug === 'owner'
 
   const load = useCallback(async () => {
     if (!clinicId) return
@@ -131,6 +133,32 @@ export default function CRMTrashPage() {
     load()
   }
 
+  async function purgeOne(id: string, name: string | null) {
+    if (!isOwner) { notify.error('Безвозвратное удаление доступно только владельцу'); return }
+    if (!confirm(`Удалить «${name ?? 'без имени'}» БЕЗВОЗВРАТНО? Действие нельзя отменить.`)) return
+    setPurging(true)
+    const { error } = await supabase.from('deals').delete().eq('id', id)
+    setPurging(false)
+    if (error) { notify.error(error.message); return }
+    setSelected(prev => { const n = new Set(prev); n.delete(id); return n })
+    notify.success('Удалено навсегда')
+    load()
+  }
+
+  async function purgeSelected() {
+    if (!isOwner) { notify.error('Безвозвратное удаление доступно только владельцу'); return }
+    if (selected.size === 0) return
+    if (!confirm(`Удалить БЕЗВОЗВРАТНО ${selected.size} сделок? Действие нельзя отменить.`)) return
+    setPurging(true)
+    const ids = Array.from(selected)
+    const { error } = await supabase.from('deals').delete().in('id', ids)
+    setPurging(false)
+    if (error) { notify.error(error.message); return }
+    notify.success(`Удалено навсегда: ${ids.length}`)
+    setSelected(new Set())
+    load()
+  }
+
   async function restoreSelected() {
     if (selected.size === 0) return
     setRestoring(true)
@@ -172,6 +200,16 @@ export default function CRMTrashPage() {
           >
             {restoring ? 'Восстанавливаю…' : 'Восстановить выбранные'}
           </button>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={purgeSelected}
+              disabled={purging}
+              className="px-3 py-1 rounded bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:opacity-50"
+            >
+              {purging ? 'Удаляю…' : 'Удалить навсегда'}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setSelected(new Set())}
@@ -235,14 +273,27 @@ export default function CRMTrashPage() {
                   {new Date(r.deleted_at).toLocaleString('ru-RU')}
                 </td>
                 <td className="px-3 py-2 text-right">
-                  <button
-                    type="button"
-                    onClick={() => restoreOne(r.id)}
-                    disabled={restoring}
-                    className="px-3 py-1 rounded border border-blue-200 text-blue-700 hover:bg-blue-50 text-xs font-medium disabled:opacity-50"
-                  >
-                    Восстановить
-                  </button>
+                  <div className="inline-flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => restoreOne(r.id)}
+                      disabled={restoring}
+                      className="px-2.5 py-1 rounded border border-blue-200 text-blue-700 hover:bg-blue-50 text-xs font-medium disabled:opacity-50"
+                    >
+                      Восстановить
+                    </button>
+                    {isOwner && (
+                      <button
+                        type="button"
+                        onClick={() => purgeOne(r.id, r.name)}
+                        disabled={purging}
+                        title="Удалить навсегда (только владелец)"
+                        className="px-2.5 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 text-xs font-medium disabled:opacity-50"
+                      >
+                        Удалить
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -251,7 +302,10 @@ export default function CRMTrashPage() {
       </div>
 
       <p className="mt-3 text-xs text-gray-500">
-        Сделка остаётся в БД даже после удаления. Чтобы стереть навсегда — нужен прямой SQL от owner&apos;а.
+        Сделка остаётся в БД после удаления (soft-delete) и одним кликом возвращается обратно.
+        {isOwner
+          ? ' Кнопка «Удалить» стирает запись физически — действие необратимо.'
+          : ' Безвозвратно удалить запись может только владелец клиники.'}
       </p>
     </div>
   )
