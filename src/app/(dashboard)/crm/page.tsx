@@ -3351,6 +3351,9 @@ function DealModal({
                                           ? (form.name?.trim() || m.external_sender || CHANNEL_LABEL[m.channel])
                                           : CHANNEL_LABEL[m.channel]}
                                     </span>
+                                    {!isBot && m.direction === 'in' && form.contact_phone && (
+                                      <span>· {form.contact_phone}</span>
+                                    )}
                                     {m.author && !isBot && m.direction === 'out' && (
                                       <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
                                     )}
