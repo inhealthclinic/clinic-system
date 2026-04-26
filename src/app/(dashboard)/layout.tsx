@@ -17,9 +17,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  // На /crm сводим внешние отступы к минимуму, чтобы тулбар прижался
-  // к верху экрана (как в амоCRM).
-  const isCrm = pathname.startsWith('/crm')
+  // На /crm и /settings/pipelines сводим внешние отступы к минимуму,
+  // чтобы канвас и тулбар занимали всю ширину (как в амоCRM).
+  const isCrm = pathname.startsWith('/crm') || pathname.startsWith('/settings/pipelines')
 
   useEffect(() => {
     if (!isLoading && !user) {

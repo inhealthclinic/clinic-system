@@ -179,7 +179,7 @@ export default function PipelinesSettingsPage() {
   if (loading) return <div className="p-6 text-sm text-gray-500">Загрузка…</div>
 
   return (
-    <div className="p-4 max-w-[1600px] mx-auto space-y-4">
+    <div className="space-y-3">
       {/* Top bar */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>

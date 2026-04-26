@@ -21,6 +21,13 @@ const SETTINGS_NAV = [
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
 
+  // На редакторе воронки нужен максимум ширины — там горизонтальный канвас
+  // amoCRM-стиля. Прячем sub-nav и контейнер.
+  const fullscreenRoutes = ['/settings/pipelines']
+  if (fullscreenRoutes.some(r => pathname?.startsWith(r))) {
+    return <div className="w-full">{children}</div>
+  }
+
   return (
     <div className="max-w-5xl mx-auto flex gap-6 items-start">
       {/* Sub-nav */}
