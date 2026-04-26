@@ -7,8 +7,7 @@ const SETTINGS_NAV = [
   { href: '/settings/clinic',        label: 'Клиника',         icon: '🏥' },
   { href: '/settings/doctors',       label: 'Врачи',           icon: '👨‍⚕️' },
   { href: '/settings/services',      label: 'Услуги / Прайс',  icon: '📋' },
-  { href: '/settings/users',         label: 'Сотрудники',      icon: '👥' },
-  { href: '/settings/roles',         label: 'Роли и доступ',   icon: '🔐' },
+  { href: '/settings/users',         label: 'Сотрудники и роли', icon: '👥' },
   { href: '/settings/lab',           label: 'Анализы (шаблоны)', icon: '🧪' },
   { href: '/settings/pipelines',     label: 'CRM — воронки и автоматизации', icon: '📊' },
   { href: '/settings/salesbots',         label: 'Salesbot и шаблоны', icon: '🤖' },
@@ -37,7 +36,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         </div>
         <nav className="p-2">
           {SETTINGS_NAV.map(item => {
-            const active = pathname === item.href
+            const active = pathname === item.href || (item.href === '/settings/users' && pathname === '/settings/roles')
             return (
               <Link
                 key={item.href}
