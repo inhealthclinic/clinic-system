@@ -526,7 +526,9 @@ export default function CRMKanbanPage() {
     if (n.includes('запис')) return false // Записан/Записана/… — всегда видимо
     return s.stage_role === 'won' || s.stage_role === 'closed'
   }
-  const isListCrmAdmin = profile?.role?.slug === 'admin'
+  // Кому показывать переключатель «Показать закрытые этапы».
+  // Owner и admin — оба могут просматривать архив воронки.
+  const isListCrmAdmin = profile?.role?.slug === 'admin' || profile?.role?.slug === 'owner'
   const hiddenTerminalCount = useMemo(
     () => allActiveStages.filter(isHiddenTerminal).length,
     [allActiveStages]
