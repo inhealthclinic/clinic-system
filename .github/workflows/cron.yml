@@ -1,13 +1,15 @@
 name: Cron jobs
 on:
   schedule:
-    - cron: '*/15 * * * *'
-    - cron: '0 6 * * *'
+    - cron: '*/5 * * * *'   # bot greeting + bot followup
+    - cron: '*/15 * * * *'  # appointment reminders
+    - cron: '0 6 * * *'     # daily tasks (birthdays, debts, controls)
   workflow_dispatch:
 
 jobs:
   reminders:
-    if: github.event.schedule != '0 6 * * *'
+    # Только */15 — иначе будет падать каждые 5 минут.
+    if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -23,3 +25,22 @@ jobs:
           curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
                "${{ secrets.GENERATE_TASKS_URL }}" | tee g.json
           grep -q '"ok":true' g.json
+
+  bot-greeting:
+    # */5 schedule + ручной запуск из вкладки Actions.
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.BOT_GREETING_URL }}" | tee bg.json
+          grep -q '"ok":true' bg.json
+
+  bot-followup:
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.BOT_FOLLOWUP_URL }}" | tee bf.json
+          grep -q '"ok":true' bf.json
