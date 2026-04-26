@@ -23,7 +23,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
   // На редакторе воронки нужен максимум ширины — там горизонтальный канвас
   // amoCRM-стиля. Прячем sub-nav и контейнер.
-  const fullscreenRoutes = ['/settings/pipelines']
+  const fullscreenRoutes = ['/settings/pipelines', '/settings/salesbots/new']
   if (fullscreenRoutes.some(r => pathname?.startsWith(r))) {
     return <div className="w-full">{children}</div>
   }

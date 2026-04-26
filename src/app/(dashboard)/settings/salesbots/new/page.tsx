@@ -220,8 +220,8 @@ export default function NewSalesbotPage() {
       </div>
 
       {/* Канва amoCRM-стиля */}
-      <div className="bg-gray-50 border border-gray-200 rounded-xl p-8 overflow-x-auto">
-        <div className="flex items-start gap-8 min-w-[900px]">
+      <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 overflow-x-auto">
+        <div className="flex items-start gap-6 min-w-[1100px]">
           {/* Левая колонка — Триггеры */}
           <div className="w-72 flex-shrink-0 bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
             <div className="text-sm font-semibold text-gray-900">Триггеры</div>
@@ -263,28 +263,18 @@ export default function NewSalesbotPage() {
           </div>
 
           {/* Стрелка */}
-          <div className="flex-shrink-0 mt-10">
-            <svg width="60" height="2" className="overflow-visible">
-              <line x1="0" y1="1" x2="60" y2="1" stroke="#cbd5e1" strokeWidth="1.5" />
-              <polyline points="54,-3 60,1 54,5" fill="none" stroke="#cbd5e1" strokeWidth="1.5" />
-            </svg>
-          </div>
+          <div className="flex-shrink-0 mt-9 text-gray-300 text-2xl select-none">→</div>
 
           {/* Запуск бота — зелёный пилл */}
           <div className="flex-shrink-0 mt-6">
-            <div className="px-4 py-2 bg-emerald-50 border-2 border-emerald-400 rounded-lg flex items-center gap-2 text-sm font-medium text-emerald-700 shadow-sm">
+            <div className="px-4 py-2 bg-emerald-50 border-2 border-emerald-400 rounded-lg flex items-center gap-2 text-sm font-medium text-emerald-700 shadow-sm whitespace-nowrap">
               <span className="w-0 h-0 border-l-[7px] border-l-emerald-500 border-y-[5px] border-y-transparent" />
               Запуск бота
             </div>
           </div>
 
           {/* Стрелка */}
-          <div className="flex-shrink-0 mt-10">
-            <svg width="60" height="2" className="overflow-visible">
-              <line x1="0" y1="1" x2="60" y2="1" stroke="#cbd5e1" strokeWidth="1.5" />
-              <polyline points="54,-3 60,1 54,5" fill="none" stroke="#cbd5e1" strokeWidth="1.5" />
-            </svg>
-          </div>
+          <div className="flex-shrink-0 mt-9 text-gray-300 text-2xl select-none">→</div>
 
           {/* Следующий шаг — выбор действия */}
           {steps.length === 0 && (
