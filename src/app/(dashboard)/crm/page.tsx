@@ -538,27 +538,28 @@ export default function CRMKanbanPage() {
     const q = debouncedSearch.trim().toLowerCase()
     const map = new Map<string, DealRow[]>()
     for (const s of activeStages) map.set(s.id, [])
+    // Фильтруем по принадлежности этапа активной воронке, а не по deal.pipeline_id —
+    // у импортированных сделок pipeline_id может быть пустым/устаревшим, тогда как
+    // server-view v_pipeline_stage_counts тоже джойнит только по stage_id.
     for (const d of deals) {
-      if (d.pipeline_id !== activePipelineId) continue
       if (!d.stage_id) continue
+      if (!map.has(d.stage_id)) continue
       if (!matchesSearch(d, q)) continue
-      const arr = map.get(d.stage_id)
-      if (arr) arr.push(d)
+      map.get(d.stage_id)!.push(d)
     }
     for (const arr of map.values()) arr.sort(compareDeals)
     return map
-  }, [deals, activeStages, activePipelineId, debouncedSearch, matchesSearch, compareDeals])
+  }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
   // Плоский список для табличного вида.
   const tableDeals = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase()
     const activeStageIds = new Set(activeStages.map(s => s.id))
     return deals
-      .filter(d => d.pipeline_id === activePipelineId)
       .filter(d => d.stage_id != null && activeStageIds.has(d.stage_id))
       .filter(d => matchesSearch(d, q))
       .sort(compareDeals)
-  }, [deals, activePipelineId, activeStages, debouncedSearch, matchesSearch, compareDeals])
+  }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
   // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
   useEffect(() => {
