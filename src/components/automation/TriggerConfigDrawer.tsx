@@ -127,15 +127,7 @@ export default function TriggerConfigDrawer({ open, trigger, onClose, onSave }: 
 
           {/* Per-type */}
           {trigger.type === 'salesbot' && (
-            <>
-              <Field label="Шаблон сообщения">
-                <select className={inputCls} value={String(get('template_key'))} onChange={e => set('template_key', e.target.value)}>
-                  <option value="">— выбрать —</option>
-                  {tmpls.map(t => <option key={t.key} value={t.key}>{t.title} ({t.key})</option>)}
-                </select>
-              </Field>
-              <DelayField get={get} set={set} />
-            </>
+            <SalesbotTriggerForm config={config} set={set} tmpls={tmpls} />
           )}
 
           {trigger.type === 'create_task' && (
@@ -276,5 +268,194 @@ function DelayField({
         onChange={e => set('delay_minutes', parseInt(e.target.value, 10) || 0)}
       />
     </Field>
+  )
+}
+
+/**
+ * Salesbot-trigger picker «как в amoCRM»: выбор момента запуска, шаблон,
+ * чекбокс «применить ко всем сделкам в этапе». Под капотом всё ложится в
+ * один объект config:
+ *   { mode, template_key, delay_minutes?, daily_at?, no_reply_hours?, apply_to_existing? }
+ *
+ * Cron сейчас обрабатывает только on_enter с delay_minutes (modes 'immediate'
+ * и 'delay'). Остальные режимы помечены как «в разработке» — UI сохраняет,
+ * но обработчик на бэке появится позже.
+ */
+type SalesbotMode =
+  | 'immediate'        // Сразу после создания в этапе
+  | 'delay'            // Через X часов после входа в этап
+  | 'daily_at'         // Ежедневно в HH:MM (для всех сделок в этапе)
+  | 'no_reply_hours'   // Если клиент не ответил X часов
+  | 'on_first_inbound' // Первое входящее в стадии (не реализовано)
+  | 'on_chat_close'    // После закрытия беседы (не реализовано)
+
+const MODE_LABELS: Record<SalesbotMode, string> = {
+  immediate:        'Сразу после создания в этапе',
+  delay:            'Через N часов после входа в этап',
+  daily_at:         'Ежедневно в HH:MM',
+  no_reply_hours:   'Если клиент не ответил N часов',
+  on_first_inbound: 'При первом входящем сообщении',
+  on_chat_close:    'Сразу после закрытия беседы',
+}
+
+const IMPLEMENTED: Record<SalesbotMode, boolean> = {
+  immediate: true, delay: true, daily_at: false,
+  no_reply_hours: false, on_first_inbound: false, on_chat_close: false,
+}
+
+function SalesbotTriggerForm({
+  config, set, tmpls,
+}: {
+  config: Record<string, unknown>
+  set: (k: string, v: unknown) => void
+  tmpls: TmplRef[]
+}) {
+  const mode = (config.mode as SalesbotMode | undefined) ?? 'immediate'
+  const delayHours = config.delay_minutes ? Math.round(Number(config.delay_minutes) / 60) : 0
+
+  // Мост между UI-mode и старым форматом config: при выборе mode сразу
+  // подгоняем delay_minutes/event-related поля, чтобы cron работал.
+  const setMode = (m: SalesbotMode) => {
+    set('mode', m)
+    if (m === 'immediate') set('delay_minutes', 0)
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Шаблон сообщения */}
+      <Field label="Шаблон сообщения (Salesbot отправит этот текст)">
+        <select className={inputCls}
+          value={String(config.template_key ?? '')}
+          onChange={e => set('template_key', e.target.value)}>
+          <option value="">— выбрать —</option>
+          {tmpls.map(t => <option key={t.key} value={t.key}>{t.title} ({t.key})</option>)}
+        </select>
+      </Field>
+
+      {/* Группа: триггеры воронки */}
+      <TriggerSection title="Триггеры воронки">
+        <ModeRadio
+          checked={mode === 'immediate'}
+          onSelect={() => setMode('immediate')}
+          label={MODE_LABELS.immediate}
+          available
+        />
+      </TriggerSection>
+
+      {/* Группа: триггеры по времени */}
+      <TriggerSection title="Триггеры по времени">
+        <ModeRadio
+          checked={mode === 'delay'}
+          onSelect={() => setMode('delay')}
+          label="Через"
+          available
+        >
+          <input type="number" min={0} max={720}
+            className={`${inputCls} w-20 inline-block`}
+            value={delayHours}
+            onChange={e => set('delay_minutes', (parseInt(e.target.value, 10) || 0) * 60)}
+            disabled={mode !== 'delay'}
+          />
+          <span className="text-sm text-gray-600 ml-1">часов после входа в этап</span>
+        </ModeRadio>
+
+        <ModeRadio
+          checked={mode === 'daily_at'}
+          onSelect={() => setMode('daily_at')}
+          label="Ежедневно в"
+          available={IMPLEMENTED.daily_at}
+        >
+          <input type="time"
+            className={`${inputCls} w-28 inline-block`}
+            value={String(config.daily_at ?? '10:00')}
+            onChange={e => set('daily_at', e.target.value)}
+            disabled={mode !== 'daily_at'}
+          />
+        </ModeRadio>
+      </TriggerSection>
+
+      {/* Группа: триггеры по беседам */}
+      <TriggerSection title="Триггеры по беседам">
+        <ModeRadio
+          checked={mode === 'no_reply_hours'}
+          onSelect={() => setMode('no_reply_hours')}
+          label="Клиент не ответил"
+          available={IMPLEMENTED.no_reply_hours}
+        >
+          <input type="number" min={1} max={720}
+            className={`${inputCls} w-20 inline-block`}
+            value={Number(config.no_reply_hours ?? 24)}
+            onChange={e => set('no_reply_hours', parseInt(e.target.value, 10) || 24)}
+            disabled={mode !== 'no_reply_hours'}
+          />
+          <span className="text-sm text-gray-600 ml-1">часов</span>
+        </ModeRadio>
+        <ModeRadio
+          checked={mode === 'on_first_inbound'}
+          onSelect={() => setMode('on_first_inbound')}
+          label={MODE_LABELS.on_first_inbound}
+          available={IMPLEMENTED.on_first_inbound}
+        />
+        <ModeRadio
+          checked={mode === 'on_chat_close'}
+          onSelect={() => setMode('on_chat_close')}
+          label={MODE_LABELS.on_chat_close}
+          available={IMPLEMENTED.on_chat_close}
+        />
+      </TriggerSection>
+
+      {/* Применить к существующим */}
+      <label className="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox"
+          checked={!!config.apply_to_existing}
+          onChange={e => set('apply_to_existing', e.target.checked)}
+        />
+        Применить триггер ко всем сделкам в текущей стадии воронки
+      </label>
+      <p className="text-[11px] text-gray-500 -mt-2 ml-6">
+        По умолчанию триггер сработает только для сделок, которые войдут в этап
+        ПОСЛЕ сохранения. Включите, чтобы прогнать также те, что уже там.
+      </p>
+    </div>
+  )
+}
+
+function TriggerSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-gray-200 rounded-md overflow-hidden">
+      <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-200 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+        {title}
+      </div>
+      <div className="p-3 space-y-2">{children}</div>
+    </div>
+  )
+}
+
+function ModeRadio({
+  checked, onSelect, label, available, children,
+}: {
+  checked: boolean
+  onSelect: () => void
+  label: string
+  available: boolean
+  children?: React.ReactNode
+}) {
+  return (
+    <label className={`flex items-center gap-2 text-sm ${available ? 'text-gray-800' : 'text-gray-400'}`}>
+      <input
+        type="radio"
+        checked={checked}
+        onChange={onSelect}
+        disabled={!available}
+        className="shrink-0"
+      />
+      <span>{label}</span>
+      {children}
+      {!available && (
+        <span className="ml-auto text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+          Скоро
+        </span>
+      )}
+    </label>
   )
 }
