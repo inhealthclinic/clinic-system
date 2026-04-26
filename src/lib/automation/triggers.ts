@@ -171,15 +171,27 @@ function todayKey(now: Date): string {
   return now.toISOString().slice(0, 10) // YYYY-MM-DD UTC
 }
 
+type Mode =
+  | 'immediate' | 'delay' | 'daily_at' | 'no_reply_hours'
+  | 'at_datetime' | 'before_datetime'
+
 /** Определяем режим триггера. По умолчанию immediate/delay (on_enter). */
-function detectMode(t: PipelineTrigger): 'immediate' | 'delay' | 'daily_at' | 'no_reply_hours' {
+function detectMode(t: PipelineTrigger): Mode {
   const m = cfgStr(t.config, 'mode')
-  if (m === 'daily_at')        return 'daily_at'
-  if (m === 'no_reply_hours')  return 'no_reply_hours'
-  if (m === 'delay')           return 'delay'
-  if (m === 'immediate')       return 'immediate'
+  if (m === 'daily_at')         return 'daily_at'
+  if (m === 'no_reply_hours')   return 'no_reply_hours'
+  if (m === 'at_datetime')      return 'at_datetime'
+  if (m === 'before_datetime')  return 'before_datetime'
+  if (m === 'delay')            return 'delay'
+  if (m === 'immediate')        return 'immediate'
   // обратная совместимость: если есть delay_minutes → delay, иначе immediate
   return cfgNum(t.config, 'delay_minutes', 0) > 0 ? 'delay' : 'immediate'
+}
+
+/** Сработала ли точка времени в окне «cron-tick минут после fireAt». */
+function inFireWindow(fireAt: Date, now: Date): boolean {
+  const diff = now.getTime() - fireAt.getTime()
+  return diff >= 0 && diff < TICK_WINDOW_MIN * 60_000
 }
 
 // ── Cron entry ───────────────────────────────────────────────────────────────
@@ -208,6 +220,18 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
     if (mode === 'daily_at') {
       const at = cfgStr(t.config, 'daily_at')
       if (!inDailyAtWindow(at, now)) { skipped++; continue }
+    }
+
+    // At-datetime / before-datetime: считаем fireAt и проверяем окно.
+    if (mode === 'at_datetime' || mode === 'before_datetime') {
+      const targetIso = cfgStr(t.config, 'target_at')
+      if (!targetIso) { skipped++; continue }
+      const target = new Date(targetIso)
+      if (isNaN(target.getTime())) { skipped++; continue }
+      const fireAt = mode === 'before_datetime'
+        ? new Date(target.getTime() - cfgNum(t.config, 'hours_before', 0) * 3600_000)
+        : target
+      if (!inFireWindow(fireAt, now)) { skipped++; continue }
     }
 
     // Базовый запрос сделок этой стадии.
@@ -240,6 +264,9 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
 
       if (mode === 'daily_at') {
         dedup = todayKey(now)
+      } else if (mode === 'at_datetime' || mode === 'before_datetime') {
+        // Дедуп по самому target_at: если менеджер изменит дату — триггер сработает снова.
+        dedup = `${mode}:${cfgStr(t.config, 'target_at')}`
       } else if (mode === 'no_reply_hours') {
         const hours = cfgNum(t.config, 'no_reply_hours', 0)
         if (hours <= 0) continue

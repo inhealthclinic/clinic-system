@@ -310,7 +310,7 @@ const MODE_LABELS: Record<SalesbotMode, string> = {
 
 const IMPLEMENTED: Record<SalesbotMode, boolean> = {
   immediate: true, delay: true,
-  before_datetime: false, at_datetime: false,
+  before_datetime: true, at_datetime: true,
   daily_at: true,
   on_chat_created_in: false, on_chat_created_out: false,
   no_reply_hours: true,
@@ -402,23 +402,16 @@ function SalesbotTriggerForm({
             </DropdownGroup>
 
             <DropdownGroup title="Триггеры по времени">
-              <DropdownItem
-                label="За N часов до выбранного времени"
-                checked={mode === 'before_datetime'}
-                onSelect={() => setMode('before_datetime')}
-                available={IMPLEMENTED.before_datetime}
-              />
-              <DropdownItem
-                label="В точное время"
-                checked={mode === 'at_datetime'}
-                onSelect={() => setMode('at_datetime')}
-                available={IMPLEMENTED.at_datetime}
-              />
-              <DropdownItem
-                label="Ежедневно в HH:MM"
-                checked={mode === 'daily_at'}
-                onSelect={() => setMode('daily_at')}
-                available={IMPLEMENTED.daily_at}
+              <TimeTriggersRow
+                mode={mode}
+                config={config}
+                set={set}
+                setMode={(m) => {
+                  // Inline: меняем mode, но дропдаун НЕ закрываем,
+                  // чтобы пользователь мог продолжить заполнять поля.
+                  set('mode', m)
+                  if (m === 'daily_at' && !config.daily_at) set('daily_at', '10:00')
+                }}
               />
             </DropdownGroup>
 
@@ -496,19 +489,10 @@ function ModeParams({
   config: Record<string, unknown>
   set: (k: string, v: unknown) => void
 }) {
-  // immediate/delay настраиваются inline в строке «Триггеры воронки» —
-  // здесь дополнительные поля не нужны.
+  // immediate/delay/daily_at/at_datetime/before_datetime настраиваются
+  // inline в дропдауне — здесь дополнительные поля не нужны.
   if (mode === 'immediate' || mode === 'delay') return null
-
-  if (mode === 'daily_at') {
-    return (
-      <Field label="Время запуска (ежедневно)">
-        <input type="time" className={inputCls}
-          value={String(config.daily_at ?? '10:00')}
-          onChange={e => set('daily_at', e.target.value)} />
-      </Field>
-    )
-  }
+  if (mode === 'daily_at' || mode === 'at_datetime' || mode === 'before_datetime') return null
 
   if (mode === 'no_reply_hours') {
     return (
@@ -638,6 +622,96 @@ function StageTimingRow({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Группа «Триггеры по времени» — три инлайновых строки c полями
+ *  ввода прямо в тексте, как в amoCRM. Клик по любому полю строки
+ *  активирует её mode. */
+function TimeTriggersRow({
+  mode, config, set, setMode,
+}: {
+  mode: SalesbotMode
+  config: Record<string, unknown>
+  set: (k: string, v: unknown) => void
+  setMode: (m: SalesbotMode) => void
+}) {
+  // Утилиты для разделения ISO target_at на дату и время для DOM-инпутов.
+  const targetAt = String(config.target_at ?? '')
+  const datePart = targetAt.slice(0, 10) // YYYY-MM-DD
+  const timePart = targetAt.slice(11, 16) // HH:MM
+  const setTargetAt = (date: string, time: string) => {
+    if (!date || !time) return
+    set('target_at', `${date}T${time}:00`)
+  }
+
+  const ROW = 'flex items-center gap-2 text-sm px-3 py-1.5 hover:bg-blue-50/40'
+  const CHK = (active: boolean) =>
+    `w-3 inline-flex items-center justify-center text-blue-600 ${active ? '' : 'opacity-0'}`
+  const FIELD = 'rounded border border-gray-300 px-2 py-0.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20'
+
+  // — За N часов до выбранного времени —
+  const beforeChecked = mode === 'before_datetime'
+  // — Точное время —
+  const atChecked = mode === 'at_datetime'
+  // — Ежедневно в HH:MM —
+  const dailyChecked = mode === 'daily_at'
+
+  return (
+    <div className="space-y-1">
+      <div className={ROW} onClick={() => setMode('before_datetime')}>
+        <span className={CHK(beforeChecked)}>✓</span>
+        <span>За</span>
+        <input
+          type="number" min={0} max={720}
+          value={Number(config.hours_before ?? 0)}
+          onChange={e => { setMode('before_datetime'); set('hours_before', parseInt(e.target.value, 10) || 0) }}
+          onClick={e => e.stopPropagation()}
+          className={`${FIELD} w-16 text-center`}
+        />
+        <span>часов до</span>
+        <input
+          type="datetime-local"
+          value={targetAt.slice(0, 16)}
+          onChange={e => { setMode('before_datetime'); set('target_at', `${e.target.value}:00`) }}
+          onClick={e => e.stopPropagation()}
+          className={`${FIELD}`}
+        />
+      </div>
+
+      <div className={ROW} onClick={() => setMode('at_datetime')}>
+        <span className={CHK(atChecked)}>✓</span>
+        <span>Точное время</span>
+        <input
+          type="date"
+          value={datePart}
+          onChange={e => { setMode('at_datetime'); setTargetAt(e.target.value, timePart || '10:00') }}
+          onClick={e => e.stopPropagation()}
+          className={FIELD}
+        />
+        <span>в</span>
+        <input
+          type="time"
+          value={timePart || '10:00'}
+          onChange={e => { setMode('at_datetime'); setTargetAt(datePart || new Date().toISOString().slice(0, 10), e.target.value) }}
+          onClick={e => e.stopPropagation()}
+          className={`${FIELD} w-24`}
+        />
+      </div>
+
+      <div className={ROW} onClick={() => setMode('daily_at')}>
+        <span className={CHK(dailyChecked)}>✓</span>
+        <span className={dailyChecked ? 'text-gray-800' : 'text-blue-600 hover:underline'}>Ежедневно</span>
+        <span>в</span>
+        <input
+          type="time"
+          value={String(config.daily_at ?? '10:00')}
+          onChange={e => { setMode('daily_at'); set('daily_at', e.target.value) }}
+          onClick={e => e.stopPropagation()}
+          className={`${FIELD} w-24`}
+        />
+      </div>
     </div>
   )
 }
