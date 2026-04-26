@@ -19,6 +19,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { sendTemplateToDeal } from '@/lib/automation/sender'
+import { processCustomTriggers } from '@/lib/automation/triggers'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -133,7 +134,12 @@ export async function GET(req: NextRequest) {
   }
 
   if (!deals || deals.length === 0) {
-    return NextResponse.json({ ok: true, ...stats })
+    // Даже если хардкодных целей нет, прогоняем пользовательские триггеры (мигр. 088).
+    const custom = await processCustomTriggers(sb).catch((e) => {
+      console.error('[cron/automation] custom triggers failed:', e)
+      return { triggers: 0, fired: 0, failed: 0, skipped: 0 }
+    })
+    return NextResponse.json({ ok: true, ...stats, custom })
   }
 
   const clinicIds = Array.from(new Set(deals.map(d => d.clinic_id)))
@@ -212,7 +218,13 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, ...stats })
+  // Пользовательские триггеры (мигр. 088).
+  const custom = await processCustomTriggers(sb).catch((e) => {
+    console.error('[cron/automation] custom triggers failed:', e)
+    return { triggers: 0, fired: 0, failed: 0, skipped: 0 }
+  })
+
+  return NextResponse.json({ ok: true, ...stats, custom })
 }
 
 // ── Per-deal helpers ─────────────────────────────────────────────────────────

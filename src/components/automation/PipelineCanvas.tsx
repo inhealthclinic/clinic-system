@@ -25,6 +25,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import TriggerPicker, { type TriggerType } from './TriggerPicker'
+import TriggerConfigDrawer from './TriggerConfigDrawer'
 
 // ─── пользовательские триггеры (мигр. 088) ───────────────────────────────────
 interface CustomTrigger {
@@ -197,6 +198,7 @@ export default function PipelineCanvas({
   // пользовательские триггеры (мигр. 088)
   const [customTriggers, setCustomTriggers] = useState<CustomTrigger[]>([])
   const [pickerStageId, setPickerStageId] = useState<string | null>(null)
+  const [editingTrigger, setEditingTrigger] = useState<CustomTrigger | null>(null)
 
   const loadCustom = useCallback(async () => {
     if (!clinicId) return
@@ -214,7 +216,7 @@ export default function PipelineCanvas({
   const addTrigger = async (stageId: string, type: TriggerType) => {
     if (!clinicId) return
     setPickerStageId(null)
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('pipeline_stage_triggers')
       .insert({
         clinic_id: clinicId,
@@ -225,8 +227,23 @@ export default function PipelineCanvas({
         is_active: true,
         sort_order: customTriggers.filter(t => t.stage_id === stageId).length,
       })
+      .select('*')
+      .single<CustomTrigger>()
     if (error) { setError(error.message); return }
     await loadCustom()
+    // Сразу открываем форму конфигурации, как в amoCRM.
+    if (data) setEditingTrigger(data)
+  }
+
+  const saveTriggerConfig = async (
+    id: string,
+    patch: { config: Record<string, unknown>; is_active: boolean },
+  ) => {
+    const { error } = await supabase
+      .from('pipeline_stage_triggers')
+      .update(patch).eq('id', id)
+    if (error) throw new Error(error.message)
+    setCustomTriggers(arr => arr.map(t => t.id === id ? { ...t, ...patch } : t))
   }
 
   const toggleTrigger = async (id: string, val: boolean) => {
@@ -506,9 +523,13 @@ export default function PipelineCanvas({
                             >×</button>
                           </div>
                         </div>
-                        <div className="text-[11px] text-gray-500 leading-snug italic">
-                          Конфигурация — в следующем апдейте. Сейчас триггер сохранён, но ещё не исполняется.
-                        </div>
+                        <button
+                          onClick={() => setEditingTrigger(t)}
+                          className="w-full text-left text-[11px] text-gray-600 hover:text-gray-900 leading-snug bg-gray-50 hover:bg-gray-100 rounded px-2 py-1.5 transition"
+                        >
+                          {summarizeTriggerConfig(t)}
+                          <span className="block text-[10px] text-blue-600 mt-0.5">Настроить →</span>
+                        </button>
                       </div>
                     )
                   })}
@@ -576,6 +597,40 @@ export default function PipelineCanvas({
         onClose={() => setPickerStageId(null)}
         onPick={(type) => pickerStageId && addTrigger(pickerStageId, type)}
       />
+
+      {/* Drawer настройки триггера */}
+      <TriggerConfigDrawer
+        open={editingTrigger !== null}
+        trigger={editingTrigger}
+        onClose={() => setEditingTrigger(null)}
+        onSave={saveTriggerConfig}
+      />
     </div>
   )
+}
+
+function summarizeTriggerConfig(t: CustomTrigger): string {
+  const c = t.config || {}
+  const delay = typeof c.delay_minutes === 'number' && c.delay_minutes > 0
+    ? ` через ${c.delay_minutes} мин` : ''
+  switch (t.type) {
+    case 'salesbot':
+      return c.template_key ? `Шаблон: ${c.template_key}${delay}` : 'Не настроен — выбрать шаблон'
+    case 'create_task':
+      return `Задача: «${(c.text as string) || 'Связаться'}»${delay}`
+    case 'change_stage':
+      return c.target_stage_id ? `Перевод в стадию${delay}` : 'Не настроен — выбрать стадию'
+    case 'change_field':
+      return c.field ? `Поле ${c.field} = "${c.value ?? ''}"${delay}` : 'Не настроен'
+    case 'change_responsible':
+      return c.user_id ? `Сменить ответственного${delay}` : 'Не настроен'
+    case 'edit_tags':
+      return `+[${(c.add as string[] || []).join(',')}] −[${(c.remove as string[] || []).join(',')}]${delay}`
+    case 'complete_tasks':
+      return `Закрыть открытые задачи${delay}`
+    case 'webhook':
+      return c.url ? `${c.method || 'POST'} ${String(c.url).slice(0, 40)}…${delay}` : 'Не настроен — указать URL'
+    default:
+      return 'Скоро'
+  }
 }
