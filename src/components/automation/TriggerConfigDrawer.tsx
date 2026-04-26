@@ -314,7 +314,7 @@ const IMPLEMENTED: Record<SalesbotMode, boolean> = {
   daily_at: true,
   on_chat_created_in: true, on_chat_created_out: true,
   no_reply_hours: true,
-  on_first_inbound: true, on_read: false, on_chat_close: false,
+  on_first_inbound: true, on_read: true, on_chat_close: true,
 }
 
 function SalesbotTriggerForm({
@@ -365,7 +365,11 @@ function SalesbotTriggerForm({
       ? `${formatStageTiming(Number(config.delay_minutes ?? 0))} после создания в этапе`
       : mode === 'on_first_inbound'
         ? `Первое входящее за ${ ({day:'день',week:'неделю',month:'месяц'} as Record<string,string>)[String(config.period ?? 'day')] ?? 'день' }`
-        : MODE_LABELS[mode]
+        : mode === 'on_read'
+          ? `При прочтении (${Number(config.read_window_hours ?? 24)} ч.)`
+          : mode === 'on_chat_close'
+            ? 'Сразу после закрытия беседы'
+            : MODE_LABELS[mode]
 
   return (
     <div className="space-y-4">
@@ -699,8 +703,7 @@ function ChatTriggersRow({
   set: (k: string, v: unknown) => void
   setMode: (m: SalesbotMode) => void
 }) {
-  const ROW    = 'flex items-center flex-wrap gap-2 text-sm px-3 py-1.5 hover:bg-blue-50/40'
-  const ROW_OFF= 'flex items-center flex-wrap gap-2 text-sm px-3 py-1.5 text-gray-400'
+  const ROW    = 'flex items-center flex-wrap gap-2 text-sm px-3 py-1.5 hover:bg-blue-50/40 cursor-pointer'
   const CHK    = (active: boolean) =>
     `w-3 inline-flex items-center justify-center text-blue-600 ${active ? '' : 'opacity-0'}`
   const LINK   = 'text-blue-600 hover:underline cursor-pointer'
@@ -749,7 +752,7 @@ function ChatTriggersRow({
       <div className={ROW} onClick={() => setMode('on_first_inbound')}>
         <span className={CHK(mode === 'on_first_inbound')}>✓</span>
         <span>При первом</span>
-        <span className="text-gray-700">входящем</span>
+        <span className="text-blue-600">входящем</span>
         <span>сообщении в</span> {SOURCE}
         <span>за</span>
         <button type="button" className={LINK}
@@ -758,16 +761,25 @@ function ChatTriggersRow({
         </button>
       </div>
 
-      {/* Не реализованные — серым с плашкой «Скоро» */}
-      <div className={ROW_OFF}>
-        <span className={CHK(false)}>✓</span>
-        <span>При прочтении сообщения клиентом в WhatsApp (24 ч.)</span>
-        <span className="ml-auto text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">Скоро</span>
+      {/* При прочтении сообщения клиентом в WhatsApp ([24 ч.]) */}
+      <div className={ROW} onClick={() => setMode('on_read')}>
+        <span className={CHK(mode === 'on_read')}>✓</span>
+        <span>При прочтении сообщения клиентом в</span> {SOURCE}
+        <span>(</span>
+        <input type="number" min={1} max={168}
+          value={Number(config.read_window_hours ?? 24)}
+          onChange={e => { setMode('on_read'); set('read_window_hours', parseInt(e.target.value, 10) || 24) }}
+          onClick={e => e.stopPropagation()}
+          className={FIELD}
+        />
+        <span>ч.)</span>
       </div>
-      <div className={ROW_OFF}>
-        <span className={CHK(false)}>✓</span>
-        <span>Сразу после закрытия беседы WhatsApp</span>
-        <span className="ml-auto text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">Скоро</span>
+
+      {/* Сразу после закрытия беседы WhatsApp */}
+      <div className={ROW} onClick={() => setMode('on_chat_close')}>
+        <span className={CHK(mode === 'on_chat_close')}>✓</span>
+        <span className="text-blue-600">Сразу</span>
+        <span>после закрытия беседы</span> {SOURCE}
       </div>
     </div>
   )

@@ -451,6 +451,8 @@ async function handleOutgoingStatus(wh: OutgoingStatusWebhook) {
     .from('deal_messages')
     .update({
       status: mapped,
+      // Прочитано клиентом → ставим read_at для триггера on_read.
+      ...(mapped === 'read' ? { read_at: new Date().toISOString() } : {}),
       error_text: mapped === 'failed' ? `GreenAPI: ${wh.status}` : null,
     })
     .eq('external_id', wh.idMessage)

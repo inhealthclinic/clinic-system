@@ -43,6 +43,7 @@ interface DealMin {
   responsible_user_id: string | null
   contact_phone: string | null
   tags: string[] | null
+  status: string | null
 }
 
 const cfgStr = (c: Record<string, unknown>, k: string, fb = '') =>
@@ -197,6 +198,7 @@ type Mode =
   | 'immediate' | 'delay' | 'daily_at' | 'no_reply_hours'
   | 'at_datetime' | 'before_datetime'
   | 'on_chat_created_in' | 'on_chat_created_out' | 'on_first_inbound'
+  | 'on_read' | 'on_chat_close'
 
 /** Определяем режим триггера. По умолчанию immediate/delay (on_enter). */
 function detectMode(t: PipelineTrigger): Mode {
@@ -208,6 +210,8 @@ function detectMode(t: PipelineTrigger): Mode {
   if (m === 'on_chat_created_in')   return 'on_chat_created_in'
   if (m === 'on_chat_created_out')  return 'on_chat_created_out'
   if (m === 'on_first_inbound')     return 'on_first_inbound'
+  if (m === 'on_read')              return 'on_read'
+  if (m === 'on_chat_close')        return 'on_chat_close'
   if (m === 'delay')                return 'delay'
   if (m === 'immediate')            return 'immediate'
   // обратная совместимость: если есть delay_minutes → delay, иначе immediate
@@ -263,7 +267,7 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
     // Базовый запрос сделок этой стадии.
     let q = sb
       .from('deals')
-      .select('id, clinic_id, stage_id, stage_entered_at, responsible_user_id, contact_phone, tags')
+      .select('id, clinic_id, stage_id, stage_entered_at, responsible_user_id, contact_phone, tags, status')
       .eq('clinic_id', t.clinic_id)
       .eq('stage_id', t.stage_id)
       .is('deleted_at', null)
@@ -322,6 +326,28 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
           .returns<{ id: string }[]>()
         if (!any1?.length) continue
         dedup = null // one-shot
+      } else if (mode === 'on_read') {
+        // Прочтение клиентом исходящего сообщения. Берём свежее outbound
+        // с read_at в окне (24 ч.) и дедуп по id сообщения.
+        const windowH = cfgNum(t.config, 'read_window_hours', 24)
+        const cutoff  = new Date(now.getTime() - windowH * 3600_000).toISOString()
+        const { data: rd } = await sb
+          .from('deal_messages')
+          .select('id, read_at')
+          .eq('deal_id', d.id)
+          .eq('direction', 'out')
+          .gte('read_at', cutoff)
+          .not('read_at', 'is', null)
+          .order('read_at', { ascending: false })
+          .limit(1)
+          .returns<{ id: string; read_at: string }[]>()
+        if (!rd?.length) continue
+        dedup = `read:${rd[0].id}`
+      } else if (mode === 'on_chat_close') {
+        // «Закрытие беседы» — мапим на закрытие сделки (won/lost),
+        // т.к. отдельной сущности «беседа» в схеме нет. One-shot per сделке.
+        if (d.status === 'open' || !d.status) continue
+        dedup = `close:${d.status}`
       } else if (mode === 'on_first_inbound') {
         // Первое входящее за период (день/неделя/месяц). Дедуп —
         // по периоду: для day → 'YYYY-MM-DD', для week → 'YYYY-Www', для month → 'YYYY-MM'.
