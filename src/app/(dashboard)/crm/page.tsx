@@ -3342,11 +3342,19 @@ function DealModal({
                                     m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'
                                   }`}>
                                     {isBot && <span aria-label="Сообщение от бота">🤖</span>}
-                                    <span>{isBot ? 'Бот' : CHANNEL_LABEL[m.channel]}</span>
-                                    {m.author && !isBot && (
+                                    {/* Для входящих показываем имя контакта из карточки (form.name).
+                                        Если имени нет (только что созданная сделка) — fallback на external_sender/телефон. */}
+                                    <span>
+                                      {isBot
+                                        ? 'Бот'
+                                        : m.direction === 'in'
+                                          ? (form.name?.trim() || m.external_sender || CHANNEL_LABEL[m.channel])
+                                          : CHANNEL_LABEL[m.channel]}
+                                    </span>
+                                    {m.author && !isBot && m.direction === 'out' && (
                                       <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
                                     )}
-                                    {m.external_sender && !isBot && (
+                                    {m.external_sender && !isBot && m.direction === 'out' && (
                                       <span>· {m.external_sender}</span>
                                     )}
                                   </div>
