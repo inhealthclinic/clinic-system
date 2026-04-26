@@ -11,6 +11,7 @@ const SETTINGS_NAV = [
   { href: '/settings/lab',           label: 'Анализы (шаблоны)', icon: '🧪' },
   { href: '/settings/pipelines',     label: 'CRM — воронки и автоматизации', icon: '📊' },
   { href: '/settings/salesbots',         label: 'Salesbot и шаблоны', icon: '🤖' },
+  { href: '/settings/whatsapp',      label: 'WhatsApp',        icon: '💬' },
   { href: '/settings/notifications', label: 'Уведомления',     icon: '🔔' },
   { href: '/settings/schedule',     label: 'Типы записей',    icon: '🎨' },
   { href: '/settings/packages',    label: 'Пакеты анализов', icon: '📦' },
