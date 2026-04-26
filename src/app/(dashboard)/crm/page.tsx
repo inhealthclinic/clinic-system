@@ -448,17 +448,14 @@ export default function CRMKanbanPage() {
     if (ownerFilter === 'mine' && profile?.id) {
       dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
     }
-    // Тянем сделки ТОЛЬКО активной воронки. Раньше тянули всё клинике
-    // и резали .limit(1000): на больших импортах одна воронка съедала
-    // лимит, и в других воронках канбан выглядел пустым (бейджи в шапке
-    // считаются на сервере и видят всё, а карточек на клиенте нет).
-    if (activePipelineId) {
-      dealsQuery = dealsQuery.eq('pipeline_id', activePipelineId)
-    }
-    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(5000)
-    const [p, d, r, ls, up, doc, cl] = await Promise.all([
+    // Phase 1: воронки + этапы + словари. Сначала тянем pipelines+stages,
+    // чтобы потом скопировать сделки только по stage_id-ам активной воронки —
+    // это надёжнее, чем фильтр по pipeline_id у deal: у импортированных
+    // amoCRM-сделок pipeline_id может быть пустым/устаревшим, но stage_id
+    // верный (server-view v_pipeline_stage_counts тоже джойнит только
+    // по stage_id, поэтому бейджи в шапке совпадают с карточками).
+    const [p, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
-      dealsQuery,
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
@@ -467,7 +464,6 @@ export default function CRMKanbanPage() {
     ])
     const ps = (p.data ?? []) as Pipeline[]
     setPipelines(ps)
-    setDeals((d.data ?? []) as unknown as DealRow[])
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
     setUsers((up.data ?? []) as UserLite[])
@@ -475,16 +471,38 @@ export default function CRMKanbanPage() {
     const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
     setApptTypes(Array.isArray(at) ? at : [])
 
-    const stageIdsByPipeline = ps.map(x => x.id)
-    if (stageIdsByPipeline.length > 0) {
+    // Phase 2: этапы + counts + conversion + сделки активной воронки.
+    let allStages: Stage[] = []
+    const pipelineIds = ps.map(x => x.id)
+    if (pipelineIds.length > 0) {
       const [st, c, cv] = await Promise.all([
-        supabase.from('pipeline_stages').select('*').in('pipeline_id', stageIdsByPipeline).order('sort_order'),
+        supabase.from('pipeline_stages').select('*').in('pipeline_id', pipelineIds).order('sort_order'),
         supabase.from('v_pipeline_stage_counts').select('pipeline_id,stage_id,deals_count,open_count'),
         supabase.from('v_pipeline_conversion').select('pipeline_id,total,won,lost,open_count,conversion_pct').eq('clinic_id', clinicId),
       ])
-      setStages((st.data ?? []) as Stage[])
+      allStages = (st.data ?? []) as Stage[]
+      setStages(allStages)
       setCounts((c.data ?? []) as StageCount[])
       setConversions((cv.data ?? []) as Conversion[])
+    }
+
+    // Какая воронка сейчас активна для пользователя.
+    const effectivePipelineId = activePipelineId || ps[0]?.id || null
+    const effectiveStageIds = effectivePipelineId
+      ? allStages.filter(s => s.pipeline_id === effectivePipelineId && s.is_active).map(s => s.id)
+      : []
+
+    // Phase 3: сделки активной воронки — фильтр по stage_id, а не по
+    // deal.pipeline_id. .in() по UUID-ам безопасен — этапов в воронке
+    // обычно <30, длина URL мизерная.
+    if (effectiveStageIds.length > 0) {
+      dealsQuery = dealsQuery.in('stage_id', effectiveStageIds)
+        .order('stage_entered_at', { ascending: false })
+        .limit(5000)
+      const d = await dealsQuery
+      setDeals((d.data ?? []) as unknown as DealRow[])
+    } else {
+      setDeals([])
     }
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
