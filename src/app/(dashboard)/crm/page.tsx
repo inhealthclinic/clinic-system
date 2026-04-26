@@ -311,7 +311,8 @@ export default function CRMKanbanPage() {
 
   // URL-синхронизация открытой сделки: ?deal=<id>. Нужно, чтобы рефреш страницы
   // (или прямая ссылка из браузерного истории/Slack) восстанавливал модалку.
-  // 1) Sync state → URL.
+  // 1) Sync state → URL. ВАЖНО: всегда указываем pathname, иначе Next.js
+  // router.replace('?...') уносит на корень `/`.
   useEffect(() => {
     if (typeof window === 'undefined') return
     const cur = searchParams.get('deal')
@@ -320,7 +321,8 @@ export default function CRMKanbanPage() {
     const sp = new URLSearchParams(searchParams.toString())
     if (want) sp.set('deal', want); else sp.delete('deal')
     const qs = sp.toString()
-    router.replace(qs ? `?${qs}` : '?', { scroll: false })
+    const path = window.location.pathname
+    router.replace(qs ? `${path}?${qs}` : path, { scroll: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDeal?.id])
 
