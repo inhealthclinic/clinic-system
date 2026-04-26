@@ -304,29 +304,26 @@ export default function CRMKanbanPage() {
     }
   }, [clinicId, supabase])
 
-  // selected deal — persisted in ?deal=<id> query param
+  // selected deal — local state only, не пишем в URL чтобы перезагрузка
+  // страницы не открывала автоматически последнюю сделку.
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null)
-  const pendingDealId = useRef<string | null>(searchParams.get('deal'))
 
   const openDeal = useCallback((d: DealRow) => {
     setSelectedDeal(d)
-    if (d.id) router.replace(`?deal=${d.id}`, { scroll: false })
-  }, [router])
+  }, [])
 
   const closeDeal = useCallback(() => {
     setSelectedDeal(null)
-    router.replace('?', { scroll: false })
-  }, [router])
+  }, [])
 
-  // On initial load, restore selected deal from URL
+  // Если в URL остался старый ?deal=<id> (от прошлой версии или внешней
+  // ссылки) — чистим его при первой загрузке, не открывая сделку.
   useEffect(() => {
-    if (!pendingDealId.current || deals.length === 0) return
-    const d = deals.find(x => x.id === pendingDealId.current)
-    if (d) {
-      setSelectedDeal(d)
-      pendingDealId.current = null
+    if (searchParams.get('deal')) {
+      router.replace('/crm', { scroll: false })
     }
-  }, [deals])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const load = useCallback(async () => {
     if (!clinicId) return
