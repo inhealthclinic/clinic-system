@@ -56,35 +56,118 @@ export async function GET(req: NextRequest) {
   const owner = searchParams.get('owner') ?? 'all'
   const limit = Math.min(parseInt(searchParams.get('limit') ?? '5000', 10) || 5000, 20000)
 
-  // ── deals (без embed-ов, по clinic_id, без RLS) ─────────────────────────
-  let q = admin
-    .from('deals')
-    .select(`
-      id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
-      responsible_user_id, source_id, amount,
-      preferred_doctor_id, appointment_type, loss_reason_id,
-      contact_phone, contact_city, birth_date, notes, tags,
-      custom_fields, bot_active, bot_state,
-      stage_entered_at, created_at, updated_at
-    `)
+  // ── Все pipeline_stage.id, принадлежащие воронкам ЭТОЙ клиники ─────────
+  // Нам они нужны не только для понимания «свой/чужой», но и для того,
+  // чтобы вытащить сделки даже если у них clinic_id «съехал» при импорте.
+  // View v_pipeline_stage_counts всё равно их видит (он джойнит по
+  // stage_id глобально), а серверный select по clinic_id — нет.
+  const { data: ownPipelines } = await admin
+    .from('pipelines')
+    .select('id')
     .eq('clinic_id', clinicId)
-    .is('deleted_at', null)
-  if (owner === 'mine') q = q.eq('responsible_user_id', profile.id)
-  q = q.order('stage_entered_at', { ascending: false }).limit(limit)
-
-  const { data: deals, error: dealsErr } = await q
-  if (dealsErr) {
-    return NextResponse.json({ error: dealsErr.message }, { status: 500 })
+  const pipelineIds = (ownPipelines ?? []).map(x => x.id as string)
+  let ownStageIds: string[] = []
+  if (pipelineIds.length > 0) {
+    const { data: stRows } = await admin
+      .from('pipeline_stages')
+      .select('id')
+      .in('pipeline_id', pipelineIds)
+    ownStageIds = (stRows ?? []).map(x => x.id as string)
   }
 
-  // count(*) по тем же фильтрам — чтобы фронт мог сверить
+  // ── deals: по clinic_id ИЛИ по stage_id, принадлежащему этой клинике ──
+  // Это закрывает корнер-кейс «импорт сложил сделки в чужой clinic_id,
+  // но stage_id по-прежнему ссылается на наши этапы». В шапке такие сделки
+  // считаются (view глобален), а до этого фикса в канбане их не было.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function buildDealsSelect(qq: any): any {
+    let r = qq
+      .select(`
+        id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
+        responsible_user_id, source_id, amount,
+        preferred_doctor_id, appointment_type, loss_reason_id,
+        contact_phone, contact_city, birth_date, notes, tags,
+        custom_fields, bot_active, bot_state,
+        stage_entered_at, created_at, updated_at
+      `)
+      .is('deleted_at', null)
+    if (owner === 'mine') r = r.eq('responsible_user_id', profile!.id)
+    return r
+  }
+
+  // Объединяем результаты двух запросов и дедупим по id.
+  const byOwnClinic = await buildDealsSelect(admin.from('deals'))
+    .eq('clinic_id', clinicId)
+    .order('stage_entered_at', { ascending: false })
+    .limit(limit)
+  if (byOwnClinic.error) {
+    return NextResponse.json({ error: byOwnClinic.error.message }, { status: 500 })
+  }
+  type DealRowSrv = NonNullable<typeof byOwnClinic.data>[number]
+  const dealsMap = new Map<string, DealRowSrv>()
+  for (const r of (byOwnClinic.data ?? []) as DealRowSrv[]) dealsMap.set(r.id as string, r)
+
+  let strayCount = 0
+  if (ownStageIds.length > 0) {
+    // .in() с UUID-ами: режем чанками по 200, чтобы не упереться в URL-лимит.
+    for (let i = 0; i < ownStageIds.length; i += 200) {
+      const slice = ownStageIds.slice(i, i + 200)
+      const part = await buildDealsSelect(admin.from('deals'))
+        .in('stage_id', slice)
+        .neq('clinic_id', clinicId)        // только «потерянные» сделки
+        .order('stage_entered_at', { ascending: false })
+        .limit(limit)
+      if (part.error) {
+        console.error('[api/crm/deals] stray fetch error:', part.error)
+        continue
+      }
+      for (const r of (part.data ?? []) as DealRowSrv[]) {
+        if (!dealsMap.has(r.id as string)) {
+          dealsMap.set(r.id as string, r)
+          strayCount++
+        }
+      }
+    }
+  }
+
+  // Self-heal: если нашли сделки с «чужим» clinic_id, но твой stage_id —
+  // это явный артефакт импорта, лечим в БД. После одной починки следующая
+  // загрузка пойдёт нативно через RLS, без обходных путей.
+  if (strayCount > 0) {
+    const strayIds: string[] = []
+    for (const [id, r] of dealsMap) {
+      if ((r as DealRowSrv & { clinic_id: string }).clinic_id !== clinicId) strayIds.push(id)
+    }
+    for (let i = 0; i < strayIds.length; i += 200) {
+      const slice = strayIds.slice(i, i + 200)
+      const { error: upErr } = await admin
+        .from('deals')
+        .update({ clinic_id: clinicId })
+        .in('id', slice)
+      if (upErr) {
+        console.error('[api/crm/deals] self-heal clinic_id update error:', upErr)
+        break
+      }
+    }
+  }
+
+  const deals = Array.from(dealsMap.values())
+  // Сортируем целиком по stage_entered_at desc после объединения.
+  deals.sort((a, b) => {
+    const ta = (a as { stage_entered_at?: string | null }).stage_entered_at
+    const tb = (b as { stage_entered_at?: string | null }).stage_entered_at
+    return new Date(tb ?? 0).getTime() - new Date(ta ?? 0).getTime()
+  })
+
+  // count(*) — тоже считаем «своё ИЛИ потерянное», чтобы фронт мог сверить.
   let countQ = admin
     .from('deals')
     .select('id', { count: 'exact', head: true })
     .eq('clinic_id', clinicId)
     .is('deleted_at', null)
   if (owner === 'mine') countQ = countQ.eq('responsible_user_id', profile.id)
-  const { count } = await countQ
+  const { count: ownCount } = await countQ
+  const count = (ownCount ?? 0) + strayCount
 
   // ── enrich: patients / users / doctors ──────────────────────────────────
   const patientIds = Array.from(
