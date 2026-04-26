@@ -63,7 +63,32 @@ export interface ParsedFlow {
   warnings: string[]
 }
 
-export function parseAmoSalesbot(raw: unknown): ParsedFlow {
+/**
+ * amoCRM экспортирует Salesbot обёрткой:
+ *   { "type_functionality": 0, "model": { "name": "...", "text": "<stringified-json>", ... } }
+ * Внутри model.text лежит настоящий объект с шагами {"0":{...},"7":{...},…}.
+ * Если на вход передали обёртку — разворачиваем её до пользователя; обычный
+ * «голый» объект шагов тоже принимается как раньше.
+ */
+function unwrapAmoExport(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw
+  const r = raw as Record<string, unknown>
+  // Уже «голый» формат — есть числовые ключи.
+  for (const k of Object.keys(r)) if (/^\d+$/.test(k)) return raw
+  // Обёртка amoCRM: { type_functionality, model:{ text:"<json>" } }
+  const model = r.model as Record<string, unknown> | undefined
+  if (model && typeof model.text === 'string') {
+    try { return JSON.parse(model.text) } catch { /* fall through */ }
+  }
+  // Иногда text уже распарсен — model.text как объект.
+  if (model && model.text && typeof model.text === 'object') {
+    return model.text
+  }
+  return raw
+}
+
+export function parseAmoSalesbot(rawIn: unknown): ParsedFlow {
+  const raw = unwrapAmoExport(rawIn)
   if (!raw || typeof raw !== 'object') throw new Error('JSON должен быть объектом')
   const src = raw as Record<string, unknown>
   const steps: FlowSteps = {}
@@ -75,7 +100,9 @@ export function parseAmoSalesbot(raw: unknown): ParsedFlow {
     .filter(k => /^\d+$/.test(k))
     .map(k => Number(k))
     .sort((a, b) => a - b)
-  if (numericKeys.length === 0) throw new Error('В JSON нет шагов')
+  if (numericKeys.length === 0) {
+    throw new Error('В JSON нет шагов (ожидаются числовые ключи "0","7",… или amoCRM-обёртка с model.text)')
+  }
   start = numericKeys[0]
 
   for (const k of numericKeys) {
