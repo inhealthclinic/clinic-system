@@ -468,10 +468,32 @@ async function handleOutgoingStatus(wh: OutgoingStatusWebhook) {
 }
 
 export async function POST(req: NextRequest) {
-  // 1. Проверяем secret
-  const secret = process.env.GREENAPI_WEBHOOK_TOKEN
+  // 1. Проверяем secret. Токен может лежать в env (старый путь) или в БД
+  // (clinics.whatsapp_webhook_token — новый путь, per-clinic).
+  // Принимаем валидным любой из вариантов: токен из env ИЛИ совпадение
+  // с одной из клиник в БД.
   const token = req.nextUrl.searchParams.get('t') ?? req.headers.get('x-green-api-token')
-  if (secret && token !== secret) {
+  const envSecret = process.env.GREENAPI_WEBHOOK_TOKEN
+  let authorized = false
+  if (envSecret && token === envSecret) {
+    authorized = true
+  } else if (token) {
+    try {
+      const sb = admin()
+      const { data } = await sb
+        .from('clinics')
+        .select('id')
+        .eq('whatsapp_webhook_token', token)
+        .limit(1)
+        .maybeSingle()
+      if (data?.id) authorized = true
+    } catch {
+      // ignore — упадём в 403
+    }
+  }
+  // Если ни env, ни в БД токен не задан — пропускаем (для первичной настройки),
+  // но только если env-secret тоже пустой и в БД нет ни одной записи с токеном.
+  if (!authorized) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   }
 

@@ -4,22 +4,27 @@
  * /settings/whatsapp — подключение WhatsApp через Green-API.
  *
  * Что страница делает:
- *   1. Показывает, какие env-переменные заданы (instanceId, apiToken,
- *      webhookToken). Без instanceId+apiToken остальное недоступно.
+ *   1. Показывает значения, которые сейчас активно используются и где
+ *      они хранятся (БД / env). Поля instance ID / api token /
+ *      webhook token можно ввести и сохранить прямо отсюда — без редеплоя.
  *   2. Запрашивает текущее состояние инстанса (getStateInstance) и
  *      выводит QR-код, пока инстанс не авторизован.
  *   3. Кнопкой «Прописать webhook» вызывает setSettings в Green-API
  *      с текущим адресом /api/webhooks/greenapi?t=<token>.
  *
- * Сами креды задаются переменными окружения деплоя — это безопаснее,
- * чем хранить токен в БД и таскать через RLS. Здесь — только проверка
- * связи и привязка устройства.
+ * Креды per-clinic хранятся в clinics.whatsapp_*. Env-переменные остаются
+ * fallback-ом для обратной совместимости и для multi-clinic deployments.
  */
 
 import { useEffect, useState, useCallback } from 'react'
+import { createClient } from '@/lib/supabase/client'
+
+type Source = 'db' | 'env' | null
 
 interface StatusPayload {
   configured: { instanceId: boolean; apiToken: boolean; webhookToken: boolean }
+  source:     { instanceId: Source; apiToken: Source; webhookToken: Source }
+  saved:      { instanceId: string | null; webhookToken: string | null; apiUrl: string | null; apiTokenMask: string | null }
   state: string | null
   stateError?: string | null
   qr: { type: string; message: string } | null
@@ -36,18 +41,39 @@ const STATE_LABEL: Record<string, { label: string; color: string }> = {
   yellowCard:    { label: 'Yellow card — WhatsApp ограничивает отправки',  color: 'amber' },
 }
 
+async function authHeaders(): Promise<Record<string, string>> {
+  const { data: { session } } = await createClient().auth.getSession()
+  return session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+}
+
 export default function WhatsAppSettingsPage() {
   const [status, setStatus]   = useState<StatusPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [registering, setRegistering] = useState(false)
   const [registerMsg, setRegisterMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
+  const [instanceId, setInstanceId] = useState('')
+  const [apiToken,   setApiToken]   = useState('')
+  const [apiUrl,     setApiUrl]     = useState('')
+  const [webhookTok, setWebhookTok] = useState('')
+  const [saving,     setSaving]     = useState(false)
+  const [saveMsg,    setSaveMsg]    = useState<{ ok: boolean; text: string } | null>(null)
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const r = await fetch('/api/settings/whatsapp', { cache: 'no-store' })
-      const j = await r.json()
+      const r = await fetch('/api/settings/whatsapp', {
+        cache: 'no-store',
+        headers: await authHeaders(),
+      })
+      const j: StatusPayload = await r.json()
       setStatus(j)
+      // Префиллим форму тем, что сохранено в БД.
+      // ApiToken не возвращаем целиком — оставляем пустое поле «изменить».
+      setInstanceId(j.saved?.instanceId ?? '')
+      setWebhookTok(j.saved?.webhookToken ?? '')
+      setApiUrl(j.saved?.apiUrl ?? '')
+      setApiToken('')
     } finally { setLoading(false) }
   }, [])
 
@@ -60,11 +86,65 @@ export default function WhatsAppSettingsPage() {
     return () => window.clearInterval(id)
   }, [status, load])
 
+  async function saveCreds() {
+    setSaving(true)
+    setSaveMsg(null)
+    try {
+      const body: Record<string, string | null> = {
+        instanceId: instanceId.trim() || null,
+        webhookToken: webhookTok.trim() || null,
+        apiUrl: apiUrl.trim() || null,
+      }
+      // apiToken отправляем только если пользователь его ввёл — пустое поле
+      // означает «не менять» (у нас на руках есть лишь маска).
+      if (apiToken.trim()) body.apiToken = apiToken.trim()
+
+      const r = await fetch('/api/settings/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify(body),
+      })
+      const j = await r.json()
+      if (!r.ok) {
+        setSaveMsg({ ok: false, text: j.error ?? `Ошибка ${r.status}` })
+      } else {
+        setSaveMsg({ ok: true, text: 'Сохранено' })
+        await load()
+      }
+    } catch (e) {
+      setSaveMsg({ ok: false, text: e instanceof Error ? e.message : 'Сбой запроса' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function generateWebhookToken() {
+    setSaving(true)
+    setSaveMsg(null)
+    try {
+      const r = await fetch('/api/settings/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify({ webhookToken: 'auto' }),
+      })
+      if (!r.ok) {
+        const j = await r.json()
+        setSaveMsg({ ok: false, text: j.error ?? `Ошибка ${r.status}` })
+      } else {
+        await load()
+      }
+    } finally { setSaving(false) }
+  }
+
   async function registerWebhook() {
     setRegistering(true)
     setRegisterMsg(null)
     try {
-      const r = await fetch('/api/settings/whatsapp', { method: 'POST' })
+      const r = await fetch('/api/settings/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify({ registerWebhook: true }),
+      })
       const j = await r.json()
       if (!r.ok) {
         setRegisterMsg({ ok: false, text: j.error ?? `Ошибка ${r.status}` })
@@ -91,19 +171,73 @@ export default function WhatsAppSettingsPage() {
 
       {!loading && status && (
         <div className="space-y-4">
-          {/* env переменные */}
-          <Card title="Переменные окружения">
-            <ul className="text-sm space-y-1.5">
-              <EnvRow ok={status.configured.instanceId} name="GREENAPI_INSTANCE_ID" />
-              <EnvRow ok={status.configured.apiToken}   name="GREENAPI_API_TOKEN" />
-              <EnvRow ok={status.configured.webhookToken} name="GREENAPI_WEBHOOK_TOKEN" hint="секрет для проверки входящих webhook-ов" />
-            </ul>
-            {(!status.configured.instanceId || !status.configured.apiToken) && (
-              <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                Задайте переменные в настройках деплоя (Vercel → Settings → Environment Variables) и
-                перезапустите приложение. После этого вернитесь сюда — состояние подтянется автоматически.
-              </p>
-            )}
+          {/* Форма кредов */}
+          <Card title="Учётные данные Green-API">
+            <p className="text-xs text-gray-500 mb-3">
+              Возьмите <b>idInstance</b> и <b>apiTokenInstance</b> в личном кабинете Green-API
+              (<a href="https://console.green-api.com/" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">console.green-api.com</a>) на карточке инстанса.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field
+                label="Instance ID"
+                hint={sourceHint('instanceId', status)}
+                value={instanceId}
+                onChange={setInstanceId}
+                placeholder="например 7107600644"
+              />
+              <Field
+                label="API Token"
+                hint={apiTokenHint(status)}
+                value={apiToken}
+                onChange={setApiToken}
+                placeholder={status.saved.apiTokenMask ? `оставьте пустым, чтобы не менять (${status.saved.apiTokenMask})` : 'apiTokenInstance из Green-API'}
+                type="password"
+              />
+            </div>
+
+            <div className="mt-3">
+              <Field
+                label="API URL"
+                hint="на карточке инстанса в console.green-api.com — обычно https://api.green-api.com или https://7107.api.greenapi.com для free-tier. Оставьте пустым — подставим автоматически по префиксу instanceId."
+                value={apiUrl}
+                onChange={setApiUrl}
+                placeholder={instanceId ? autoApiUrlHint(instanceId) : 'https://api.green-api.com'}
+              />
+            </div>
+
+            <div className="mt-3">
+              <Field
+                label="Webhook Token"
+                hint={sourceHint('webhookToken', status) + ' · секрет для проверки входящих webhook-ов'}
+                value={webhookTok}
+                onChange={setWebhookTok}
+                placeholder="случайная строка или сгенерируйте"
+                rightSlot={
+                  <button
+                    type="button"
+                    onClick={generateWebhookToken}
+                    disabled={saving}
+                    className="text-xs text-blue-600 hover:underline disabled:opacity-50">
+                    Сгенерировать
+                  </button>
+                }
+              />
+            </div>
+
+            <div className="flex items-center gap-3 mt-4">
+              <button
+                onClick={saveCreds}
+                disabled={saving}
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                {saving ? 'Сохраняю…' : 'Сохранить'}
+              </button>
+              {saveMsg && (
+                <span className={`text-xs ${saveMsg.ok ? 'text-emerald-700' : 'text-red-600'}`}>
+                  {saveMsg.text}
+                </span>
+              )}
+            </div>
           </Card>
 
           {/* состояние */}
@@ -158,7 +292,7 @@ export default function WhatsAppSettingsPage() {
                 Этот URL Green-API будет дёргать на каждое входящее сообщение и смену статуса.
               </p>
               <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-700">
-                {status.webhookUrl ?? <span className="text-amber-700">Задайте GREENAPI_WEBHOOK_TOKEN, чтобы сгенерировать URL</span>}
+                {status.webhookUrl ?? <span className="text-amber-700">Задайте Webhook Token выше, чтобы сгенерировать URL</span>}
               </div>
               <div className="flex items-center gap-3 mt-3">
                 <button
@@ -188,6 +322,24 @@ export default function WhatsAppSettingsPage() {
   )
 }
 
+function autoApiUrlHint(instanceId: string): string {
+  const prefix = instanceId.slice(0, 4)
+  if (/^7\d{3}$/.test(prefix)) return `https://${prefix}.api.greenapi.com`
+  return 'https://api.green-api.com'
+}
+
+function sourceHint(key: 'instanceId' | 'apiToken' | 'webhookToken', s: StatusPayload): string {
+  const src = s.source[key]
+  if (src === 'db') return 'сохранено в БД'
+  if (src === 'env') return 'берётся из переменной окружения — переопределите тут, чтобы записать в БД'
+  return 'не задано'
+}
+function apiTokenHint(s: StatusPayload): string {
+  if (s.source.apiToken === 'db') return `сохранено в БД · ${s.saved.apiTokenMask ?? '••••'}`
+  if (s.source.apiToken === 'env') return 'берётся из переменной окружения'
+  return 'не задано'
+}
+
 function Card({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
     <div className="bg-white rounded-xl border border-gray-100 p-5">
@@ -197,14 +349,32 @@ function Card({ title, children }: { title?: string; children: React.ReactNode }
   )
 }
 
-function EnvRow({ ok, name, hint }: { ok: boolean; name: string; hint?: string }) {
+function Field({
+  label, hint, value, onChange, placeholder, type, rightSlot,
+}: {
+  label: string
+  hint?: string
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  type?: string
+  rightSlot?: React.ReactNode
+}) {
   return (
-    <li className="flex items-center gap-2">
-      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${ok ? 'bg-emerald-500' : 'bg-gray-300'}`} />
-      <code className="font-mono text-[12px] text-gray-700">{name}</code>
-      <span className={`text-[11px] ${ok ? 'text-emerald-700' : 'text-gray-400'}`}>{ok ? 'задана' : 'не задана'}</span>
-      {hint && <span className="text-[11px] text-gray-400 ml-auto">— {hint}</span>}
-    </li>
+    <label className="block">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-medium text-gray-700">{label}</span>
+        {rightSlot}
+      </div>
+      <input
+        type={type ?? 'text'}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+      />
+      {hint && <p className="text-[11px] text-gray-400 mt-1">{hint}</p>}
+    </label>
   )
 }
 

@@ -426,7 +426,14 @@ export default function CRMKanbanPage() {
     if (ownerFilter === 'mine' && profile?.id) {
       dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
     }
-    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(1000)
+    // Тянем сделки ТОЛЬКО активной воронки. Раньше тянули всё клинике
+    // и резали .limit(1000): на больших импортах одна воронка съедала
+    // лимит, и в других воронках канбан выглядел пустым (бейджи в шапке
+    // считаются на сервере и видят всё, а карточек на клиенте нет).
+    if (activePipelineId) {
+      dealsQuery = dealsQuery.eq('pipeline_id', activePipelineId)
+    }
+    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(5000)
     const [p, d, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       dealsQuery,
