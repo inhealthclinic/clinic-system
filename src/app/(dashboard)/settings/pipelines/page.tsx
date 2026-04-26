@@ -95,6 +95,12 @@ export default function PipelinesSettingsPage() {
   const [loading, setLoading] = useState(true)
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
+  // Tab — как в amoCRM: «Этапы» / «Автоматизации» / «Справочники».
+  // Иначе автоматизации прячутся внизу длинной таблицы и пользователь их
+  // просто не находит.
+  type Tab = 'stages' | 'automation' | 'dicts'
+  const [tab, setTab] = useState<Tab>('stages')
+
   // Локальные черновики полей ввода — чтобы на каждую клавишу не дёргать БД
   // и чтобы корректно работало сохранение на blur (иначе guard
   // `e.target.value !== s.name` всегда ложный — обновление не уходит).
@@ -352,8 +358,30 @@ export default function PipelinesSettingsPage() {
         </div>
       </div>
 
+      {/* Tabs — Этапы / Автоматизации / Справочники */}
+      <div className="flex items-center gap-1 border-b border-gray-200">
+        {[
+          { id: 'stages',     label: 'Этапы воронки' },
+          { id: 'automation', label: '🤖 Автоматизации' },
+          { id: 'dicts',      label: 'Причины потери и источники' },
+        ].map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id as Tab)}
+            className={[
+              'px-4 py-2 text-sm border-b-2 -mb-px transition-colors',
+              tab === t.id
+                ? 'border-blue-600 text-blue-700 font-medium'
+                : 'border-transparent text-gray-500 hover:text-gray-800',
+            ].join(' ')}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {/* Stages */}
-      {activePipeline && (
+      {tab === 'stages' && activePipeline && (
         <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
             <div className="font-medium text-gray-900">Этапы «{activePipeline.name}»</div>
@@ -475,6 +503,7 @@ export default function PipelinesSettingsPage() {
       )}
 
       {/* Loss reasons */}
+      {tab === 'dicts' && (
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
           <div className="font-medium text-gray-900">Причины потери</div>
@@ -496,8 +525,10 @@ export default function PipelinesSettingsPage() {
           {reasons.length === 0 && <li className="px-4 py-6 text-center text-gray-400 text-sm">Нет причин</li>}
         </ul>
       </div>
+      )}
 
       {/* Sources */}
+      {tab === 'dicts' && (
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
           <div className="font-medium text-gray-900">Источники лидов</div>
@@ -519,23 +550,25 @@ export default function PipelinesSettingsPage() {
           {sources.length === 0 && <li className="px-4 py-6 text-center text-gray-400 text-sm">Нет источников</li>}
         </ul>
       </div>
+      )}
 
       {/* ─── Автоматизации ─────────────────────────────────────────────────
-          Тот же канбан-редактор, что на /settings/automation. Здесь он
-          живёт прямо под этапами — чтобы пользователь, как в amoCRM,
-          видел воронку и автоматизации в одном месте. */}
-      <div id="automation" className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-200">
-          <div className="font-medium text-gray-900">Автоматизации этапов</div>
-          <div className="text-xs text-gray-500 mt-0.5">
-            Бот, касания и автозадачи — как в amoCRM Salesbot. Текст с маркером
-            «[ЗАПОЛНИТЬ&nbsp;…]» клиентам не отправляется.
+          Та же панель, что и на /settings/automation. Под отдельной
+          вкладкой — чтобы её было видно, а не пряталось внизу страницы. */}
+      {tab === 'automation' && (
+        <div id="automation" className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200">
+            <div className="font-medium text-gray-900">Автоматизации этапов</div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              Бот, касания и автозадачи — как в amoCRM Salesbot. Текст с маркером
+              «[ЗАПОЛНИТЬ&nbsp;…]» клиентам не отправляется.
+            </div>
+          </div>
+          <div className="p-3">
+            <AutomationKanban />
           </div>
         </div>
-        <div className="p-3">
-          <AutomationKanban />
-        </div>
-      </div>
+      )}
     </div>
   )
 }
