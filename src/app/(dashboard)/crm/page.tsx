@@ -309,12 +309,38 @@ export default function CRMKanbanPage() {
   // страницы не открывала автоматически последнюю сделку.
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null)
 
-  // URL-синхронизация открытой сделки: ?deal=<id>. Нужно, чтобы рефреш страницы
-  // (или прямая ссылка из браузерного истории/Slack) восстанавливал модалку.
-  // 1) Sync state → URL. ВАЖНО: всегда указываем pathname, иначе Next.js
-  // router.replace('?...') уносит на корень `/`.
+  // URL-синхронизация открытой сделки: ?deal=<id>. Рефреш страницы
+  // должен восстанавливать модалку.
+  // ВАЖНО: state→URL запускаем ТОЛЬКО после того, как URL→state отработал.
+  // Иначе на первом рендере selectedDeal=null затрёт ?deal=... в URL раньше,
+  // чем мы успеем его прочитать.
+  const restoredFromUrlRef = useRef(false)
+
+  // 1) URL → state: на старте читаем ?deal=ID и открываем карточку.
+  useEffect(() => {
+    if (restoredFromUrlRef.current) return
+    const id = searchParams.get('deal')
+    if (!id) { restoredFromUrlRef.current = true; return }
+    if (selectedDeal?.id === id) { restoredFromUrlRef.current = true; return }
+    const inList = deals.find(d => d.id === id)
+    if (inList) {
+      setSelectedDeal(inList)
+      restoredFromUrlRef.current = true
+      return
+    }
+    if (deals.length === 0) return  // ждём первую загрузку
+    ;(async () => {
+      const { data } = await supabase.from('deals').select('*').eq('id', id).maybeSingle()
+      if (data) setSelectedDeal(data as unknown as DealRow)
+      restoredFromUrlRef.current = true
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deals])
+
+  // 2) state → URL: пишем pathname явно (без него router уносит на `/`).
   useEffect(() => {
     if (typeof window === 'undefined') return
+    if (!restoredFromUrlRef.current) return
     const cur = searchParams.get('deal')
     const want = selectedDeal?.id ?? null
     if (cur === want) return
@@ -325,29 +351,6 @@ export default function CRMKanbanPage() {
     router.replace(qs ? `${path}?${qs}` : path, { scroll: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDeal?.id])
-
-  // 2) Sync URL → state на старте: если ?deal=ID, ищем в загруженных, иначе тянем напрямую.
-  const restoredFromUrlRef = useRef(false)
-  useEffect(() => {
-    if (restoredFromUrlRef.current) return
-    const id = searchParams.get('deal')
-    if (!id) return
-    if (selectedDeal?.id === id) { restoredFromUrlRef.current = true; return }
-    const inList = deals.find(d => d.id === id)
-    if (inList) {
-      setSelectedDeal(inList)
-      restoredFromUrlRef.current = true
-      return
-    }
-    // Карточки списка ещё не пришли или сделка из другой воронки/фильтра — тянем точечно.
-    if (deals.length === 0) return  // ждём первую загрузку
-    ;(async () => {
-      const { data } = await supabase.from('deals').select('*').eq('id', id).maybeSingle()
-      if (data) setSelectedDeal(data as unknown as DealRow)
-      restoredFromUrlRef.current = true
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deals, searchParams])
 
   const openDeal = useCallback((d: DealRow) => {
     setSelectedDeal(d)
