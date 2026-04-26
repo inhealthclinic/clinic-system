@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { notify } from '@/lib/ui/notify'
 
 interface DeletedDeal {
   id: string
@@ -124,8 +125,9 @@ export default function CRMTrashPage() {
       .update({ deleted_at: null })
       .eq('id', id)
     setRestoring(false)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
     setSelected(prev => { const n = new Set(prev); n.delete(id); return n })
+    notify.success('Сделка восстановлена')
     load()
   }
 
@@ -137,7 +139,8 @@ export default function CRMTrashPage() {
       .update({ deleted_at: null })
       .in('id', ids)
     setRestoring(false)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
+    notify.success(`Восстановлено: ${ids.length}`)
     setSelected(new Set())
     load()
   }

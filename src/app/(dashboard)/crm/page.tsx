@@ -11,6 +11,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { notify, confirmAction } from '@/lib/ui/notify'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
 import {
@@ -517,7 +518,7 @@ export default function CRMKanbanPage() {
 
   async function moveDeal(dealId: string, stageId: string) {
     const { error } = await supabase.from('deals').update({ stage_id: stageId }).eq('id', dealId)
-    if (error) { alert('Не удалось сохранить: ' + error.message); load(); return }
+    if (error) { notify.error('Не удалось сохранить: ' + error.message); load(); return }
     load()
   }
 
@@ -580,7 +581,7 @@ export default function CRMKanbanPage() {
     const { deal, stageId } = lossPending
     // Переводим стадию → триггер сам выставит status='lost'
     const { error: upErr } = await supabase.from('deals').update({ stage_id: stageId }).eq('id', deal.id)
-    if (upErr) { alert('Не удалось перевести: ' + upErr.message); setLossPending(null); load(); return }
+    if (upErr) { notify.error('Не удалось перевести: ' + upErr.message); setLossPending(null); load(); return }
     // Пишем лог причины
     const { error: logErr } = await supabase.from('deal_loss_logs').insert({
       deal_id: deal.id,
@@ -589,14 +590,17 @@ export default function CRMKanbanPage() {
       comment: comment || null,
       created_by: profile?.id ?? null,
     })
-    if (logErr) { alert('Этап переведён, но причина не записана: ' + logErr.message) }
+    if (logErr) { notify.warning('Этап переведён, но причина не записана: ' + logErr.message) }
     setLossPending(null)
     load()
   }
 
   // ── UI ─────────────────────────────────────────────────────────────────────
 
-  if (loading) return <div className="p-6 text-sm text-gray-500">Загрузка…</div>
+  // Полноэкранный лоадер показываем только при первом монтировании.
+  // На последующих перезагрузках (после DnD/импорта/Realtime) оставляем канбан
+  // на месте, чтобы UI не моргал. Точечный спиннер можно дорисовать в шапке.
+  if (loading && pipelines.length === 0) return <div className="p-6 text-sm text-gray-500">Загрузка…</div>
   if (pipelines.length === 0) {
     return (
       <div className="p-6">
@@ -1068,7 +1072,7 @@ export default function CRMKanbanPage() {
             if (target?.pipeline_id) patch.pipeline_id = target.pipeline_id
             if (target?.code) patch.stage = target.code
             const { error } = await supabase.from('deals').update(patch).in('id', ids)
-            if (error) { alert(error.message); return }
+            if (error) { notify.error(error.message); return }
             setBulkSelected(new Set())
             load()
           }}
@@ -1077,21 +1081,21 @@ export default function CRMKanbanPage() {
             const targetStage = stages
               .filter(s => s.pipeline_id === pipelineId && s.is_active)
               .sort((a, b) => a.sort_order - b.sort_order)[0]
-            if (!targetStage) { alert('В воронке нет активных этапов'); return }
+            if (!targetStage) { notify.error('В воронке нет активных этапов'); return }
             const ids = Array.from(bulkSelected)
             const { error } = await supabase.from('deals').update({
               pipeline_id: pipelineId,
               stage_id: targetStage.id,
               stage: targetStage.code,
             }).in('id', ids)
-            if (error) { alert(error.message); return }
+            if (error) { notify.error(error.message); return }
             setBulkSelected(new Set())
             load()
           }}
           onAssign={async (userId) => {
             const ids = Array.from(bulkSelected)
             const { error } = await supabase.from('deals').update({ responsible_user_id: userId }).in('id', ids)
-            if (error) { alert(error.message); return }
+            if (error) { notify.error(error.message); return }
             setBulkSelected(new Set())
             load()
           }}
@@ -1119,7 +1123,7 @@ export default function CRMKanbanPage() {
               status: 'new',
             }))
             const { error } = await supabase.from('tasks').insert(payload)
-            if (error) { alert(error.message); return }
+            if (error) { notify.error(error.message); return }
             setBulkSelected(new Set())
             load()
           }}
@@ -1139,7 +1143,7 @@ export default function CRMKanbanPage() {
                 next = Array.from(cur)
               }
               const { error } = await supabase.from('deals').update({ tags: next }).eq('id', d.id)
-              if (error) { alert(error.message); return }
+              if (error) { notify.error(error.message); return }
             }
             setBulkSelected(new Set())
             load()
@@ -1149,17 +1153,17 @@ export default function CRMKanbanPage() {
             const patch: Record<string, unknown> = {}
             if (field === 'amount') {
               const num = value === '' || value == null ? null : Number(value)
-              if (value !== '' && value != null && Number.isNaN(num)) { alert('Сумма должна быть числом'); return }
+              if (value !== '' && value != null && Number.isNaN(num)) { notify.error('Сумма должна быть числом'); return }
               patch.amount = num
             } else if (field === 'source_id') {
               patch.source_id = value || null
             } else if (field === 'city') {
               patch.contact_city = value || null
             } else {
-              alert('Неизвестное поле'); return
+              notify.error('Неизвестное поле'); return
             }
             const { error } = await supabase.from('deals').update(patch).in('id', ids)
-            if (error) { alert(error.message); return }
+            if (error) { notify.error(error.message); return }
             setBulkSelected(new Set())
             load()
           }}
@@ -1200,7 +1204,7 @@ export default function CRMKanbanPage() {
             const { error } = await supabase.from('deals')
               .update({ deleted_at: new Date().toISOString() })
               .in('id', ids)
-            if (error) { alert(error.message); return }
+            if (error) { notify.error(error.message); return }
             setBulkDeletePending(false)
             setBulkSelected(new Set())
             load()
@@ -1355,10 +1359,14 @@ function LossReasonModal({
 }) {
   const [rid, setRid] = useState<string>(reasons[0]?.id ?? '')
   const [comment, setComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   function submit() {
+    if (submitting) return
     const r = reasons.find(x => x.id === rid)
-    if (!r) { alert('Выберите причину'); return }
+    if (!r) { notify.error('Выберите причину'); return }
+    setSubmitting(true)
+    // onConfirm закроет модалку — флаг сбрасывать не нужно.
     onConfirm(r.id, r.name, comment)
   }
 
@@ -1389,9 +1397,9 @@ function LossReasonModal({
           <button onClick={onCancel} className="px-3 py-1.5 text-sm border border-gray-300 rounded-md">
             Отмена
           </button>
-          <button onClick={submit} disabled={!rid}
+          <button onClick={submit} disabled={!rid || submitting}
             className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 disabled:bg-gray-300 text-white rounded-md">
-            Подтвердить
+            {submitting ? 'Сохранение…' : 'Подтвердить'}
           </button>
         </div>
       </div>
@@ -1636,6 +1644,9 @@ function DealModal({
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
   const [sendingPrepay, setSendingPrepay] = useState(false)
   const [sending, setSending] = useState(false)
+  // Защита кнопок «добавить» от двойного клика → дубликаты в БД.
+  const [addingComment, setAddingComment] = useState(false)
+  const [addingTask, setAddingTask] = useState(false)
   // Статус WhatsApp-интеграции (Green API). null = ещё не проверяли.
   const [waConnected, setWaConnected] = useState<boolean | null>(null)
   // amoCRM-стиль: меню «…» в шапке карточки (удаление и т.п.).
@@ -1918,10 +1929,10 @@ function DealModal({
   const isLostStage = currentStage?.stage_role === 'lost'
 
   async function save() {
-    if (!form.pipeline_id || !form.stage_id) { alert('Выберите воронку и этап'); return }
+    if (!form.pipeline_id || !form.stage_id) { notify.error('Выберите воронку и этап'); return }
     // If stage is 'lost' and no reason — prompt
     if (isLostStage && !form.loss_reason_id) {
-      alert('Укажите причину отказа — этап помечен как «потеря».')
+      notify.error('Укажите причину отказа — этап помечен как «потеря».')
       return
     }
 
@@ -1932,18 +1943,18 @@ function DealModal({
       fieldConfigs, formAsRecord, customFieldsObj, form.stage_id,
     )
     if (blocking.length > 0) {
-      alert(
+      notify.error(
         'Нельзя сохранить: не заполнены обязательные поля с блокировкой — '
         + blocking.map(c => fieldDisplayLabel(c)).join(', ')
       )
       return
     }
     if (missing.length > 0) {
-      const ok = confirm(
-        'Не заполнены обязательные поля: '
-        + missing.map(c => fieldDisplayLabel(c)).join(', ')
-        + '\n\nСохранить всё равно?'
-      )
+      const ok = await confirmAction({
+        title: 'Не заполнены обязательные поля',
+        message: missing.map(c => fieldDisplayLabel(c)).join(', ') + '\n\nСохранить всё равно?',
+        confirmText: 'Сохранить',
+      })
       if (!ok) return
     }
 
@@ -1972,30 +1983,40 @@ function DealModal({
       ? await supabase.from('deals').insert(payload)
       : await supabase.from('deals').update(payload).eq('id', form.id)
     setSaving(false)
-    if (error) { alert('Ошибка: ' + error.message); return }
+    if (error) { notify.error('Ошибка: ' + error.message); return }
     onSaved(isNew)
   }
 
   async function removeDeal() {
     if (isNew) return
-    if (!confirm('Удалить сделку? Она будет помечена удалённой (deleted_at).')) return
+    if (!(await confirmAction({
+      title: 'Удалить сделку?',
+      message: 'Она будет помечена удалённой (deleted_at) и попадёт в корзину.',
+      confirmText: 'Удалить',
+      danger: true,
+    }))) return
     const { error } = await supabase.from('deals').update({ deleted_at: new Date().toISOString() }).eq('id', form.id)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
     onSaved(true) // удаление — закрываем модалку
   }
 
   async function addComment() {
     const body = commentDraft.trim()
-    if (!body || isNew) return
-    const { error } = await supabase.from('deal_comments').insert({
-      deal_id: form.id,
-      clinic_id: form.clinic_id,
-      body,
-      author_id: profile?.id ?? null,
-    })
-    if (error) { alert(error.message); return }
-    setCommentDraft('')
-    loadRelated()
+    if (!body || isNew || addingComment) return
+    setAddingComment(true)
+    try {
+      const { error } = await supabase.from('deal_comments').insert({
+        deal_id: form.id,
+        clinic_id: form.clinic_id,
+        body,
+        author_id: profile?.id ?? null,
+      })
+      if (error) { notify.error(error.message); return }
+      setCommentDraft('')
+      loadRelated()
+    } finally {
+      setAddingComment(false)
+    }
   }
 
   async function sendMessage() {
@@ -2012,7 +2033,7 @@ function DealModal({
         body: JSON.stringify({ body, channel: msgChannel }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); setMsgDraft(body); return }
+      if (!res.ok) { notify.error(json.error ?? 'Не удалось отправить'); setMsgDraft(body); return }
       // Дедуп по id: если Realtime позже принесёт ту же строку, выкинет её.
       const m = json.message as MessageRow | undefined
       if (m) {
@@ -2025,7 +2046,10 @@ function DealModal({
 
   async function sendPrepayRequest() {
     if (isNew || sendingPrepay) return
-    const ok = confirm('Отправить клиенту ссылку на предоплату в WhatsApp?')
+    const ok = await confirmAction({
+      message: 'Отправить клиенту ссылку на предоплату в WhatsApp?',
+      confirmText: 'Отправить',
+    })
     if (!ok) return
     setSendingPrepay(true)
     try {
@@ -2035,7 +2059,7 @@ function DealModal({
         body: JSON.stringify({ body: PREPAY_REQUEST_MESSAGE, channel: 'whatsapp' }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
+      if (!res.ok) { notify.error(json.error ?? 'Не удалось отправить'); return }
       const m = json.message as MessageRow | undefined
       if (m) {
         setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
@@ -2064,7 +2088,7 @@ function DealModal({
           body: JSON.stringify({ body, channel: 'internal' }),
         })
         const json = await res.json().catch(() => ({}))
-        if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); setMsgDraft(body); return }
+        if (!res.ok) { notify.error(json.error ?? 'Не удалось сохранить примечание'); setMsgDraft(body); return }
         const m = json.message as MessageRow | undefined
         if (m) {
           setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
@@ -2089,7 +2113,7 @@ function DealModal({
           duration_s,
           created_by: profile?.id ?? null,
         })
-        if (iErr) { alert(iErr.message); setMsgDraft(body); return }
+        if (iErr) { notify.error(iErr.message); setMsgDraft(body); return }
         // Событие в timeline. payload содержит то, что покажет таб «Хронология».
         await supabase.from('deal_events').insert({
           deal_id: form.id,
@@ -2114,7 +2138,7 @@ function DealModal({
           assignee_id: assignee,
           created_by: profile?.id ?? null,
         }).select('id, title, assignee_id, status').single()
-        if (error) { alert(error.message); setMsgDraft(body); return }
+        if (error) { notify.error(error.message); setMsgDraft(body); return }
         // Same-tab fallback: если Realtime-публикация не подцепилась, всё
         // равно звеним в текущем браузере. TaskNotifier слушает это событие.
         if (typeof window !== 'undefined' && inserted) {
@@ -2131,22 +2155,27 @@ function DealModal({
 
   async function addTask() {
     const title = newTaskTitle.trim()
-    if (!title || isNew) return
-    const { data: inserted, error } = await supabase.from('deal_tasks').insert({
-      deal_id: form.id,
-      clinic_id: form.clinic_id,
-      title,
-      due_at: newTaskDue ? new Date(newTaskDue).toISOString() : null,
-      assignee_id: newTaskAssignee || null,
-      created_by: profile?.id ?? null,
-    }).select('id, title, assignee_id, status').single()
-    if (error) { alert(error.message); return }
-    if (typeof window !== 'undefined' && inserted) {
-      // Same-tab fallback — независимо от того, подцепилась ли Realtime-публикация.
-      window.dispatchEvent(new CustomEvent('task:assigned', { detail: inserted }))
+    if (!title || isNew || addingTask) return
+    setAddingTask(true)
+    try {
+      const { data: inserted, error } = await supabase.from('deal_tasks').insert({
+        deal_id: form.id,
+        clinic_id: form.clinic_id,
+        title,
+        due_at: newTaskDue ? new Date(newTaskDue).toISOString() : null,
+        assignee_id: newTaskAssignee || null,
+        created_by: profile?.id ?? null,
+      }).select('id, title, assignee_id, status').single()
+      if (error) { notify.error(error.message); return }
+      if (typeof window !== 'undefined' && inserted) {
+        // Same-tab fallback — независимо от того, подцепилась ли Realtime-публикация.
+        window.dispatchEvent(new CustomEvent('task:assigned', { detail: inserted }))
+      }
+      setNewTaskTitle(''); setNewTaskDue(''); setNewTaskAssignee('')
+      loadRelated()
+    } finally {
+      setAddingTask(false)
     }
-    setNewTaskTitle(''); setNewTaskDue(''); setNewTaskAssignee('')
-    loadRelated()
   }
 
   async function toggleTask(t: TaskRow) {
@@ -2156,14 +2185,18 @@ function DealModal({
       completed_at: next === 'done' ? new Date().toISOString() : null,
       completed_by: next === 'done' ? profile?.id ?? null : null,
     }).eq('id', t.id)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
     loadRelated()
   }
 
   async function deleteTask(t: TaskRow) {
-    if (!confirm(`Удалить задачу «${t.title}»?`)) return
+    if (!(await confirmAction({
+      message: `Удалить задачу «${t.title}»?`,
+      confirmText: 'Удалить',
+      danger: true,
+    }))) return
     const { error } = await supabase.from('deal_tasks').delete().eq('id', t.id)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
     loadRelated()
   }
 
@@ -2177,7 +2210,7 @@ function DealModal({
     const { blocking } = validateRequiredFields(fieldConfigs, formAsRecord, customFields, stageId)
     if (blocking.length > 0) {
       const names = blocking.map(c => fieldDisplayLabel(c)).join(', ')
-      alert(
+      notify.error(
         `Нельзя перейти в этап «${target.name}»: не заполнены обязательные поля — ${names}.`
       )
       return
@@ -2332,7 +2365,11 @@ function DealModal({
                   <button
                     disabled={unreadSelected.size === 0}
                     onClick={async () => {
-                      if (!confirm(`Удалить ${unreadSelected.size} сообщений?`)) return
+                      if (!(await confirmAction({
+                        message: `Удалить ${unreadSelected.size} сообщений?`,
+                        confirmText: 'Удалить',
+                        danger: true,
+                      }))) return
                       await supabase.from('deal_messages')
                         .delete()
                         .in('id', Array.from(unreadSelected))
@@ -3410,10 +3447,10 @@ function DealModal({
                         />
                         <button
                           onClick={addComment}
-                          disabled={!commentDraft.trim()}
+                          disabled={!commentDraft.trim() || addingComment}
                           className="self-start px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
                         >
-                          Отправить
+                          {addingComment ? '…' : 'Отправить'}
                         </button>
                       </div>
 
@@ -3488,10 +3525,10 @@ function DealModal({
                           </select>
                           <button
                             onClick={addTask}
-                            disabled={!newTaskTitle.trim()}
+                            disabled={!newTaskTitle.trim() || addingTask}
                             className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
                           >
-                            +
+                            {addingTask ? '…' : '+'}
                           </button>
                         </div>
                       </div>
