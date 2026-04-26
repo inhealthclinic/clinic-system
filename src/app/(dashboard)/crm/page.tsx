@@ -435,6 +435,12 @@ export default function CRMKanbanPage() {
     setLoading(true)
     // Базовый запрос сделок. При ownerFilter='mine' ограничиваем по
     // responsible_user_id на стороне БД (не в памяти).
+    // Тянем сделки клиники одним запросом — раскладку по этапам/воронкам
+    // делает клиентский dealsByStage. Никакого фильтра по pipeline_id
+    // или stage_id здесь НЕТ: у импортированных сделок эти поля могут быть
+    // пустыми/указывать на удалённые этапы, а серверный view
+    // v_pipeline_stage_counts всё равно их видит → канбан был бы пуст
+    // при ненулевых счётчиках. Лимит 5000 закрывает текущий объём с запасом.
     let dealsQuery = supabase.from('deals').select(`
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
         responsible_user_id, source_id, amount,
@@ -448,22 +454,21 @@ export default function CRMKanbanPage() {
     if (ownerFilter === 'mine' && profile?.id) {
       dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
     }
-    // Phase 1: воронки + этапы + словари. Сначала тянем pipelines+stages,
-    // чтобы потом скопировать сделки только по stage_id-ам активной воронки —
-    // это надёжнее, чем фильтр по pipeline_id у deal: у импортированных
-    // amoCRM-сделок pipeline_id может быть пустым/устаревшим, но stage_id
-    // верный (server-view v_pipeline_stage_counts тоже джойнит только
-    // по stage_id, поэтому бейджи в шапке совпадают с карточками).
-    const [p, r, ls, up, doc, cl] = await Promise.all([
+    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(5000)
+
+    const [p, d, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
+      dealsQuery,
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
+    if (d.error) console.error('[crm] deals fetch error:', d.error)
     const ps = (p.data ?? []) as Pipeline[]
     setPipelines(ps)
+    setDeals((d.data ?? []) as unknown as DealRow[])
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
     setUsers((up.data ?? []) as UserLite[])
@@ -471,8 +476,7 @@ export default function CRMKanbanPage() {
     const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
     setApptTypes(Array.isArray(at) ? at : [])
 
-    // Phase 2: этапы + counts + conversion + сделки активной воронки.
-    let allStages: Stage[] = []
+    // Этапы + counts + conversion для всех воронок клиники.
     const pipelineIds = ps.map(x => x.id)
     if (pipelineIds.length > 0) {
       const [st, c, cv] = await Promise.all([
@@ -480,25 +484,11 @@ export default function CRMKanbanPage() {
         supabase.from('v_pipeline_stage_counts').select('pipeline_id,stage_id,deals_count,open_count'),
         supabase.from('v_pipeline_conversion').select('pipeline_id,total,won,lost,open_count,conversion_pct').eq('clinic_id', clinicId),
       ])
-      allStages = (st.data ?? []) as Stage[]
-      setStages(allStages)
+      if (st.error) console.error('[crm] stages fetch error:', st.error)
+      setStages((st.data ?? []) as Stage[])
       setCounts((c.data ?? []) as StageCount[])
       setConversions((cv.data ?? []) as Conversion[])
     }
-
-    // Phase 3: сделки клиники. Тянем ВСЕ сделки одним запросом (limit 5000),
-    // фильтрацию по этапу/воронке делаем уже в памяти через dealsByStage —
-    // это надёжнее, чем .in('stage_id', …): не зависит от того, что
-    // pipeline_stages.is_active=true в БД, и не ломается при импорте,
-    // когда у сделки stage_id указывает на стейдж другой/удалённой воронки.
-    dealsQuery = dealsQuery
-      .order('stage_entered_at', { ascending: false, nullsFirst: false })
-      .limit(5000)
-    const d = await dealsQuery
-    if (d.error) {
-      console.error('[crm] deals fetch error:', d.error)
-    }
-    setDeals((d.data ?? []) as unknown as DealRow[])
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
