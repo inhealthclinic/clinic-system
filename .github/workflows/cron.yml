@@ -1,14 +1,13 @@
 name: Cron jobs
 on:
   schedule:
-    - cron: '*/5 * * * *'   # bot greeting + bot followup
+    - cron: '*/5 * * * *'   # bot greeting + bot followup + automation
     - cron: '*/15 * * * *'  # appointment reminders
     - cron: '0 6 * * *'     # daily tasks (birthdays, debts, controls)
   workflow_dispatch:
 
 jobs:
   reminders:
-    # Только */15 — иначе будет падать каждые 5 минут.
     if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -27,7 +26,6 @@ jobs:
           grep -q '"ok":true' g.json
 
   bot-greeting:
-    # */5 schedule + ручной запуск из вкладки Actions.
     if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -44,3 +42,12 @@ jobs:
           curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
                "${{ secrets.BOT_FOLLOWUP_URL }}" | tee bf.json
           grep -q '"ok":true' bf.json
+
+  automation:
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.AUTOMATION_URL }}" | tee a.json
+          grep -q '"ok":true' a.json
