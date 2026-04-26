@@ -159,19 +159,64 @@ function buildOutboundText(step: FlowStep): string {
   return `${step.text}\n\n${lines.join('\n')}`
 }
 
+function norm(s: string): string {
+  // Случайная пунктуация по краям ломает поиск: «4.», «4)», «1)», «(2)», «—Актау»…
+  // Снимаем пробелы и обрамляющие знаки препинания, опускаем регистр.
+  return s
+    .toLowerCase()
+    .replace(/[\s\u00A0]+/g, ' ')
+    .replace(/^[\s.,;:!?()[\]{}«»"'\-—–•·]+|[\s.,;:!?()[\]{}«»"'\-—–•·]+$/g, '')
+    .trim()
+}
+
 function matchAnswer(step: FlowStep, raw: string): number | null {
   if (!raw) return null
-  const t = raw.trim().toLowerCase()
+  const t = norm(raw)
   if (!t) return null
-  // Прямое совпадение или совпадение по синониму (case-insensitive, trim).
+
+  // 1) Точное совпадение по value или синониму.
   for (const a of step.answers) {
-    if (a.value.trim().toLowerCase() === t) return a.next
+    if (norm(a.value) === t) return a.next
     for (const s of a.synonyms) {
-      if (s.trim().toLowerCase() === t) return a.next
+      if (norm(s) === t) return a.next
     }
-    // Нечёткое: если ответ начинается со значения/синонима + пробел/.
-    if (t.startsWith(a.value.trim().toLowerCase())) return a.next
   }
+
+  // 2) Числовой fallback: если клиент прислал только цифру (или цифру с
+  // мусором по краям — «4», «4.», «4)», «(4)», «#4»), а в кнопках/ответах
+  // нет такого синонима — берём ответ по позиции в массиве кнопок.
+  // Это закрывает кейс, когда у одного из вариантов забыли указать «N» в
+  // синонимах, но клиенту мы отправили нумерованный список.
+  const digitOnly = t.replace(/[^0-9]/g, '')
+  if (digitOnly && /^\d+$/.test(digitOnly)) {
+    const n = parseInt(digitOnly, 10)
+    if (n >= 1) {
+      // Пробуем сматчить по букве из buttons[]
+      const btnLabel = step.buttons[n - 1]
+      if (btnLabel) {
+        const target = norm(btnLabel)
+        for (const a of step.answers) {
+          if (norm(a.value) === target) return a.next
+          for (const s of a.synonyms) {
+            if (norm(s) === target) return a.next
+          }
+        }
+      }
+      // Иначе — по позиции в answers[]
+      if (step.answers[n - 1]) return step.answers[n - 1].next
+    }
+  }
+
+  // 3) Префикс: «Актау, келдім» → Актау.
+  for (const a of step.answers) {
+    const v = norm(a.value)
+    if (v.length >= 3 && t.startsWith(v + ' ')) return a.next
+    for (const s of a.synonyms) {
+      const sn = norm(s)
+      if (sn.length >= 3 && t.startsWith(sn + ' ')) return a.next
+    }
+  }
+
   return null
 }
 
