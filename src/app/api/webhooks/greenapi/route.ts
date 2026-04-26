@@ -434,6 +434,15 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   } catch (e) {
     console.warn('[greenapi] auto-confirm flow failed (non-fatal):', e)
   }
+
+  // Диалоговый Salesbot: подаём входящий текст в активный run сделки
+  // (или стартуем default-flow клиники, если run ещё не создан).
+  try {
+    const { routeInboundForDeal } = await import('@/lib/automation/salesbot-flow')
+    await routeInboundForDeal(db, deal.id, text)
+  } catch (e) {
+    console.warn('[greenapi] salesbot-flow routing failed (non-fatal):', e)
+  }
 }
 
 async function handleOutgoingStatus(wh: OutgoingStatusWebhook) {

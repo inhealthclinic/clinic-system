@@ -31,6 +31,17 @@ interface TriggerRow {
   stage: { name: string | null; pipeline: { name: string | null } | null } | null
 }
 
+interface FlowRow {
+  id: string
+  name: string
+  start_step: number
+  is_active: boolean
+  is_default: boolean
+  trigger_event: string
+  created_at: string
+  steps: Record<string, unknown>
+}
+
 const SYSTEM_KEYS = new Set(['bot_greeting', 'bot_followup_no_answer'])
 
 function slugifyKey(t: string): string {
@@ -55,6 +66,24 @@ export default function SalesbotsSettingsPage() {
   const [saving, setSaving] = useState(false)
   const [draft, setDraft] = useState<{ title: string; body: string }>({ title: '', body: '' })
   const [usage, setUsage] = useState<Record<string, string[]>>({})
+
+  // Диалоговые flows
+  const [flows, setFlows] = useState<FlowRow[]>([])
+  const [flowName, setFlowName] = useState('')
+  const [flowJson, setFlowJson] = useState('')
+  const [flowDefault, setFlowDefault] = useState(true)
+  const [flowImporting, setFlowImporting] = useState(false)
+  const [flowMsg, setFlowMsg] = useState<string>('')
+
+  const loadFlows = useCallback(async () => {
+    if (!clinicId) return
+    const { data } = await supabase
+      .from('salesbot_flows')
+      .select('id, name, start_step, is_active, is_default, trigger_event, created_at, steps')
+      .eq('clinic_id', clinicId)
+      .order('created_at', { ascending: false })
+    setFlows((data ?? []) as FlowRow[])
+  }, [supabase, clinicId])
 
   const load = useCallback(async () => {
     if (!clinicId) return
@@ -84,7 +113,47 @@ export default function SalesbotsSettingsPage() {
     setLoading(false)
   }, [supabase, clinicId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(); loadFlows() }, [load, loadFlows])
+
+  async function importFlow() {
+    setFlowMsg('')
+    if (!flowName.trim()) { setFlowMsg('Укажите название бота'); return }
+    if (!flowJson.trim()) { setFlowMsg('Вставьте JSON'); return }
+    setFlowImporting(true)
+    try {
+      const res = await fetch('/api/salesbot-flows/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: flowName.trim(), json: flowJson, make_default: flowDefault }),
+      })
+      const j = await res.json()
+      if (!res.ok) throw new Error(j.error || 'import failed')
+      setFlowMsg(`Импортировано: ${j.steps_count} шаг(ов), старт=${j.start_step}` +
+        (Array.isArray(j.warnings) && j.warnings.length ? `; предупреждения: ${j.warnings.length}` : ''))
+      setFlowName(''); setFlowJson('')
+      await loadFlows()
+    } catch (e) {
+      setFlowMsg('Ошибка: ' + (e as Error).message)
+    } finally {
+      setFlowImporting(false)
+    }
+  }
+
+  async function patchFlow(id: string, patch: Partial<FlowRow>) {
+    const res = await fetch(`/api/salesbot-flows/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+    if (!res.ok) { const j = await res.json().catch(() => ({})); alert('Ошибка: ' + (j.error || res.status)); return }
+    await loadFlows()
+  }
+  async function deleteFlow(id: string) {
+    if (!confirm('Удалить flow? Активные диалоги по нему остановятся.')) return
+    const res = await fetch(`/api/salesbot-flows/${id}`, { method: 'DELETE' })
+    if (!res.ok) { const j = await res.json().catch(() => ({})); alert('Ошибка: ' + (j.error || res.status)); return }
+    await loadFlows()
+  }
 
   async function create() {
     if (!clinicId) return
@@ -160,9 +229,94 @@ export default function SalesbotsSettingsPage() {
         </p>
       </div>
 
-      {/* Новый бот */}
+      {/* Диалоговый Salesbot (flow) */}
+      <div className="bg-white border border-gray-100 rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">Диалоговые боты (flow)</h2>
+          <p className="text-xs text-gray-500 mt-1">
+            Полноценный диалог с ветвлениями: бот шлёт вопрос с вариантами,
+            ждёт ответ клиента, по ключевым словам/синонимам переходит дальше.
+            Когда новый лид пишет в WhatsApp — default-бот стартует автоматически.
+            Поддерживается импорт экспорта Salesbot из amoCRM (JSON).
+          </p>
+        </div>
+
+        {flows.length > 0 && (
+          <ul className="divide-y divide-gray-100 border border-gray-100 rounded-md">
+            {flows.map(f => (
+              <li key={f.id} className="p-3 flex items-center gap-3 text-sm">
+                <span className="font-medium text-gray-900 truncate flex-1">{f.name}</span>
+                <span className="text-xs text-gray-500">{Object.keys(f.steps ?? {}).length} шагов</span>
+                {f.is_default && (
+                  <span className="px-1.5 py-0.5 text-[10px] rounded bg-emerald-50 border border-emerald-200 text-emerald-700 uppercase tracking-wide">
+                    default
+                  </span>
+                )}
+                <label className="flex items-center gap-1.5 text-xs text-gray-500">
+                  <input type="checkbox" checked={f.is_active}
+                    onChange={e => patchFlow(f.id, { is_active: e.target.checked })} />
+                  активен
+                </label>
+                {!f.is_default && (
+                  <button type="button"
+                    onClick={() => patchFlow(f.id, { is_default: true })}
+                    className="px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 rounded">
+                    Сделать default
+                  </button>
+                )}
+                <button type="button"
+                  onClick={() => deleteFlow(f.id)}
+                  className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded">
+                  Удалить
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <details className="border border-gray-200 rounded-md bg-gray-50">
+          <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-gray-800">
+            Импортировать flow из amoCRM (JSON)
+          </summary>
+          <div className="p-3 space-y-2">
+            <input
+              type="text"
+              value={flowName}
+              onChange={e => setFlowName(e.target.value)}
+              placeholder="Название бота (например: Приветствие)"
+              className="w-full border border-gray-200 rounded px-3 py-2 text-sm bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
+            />
+            <textarea
+              value={flowJson}
+              onChange={e => setFlowJson(e.target.value)}
+              rows={8}
+              placeholder='Вставьте сюда JSON-экспорт Salesbot из amoCRM (объект с ключами "0", "7" и т.д.).'
+              className="w-full border border-gray-200 rounded px-3 py-2 text-xs font-mono bg-white hover:border-gray-300 focus:border-blue-400 outline-none resize-y"
+            />
+            <label className="flex items-center gap-2 text-xs text-gray-700">
+              <input type="checkbox" checked={flowDefault} onChange={e => setFlowDefault(e.target.checked)} />
+              Сделать ботом по умолчанию для новых входящих диалогов
+            </label>
+            {flowMsg && (
+              <div className={`text-xs ${flowMsg.startsWith('Ошибка') ? 'text-red-600' : 'text-emerald-700'}`}>
+                {flowMsg}
+              </div>
+            )}
+            <div className="flex justify-end">
+              <button type="button"
+                onClick={importFlow}
+                disabled={flowImporting}
+                className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60">
+                {flowImporting ? 'Импортируем…' : 'Импортировать flow'}
+              </button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      {/* Новый одиночный шаблон-бот */}
       <div className="bg-white border border-gray-100 rounded-xl p-5 space-y-3">
-        <h2 className="text-sm font-semibold text-gray-900">Создать нового бота</h2>
+        <h2 className="text-sm font-semibold text-gray-900">Создать нового бота (одиночный шаблон)</h2>
         <input
           type="text"
           value={draft.title}
