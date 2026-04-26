@@ -83,6 +83,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: dealsErr.message }, { status: 500 })
   }
 
+  // Диагностика: считаем все сделки в БД БЕЗ фильтра по клинике.
+  // Если service-role реально bypass'ит RLS — count покажет суммарное
+  // число сделок (порядка 1565). Если ключ невалидный (anon вместо
+  // service_role на Vercel), RLS ляжет, и count тоже будет 0 — это
+  // прямой индикатор misconfig'а, видимый прямо в UI-баннере.
+  const { count: globalDeals } = await admin
+    .from('deals')
+    .select('id', { count: 'exact', head: true })
+
   // 4) Подгружаем пациентов чанками, без embed-ов (PostgREST на больших
   //    выборках с FK на удалённые/недоступные patients схлопывает родителей).
   const dealRows = (deals ?? []) as Array<{ id: string; patient_id: string | null }>
@@ -110,5 +119,6 @@ export async function GET(req: NextRequest) {
     clinic_id: profile.clinic_id,
     deals: dealRows,
     patients,
+    global_deals_count: globalDeals ?? null,
   })
 }

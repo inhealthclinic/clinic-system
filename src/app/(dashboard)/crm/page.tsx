@@ -172,7 +172,7 @@ export default function CRMKanbanPage() {
   // сколько сделок вернул сервер, текст ошибки. Показываем баннер, только
   // когда что-то явно сломано — чтобы причина пустого канбана была видна
   // без DevTools.
-  const [dealsDiag, setDealsDiag] = useState<{ status: number; got: number; clinic: string | null; error: string | null } | null>(null)
+  const [dealsDiag, setDealsDiag] = useState<{ status: number; got: number; clinic: string | null; error: string | null; globalCount: number | null } | null>(null)
 
   // Режим просмотра: канбан (этапы-колонки) или таблица (плоский список).
   // Персистим выбор, чтобы менеджер возвращался к привычному виду.
@@ -454,6 +454,7 @@ export default function CRMKanbanPage() {
       deals?: DealRow[]
       patients?: { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }[]
       error?: string
+      global_deals_count?: number | null
     }
     const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
     if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
@@ -462,6 +463,7 @@ export default function CRMKanbanPage() {
       got: (dealsJson?.deals ?? []).length,
       clinic: dealsJson?.clinic_id ?? null,
       error: dealsJson?.error ?? null,
+      globalCount: dealsJson?.global_deals_count ?? null,
     })
 
     const [p, r, ls, up, doc, cl] = await Promise.all([
@@ -764,7 +766,7 @@ export default function CRMKanbanPage() {
         <div className="font-medium">Диагностика /api/crm/deals</div>
         <div className="text-xs mt-0.5">
           {dealsDiag
-            ? <>HTTP {dealsDiag.status} · сделок: <b>{dealsDiag.got}</b>{dealsDiag.clinic ? ` · clinic ${dealsDiag.clinic.slice(0,8)}…` : ''}{dealsDiag.error ? ` · ошибка: ${dealsDiag.error}` : ''} · в state: <b>{deals.length}</b> · stages: <b>{stages.length}</b> · activePipeline: {activePipelineId.slice(0,8) || '—'}</>
+            ? <>HTTP {dealsDiag.status} · сделок: <b>{dealsDiag.got}</b>{dealsDiag.clinic ? ` · clinic ${dealsDiag.clinic.slice(0,8)}…` : ''} · global_deals (RLS bypass test): <b>{dealsDiag.globalCount ?? '—'}</b>{dealsDiag.error ? ` · ошибка: ${dealsDiag.error}` : ''} · в state: <b>{deals.length}</b> · stages: <b>{stages.length}</b> · activePipeline: {activePipelineId.slice(0,8) || '—'}</>
             : 'Загружаю…'}
         </div>
       </div>
