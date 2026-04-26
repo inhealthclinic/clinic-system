@@ -299,8 +299,8 @@ const MODE_LABELS: Record<SalesbotMode, string> = {
 }
 
 const IMPLEMENTED: Record<SalesbotMode, boolean> = {
-  immediate: true, delay: true, daily_at: false,
-  no_reply_hours: false, on_first_inbound: false, on_chat_close: false,
+  immediate: true, delay: true, daily_at: true,
+  no_reply_hours: true, on_first_inbound: false, on_chat_close: false,
 }
 
 function SalesbotTriggerForm({

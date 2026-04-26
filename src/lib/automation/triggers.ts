@@ -2,20 +2,25 @@
  * Исполнение пользовательских триггеров воронки (мигр. 088).
  *
  * Вызывается из /api/cron/automation. Идемпотентность — через таблицу
- * pipeline_trigger_executions (мигр. 089): после успешного исполнения
- * пишем (trigger_id, deal_id), unique-индекс не даст повторить. При
- * выходе сделки из стадии БД-триггер очищает записи (см. 089), чтобы
- * при повторном входе действия отработали снова.
+ * pipeline_trigger_executions (мигр. 089 + 092):
+ *   • dedup_key=NULL  → один раз per (trigger, deal) — immediate / delay
+ *   • dedup_key='YYYY-MM-DD' → один раз в сутки — daily_at
+ *   • dedup_key='<last_inbound_msg_id>' → один раз на «затишье» — no_reply_hours
  *
- * Поддерживаемые типы (event='on_enter'):
- *   • salesbot           — отправить шаблон WhatsApp
- *   • create_task        — создать задачу менеджеру
- *   • change_stage       — перевести сделку в другую стадию
- *   • change_field       — обновить колонку deals.<field>
- *   • change_responsible — сменить ответственного
- *   • edit_tags          — добавить/убрать теги
- *   • complete_tasks     — закрыть открытые задачи сделки
- *   • webhook            — POST на внешний URL
+ * При выходе сделки из стадии БД-триггер очищает executions (мигр. 089),
+ * чтобы при повторном входе действия отработали снова.
+ *
+ * Поддерживаемые типы:
+ *   • salesbot, create_task, change_stage, change_field,
+ *     change_responsible, edit_tags, complete_tasks, webhook
+ *
+ * Режимы (config.mode, расширение поверх 088):
+ *   • immediate         — сразу при входе в стадию
+ *   • delay             — через config.delay_minutes
+ *   • daily_at          — ежедневно в config.daily_at (HH:MM)
+ *   • no_reply_hours    — если последнее inbound старше config.no_reply_hours
+ *   (immediate/delay = event 'on_enter'; daily_at/no_reply_hours тоже
+ *    в стадии, но проверяются по своим условиям, отдельно от stage_entered_at)
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { sendTemplateToDeal } from './sender'
@@ -145,11 +150,45 @@ const HANDLERS: Record<string, (sb: SupabaseClient, t: PipelineTrigger, d: DealM
   webhook:            execWebhook,
 }
 
-// ── Cron entry: обрабатываем все active on_enter триггеры ────────────────────
+// ── Mode helpers ────────────────────────────────────────────────────────────
+
+const TICK_WINDOW_MIN = 5 // согласовано с pg_cron */5
+
+/** Проверка: попало ли текущее время в окно [HH:MM, HH:MM + tick) с учётом местного TZ конфига. */
+function inDailyAtWindow(hhmm: string, now: Date): boolean {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim())
+  if (!m) return false
+  const h = Number(m[1]), mm = Number(m[2])
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return false
+  const target = h * 60 + mm
+  const cur    = now.getUTCHours() * 60 + now.getUTCMinutes()
+  // окно tick минут вперёд (cron срабатывает раз в TICK_WINDOW_MIN)
+  const diff = ((cur - target) + 24 * 60) % (24 * 60)
+  return diff >= 0 && diff < TICK_WINDOW_MIN
+}
+
+function todayKey(now: Date): string {
+  return now.toISOString().slice(0, 10) // YYYY-MM-DD UTC
+}
+
+/** Определяем режим триггера. По умолчанию immediate/delay (on_enter). */
+function detectMode(t: PipelineTrigger): 'immediate' | 'delay' | 'daily_at' | 'no_reply_hours' {
+  const m = cfgStr(t.config, 'mode')
+  if (m === 'daily_at')        return 'daily_at'
+  if (m === 'no_reply_hours')  return 'no_reply_hours'
+  if (m === 'delay')           return 'delay'
+  if (m === 'immediate')       return 'immediate'
+  // обратная совместимость: если есть delay_minutes → delay, иначе immediate
+  return cfgNum(t.config, 'delay_minutes', 0) > 0 ? 'delay' : 'immediate'
+}
+
+// ── Cron entry ───────────────────────────────────────────────────────────────
 
 export async function processCustomTriggers(sb: SupabaseClient): Promise<{
   triggers: number; fired: number; failed: number; skipped: number
 }> {
+  const now = new Date()
+
   const { data: triggers } = await sb
     .from('pipeline_stage_triggers')
     .select('*')
@@ -163,41 +202,77 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
   for (const t of triggers) {
     const handler = HANDLERS[t.type]
     if (!handler) { skipped++; continue }
-    const delayMin = cfgNum(t.config, 'delay_minutes', 0)
-    const cutoff   = new Date(Date.now() - delayMin * 60_000).toISOString()
+    const mode = detectMode(t)
 
-    // Сделки в этой стадии, попавшие сюда не позже cutoff,
-    // и для которых ещё не было исполнения этого триггера.
-    const { data: deals } = await sb
+    // Daily-at: вне 5-минутного окна — пропускаем.
+    if (mode === 'daily_at') {
+      const at = cfgStr(t.config, 'daily_at')
+      if (!inDailyAtWindow(at, now)) { skipped++; continue }
+    }
+
+    // Базовый запрос сделок этой стадии.
+    let q = sb
       .from('deals')
       .select('id, clinic_id, stage_id, stage_entered_at, responsible_user_id, contact_phone, tags')
       .eq('clinic_id', t.clinic_id)
       .eq('stage_id', t.stage_id)
       .is('deleted_at', null)
-      .lte('stage_entered_at', cutoff)
-      .returns<DealMin[]>()
+
+    if (mode === 'delay' || mode === 'immediate') {
+      const delayMin = mode === 'delay' ? cfgNum(t.config, 'delay_minutes', 0) : 0
+      const cutoff   = new Date(now.getTime() - delayMin * 60_000).toISOString()
+      q = q.lte('stage_entered_at', cutoff)
+    }
+
+    const { data: deals } = await q.returns<DealMin[]>()
     if (!deals?.length) continue
 
-    // Узнаём, для каких deal_id уже было выполнение этого триггера.
-    const { data: done } = await sb
+    // Уже исполнено? — берём executions этого триггера и строим карту.
+    const { data: doneRows } = await sb
       .from('pipeline_trigger_executions')
-      .select('deal_id').eq('trigger_id', t.id)
-      .returns<{ deal_id: string }[]>()
-    const seen = new Set((done ?? []).map(r => r.deal_id))
+      .select('deal_id, dedup_key').eq('trigger_id', t.id)
+      .returns<{ deal_id: string; dedup_key: string | null }[]>()
+    const seenKeys = new Set((doneRows ?? []).map(r => `${r.deal_id}|${r.dedup_key ?? ''}`))
 
     for (const d of deals) {
-      if (seen.has(d.id)) continue
+      // Вычисляем dedup_key и (для no_reply) проверяем условие.
+      let dedup: string | null = null
+
+      if (mode === 'daily_at') {
+        dedup = todayKey(now)
+      } else if (mode === 'no_reply_hours') {
+        const hours = cfgNum(t.config, 'no_reply_hours', 0)
+        if (hours <= 0) continue
+        // Берём последнее входящее сообщение этой сделки.
+        const { data: last } = await sb
+          .from('deal_messages')
+          .select('id, created_at')
+          .eq('deal_id', d.id)
+          .eq('direction', 'in')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .returns<{ id: string; created_at: string }[]>()
+        if (!last?.length) continue // ещё ни одного входящего — пропускаем
+        const ageMs = now.getTime() - new Date(last[0].created_at).getTime()
+        if (ageMs < hours * 3600_000) continue
+        dedup = last[0].id // дедуп по конкретному «последнему inbound»
+      }
+
+      const key = `${d.id}|${dedup ?? ''}`
+      if (seenKeys.has(key)) continue
+
       try {
         await handler(sb, t, d)
         await sb.from('pipeline_trigger_executions').insert({
-          clinic_id: t.clinic_id, trigger_id: t.id, deal_id: d.id, status: 'ok',
+          clinic_id: t.clinic_id, trigger_id: t.id, deal_id: d.id,
+          dedup_key: dedup, status: 'ok',
         })
         fired++
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         await sb.from('pipeline_trigger_executions').insert({
           clinic_id: t.clinic_id, trigger_id: t.id, deal_id: d.id,
-          status: 'failed', error: msg.slice(0, 500),
+          dedup_key: dedup, status: 'failed', error: msg.slice(0, 500),
         })
         failed++
       }
