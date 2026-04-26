@@ -127,7 +127,7 @@ export default function TriggerConfigDrawer({ open, trigger, onClose, onSave }: 
 
           {/* Per-type */}
           {trigger.type === 'salesbot' && (
-            <SalesbotTriggerForm config={config} set={set} tmpls={tmpls} />
+            <SalesbotTriggerForm config={config} set={set} tmpls={tmpls} setTmpls={setTmpls} clinicId={clinicId ?? null} supabase={supabase} />
           )}
 
           {trigger.type === 'create_task' && (
@@ -317,12 +317,17 @@ const IMPLEMENTED: Record<SalesbotMode, boolean> = {
   on_first_inbound: true, on_read: true, on_chat_close: true,
 }
 
+type SupaClient = ReturnType<typeof createClient>
+
 function SalesbotTriggerForm({
-  config, set, tmpls,
+  config, set, tmpls, setTmpls, clinicId, supabase,
 }: {
   config: Record<string, unknown>
   set: (k: string, v: unknown) => void
   tmpls: TmplRef[]
+  setTmpls: React.Dispatch<React.SetStateAction<TmplRef[]>>
+  clinicId: string | null
+  supabase: SupaClient
 }) {
   const mode = (config.mode as SalesbotMode | undefined) ?? 'immediate'
   const [open, setOpen] = useState(false)
@@ -373,15 +378,15 @@ function SalesbotTriggerForm({
 
   return (
     <div className="space-y-4">
-      {/* Шаблон сообщения */}
-      <Field label="Шаблон сообщения (Salesbot отправит этот текст)">
-        <select className={inputCls}
-          value={String(config.template_key ?? '')}
-          onChange={e => set('template_key', e.target.value)}>
-          <option value="">— выбрать —</option>
-          {tmpls.map(t => <option key={t.key} value={t.key}>{t.title} ({t.key})</option>)}
-        </select>
-      </Field>
+      {/* Salesbot — амо-стиль: выбор шаблона + создание нового */}
+      <SalesbotPicker
+        value={String(config.template_key ?? '')}
+        onChange={(k) => set('template_key', k)}
+        tmpls={tmpls}
+        setTmpls={setTmpls}
+        clinicId={clinicId}
+        supabase={supabase}
+      />
 
       {/* Выполнить: <текущий режим> ▾ */}
       <div className="relative" ref={ddRef}>
@@ -975,6 +980,133 @@ function ScheduleButton({
             <span className="text-sm text-gray-700">до</span>
             <input type="time" value={toT} onChange={e => updateTo(e.target.value)}
               className="rounded border border-gray-300 px-1.5 py-0.5 text-sm w-24 text-blue-600" />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ---------- Salesbot picker (amoCRM-style) ---------- */
+
+function SalesbotPicker({
+  value, onChange, tmpls, setTmpls, clinicId, supabase,
+}: {
+  value: string
+  onChange: (key: string) => void
+  tmpls: TmplRef[]
+  setTmpls: React.Dispatch<React.SetStateAction<TmplRef[]>>
+  clinicId: string | null
+  supabase: SupaClient
+}) {
+  const [creating, setCreating] = useState(false)
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  function slugifyKey(t: string): string {
+    const map: Record<string, string> = {
+      а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'e',ж:'zh',з:'z',и:'i',й:'i',
+      к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',
+      х:'h',ц:'c',ч:'ch',ш:'sh',щ:'sch',ъ:'',ы:'y',ь:'',э:'e',ю:'yu',я:'ya',
+    }
+    let s = t.toLowerCase().trim()
+    s = s.split('').map(ch => map[ch] ?? ch).join('')
+    s = s.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    return s.slice(0, 60) || `bot_${Date.now()}`
+  }
+
+  async function createBot() {
+    if (!clinicId || !title.trim() || !body.trim()) {
+      setErr('Введите название и текст сообщения')
+      return
+    }
+    setBusy(true); setErr('')
+    try {
+      let key = slugifyKey(title)
+      // Гарантируем уникальность ключа в рамках клиники
+      if (tmpls.some(t => t.key === key)) key = `${key}_${Math.random().toString(36).slice(2, 6)}`
+      const { error } = await supabase
+        .from('message_templates')
+        .insert({ clinic_id: clinicId, title: title.trim(), body: body.trim(), key, is_active: true })
+      if (error) throw error
+      setTmpls(prev => [...prev, { key, title: title.trim() }].sort((a, b) => a.title.localeCompare(b.title)))
+      onChange(key)
+      setTitle(''); setBody(''); setCreating(false)
+    } catch (e) {
+      setErr((e as Error).message || 'Не удалось создать')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-sm font-medium text-gray-800">Salesbot</div>
+      <div className="flex items-stretch gap-2">
+        <select
+          className="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+        >
+          <option value="">Бот не выбран</option>
+          {tmpls.map(t => <option key={t.key} value={t.key}>{t.title}</option>)}
+        </select>
+        <span className="self-center text-sm text-gray-500">или</span>
+        <button
+          type="button"
+          onClick={() => { setCreating(c => !c); setErr('') }}
+          className="px-3 py-2 text-sm rounded-md border border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 whitespace-nowrap"
+        >
+          + Создать нового бота
+        </button>
+      </div>
+      {!creating && (
+        <div className="text-xs text-gray-500">
+          Создайте нового бота или выберите существующего
+        </div>
+      )}
+
+      {creating && (
+        <div className="mt-2 border border-gray-200 rounded-md bg-gray-50 p-3 space-y-2">
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Название бота</label>
+            <input
+              type="text"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="Например: Приветствие новой заявки"
+              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Текст сообщения, который отправит бот</label>
+            <textarea
+              value={body}
+              onChange={e => setBody(e.target.value)}
+              rows={4}
+              placeholder="Здравствуйте! Это автосообщение клиники..."
+              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          {err && <div className="text-xs text-red-600">{err}</div>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setCreating(false); setErr('') }}
+              className="px-3 py-1.5 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={createBot}
+              className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {busy ? 'Сохранение…' : 'Сохранить бота'}
+            </button>
           </div>
         </div>
       )}
