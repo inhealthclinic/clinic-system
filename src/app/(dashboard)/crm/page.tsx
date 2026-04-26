@@ -1705,6 +1705,9 @@ function DealModal({
   const [recording, setRecording] = useState(false)
   const [recordSecs, setRecordSecs] = useState(0)
   const [sendingVoice, setSendingVoice] = useState(false)
+  // Превью записанного голосового перед отправкой: можно прослушать,
+  // потом нажать «Отправить» или «✕». blob храним отдельно, url — для <audio>.
+  const [pendingVoice, setPendingVoice] = useState<{ blob: Blob; url: string; duration_s: number } | null>(null)
   // Защита кнопок «добавить» от двойного клика → дубликаты в БД.
   const [addingComment, setAddingComment] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
@@ -2138,7 +2141,9 @@ function DealModal({
           notify.error('Слишком короткая запись')
           return
         }
-        await uploadVoice(blob, duration_s)
+        // Не отправляем сразу — даём прослушать в превью.
+        const url = URL.createObjectURL(blob)
+        setPendingVoice({ blob, url, duration_s })
       }
       mediaRecorderRef.current = rec
       recordStartRef.current = Date.now()
@@ -2164,6 +2169,19 @@ function DealModal({
     if (rec.state !== 'inactive') rec.stop()
     setRecording(false)
     mediaRecorderRef.current = null
+  }
+
+  function discardPendingVoice() {
+    if (pendingVoice) URL.revokeObjectURL(pendingVoice.url)
+    setPendingVoice(null)
+  }
+
+  async function sendPendingVoice() {
+    if (!pendingVoice) return
+    const { blob, url, duration_s } = pendingVoice
+    setPendingVoice(null)
+    URL.revokeObjectURL(url)
+    await uploadVoice(blob, duration_s)
   }
 
   async function uploadVoice(blob: Blob, duration_s: number) {
@@ -3579,6 +3597,14 @@ function DealModal({
                               </span>
                               <span className="text-xs text-red-600/70">запись…</span>
                             </div>
+                          ) : pendingVoice ? (
+                            // Превью записанного голосового — можно прослушать перед отправкой.
+                            <div className="flex-1 flex items-center gap-2 border border-blue-200 rounded px-3 py-1.5 bg-blue-50">
+                              <audio controls src={pendingVoice.url} className="flex-1 h-8" />
+                              <span className="text-xs text-blue-700/70 font-mono tabular-nums">
+                                {String(Math.floor(pendingVoice.duration_s / 60)).padStart(2, '0')}:{String(pendingVoice.duration_s % 60).padStart(2, '0')}
+                              </span>
+                            </div>
                           ) : (
                             <textarea
                               value={msgDraft}
@@ -3612,10 +3638,28 @@ function DealModal({
                                 </button>
                                 <button
                                   onClick={() => stopRecording(true)}
-                                  title="Отправить голосовое"
+                                  title="Остановить запись (можно будет прослушать)"
                                   className="self-end px-4 py-1.5 text-sm rounded bg-red-600 hover:bg-red-700 text-white"
                                 >
-                                  ▶ Отправить
+                                  ⏹ Стоп
+                                </button>
+                              </>
+                            ) : pendingVoice ? (
+                              <>
+                                <button
+                                  onClick={discardPendingVoice}
+                                  title="Удалить и записать заново"
+                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                                >
+                                  ✕
+                                </button>
+                                <button
+                                  onClick={sendPendingVoice}
+                                  disabled={sendingVoice}
+                                  title="Отправить голосовое"
+                                  className="self-end px-4 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
+                                >
+                                  {sendingVoice ? '…' : '▶ Отправить'}
                                 </button>
                               </>
                             ) : (
@@ -3630,7 +3674,7 @@ function DealModal({
                             )
                           )}
 
-                          {!recording && (
+                          {!recording && !pendingVoice && (
                             <button
                               onClick={submitComposer}
                               disabled={!msgDraft.trim() || sending}
