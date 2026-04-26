@@ -132,28 +132,6 @@ function fmtDuration(seconds: number | null): string {
   return `${seconds} с`
 }
 
-/**
- * Bulk-апдейт сделок чанками. У PostgREST лимит длины URL ~16k символов,
- * а `.in('id', [...UUIDs])` уезжает в query-string. На пачке >300 ID
- * запрос отлетает с 400 Bad Request. Поэтому режем на батчи.
- *
- * Возвращает строку с ошибкой первого упавшего чанка либо null, если ок.
- */
-async function bulkUpdateDeals(
-  supabase: ReturnType<typeof createClient>,
-  ids: string[],
-  patch: Record<string, unknown>,
-  chunkSize = 200,
-): Promise<string | null> {
-  if (ids.length === 0) return null
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    const slice = ids.slice(i, i + chunkSize)
-    const { error } = await supabase.from('deals').update(patch).in('id', slice)
-    if (error) return error.message
-  }
-  return null
-}
-
 // ─── page ────────────────────────────────────────────────────────────────────
 
 export default function CRMKanbanPage() {
@@ -174,14 +152,6 @@ export default function CRMKanbanPage() {
   const [doctors, setDoctors] = useState<DoctorLite[]>([])
   const [apptTypes, setApptTypes] = useState<ApptType[]>([])
   const [loading, setLoading] = useState(true)
-  // Видимая диагностика загрузки сделок: сколько строк по count(*),
-  // сколько реально получили, и текст ошибки, если пришла.
-  // Показываем баннер только когда есть расхождение или ошибка —
-  // чтобы пользователь сразу видел причину пустого канбана, не лазая
-  // в DevTools.
-  const [dealsDiag, setDealsDiag] = useState<{ expected: number | null; got: number; error: string | null }>(
-    { expected: null, got: 0, error: null }
-  )
 
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
@@ -438,72 +408,64 @@ export default function CRMKanbanPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clinicId])
 
+  // Чанкованный bulk-UPDATE для массовых операций. PostgREST падает с 400,
+  // когда .in('id', [...uuids]) укладывается в URL длиннее ~16k. На 1k+
+  // выделенных сделок это происходит легко, поэтому режем по 200.
+  const bulkUpdateDeals = useCallback(async (ids: string[], patch: Record<string, unknown>): Promise<string | null> => {
+    if (ids.length === 0) return null
+    for (let i = 0; i < ids.length; i += 200) {
+      const slice = ids.slice(i, i + 200)
+      const { error } = await supabase.from('deals').update(patch).in('id', slice)
+      if (error) return error.message
+    }
+    return null
+  }, [supabase])
+
   const load = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
     // Базовый запрос сделок. При ownerFilter='mine' ограничиваем по
     // responsible_user_id на стороне БД (не в памяти).
-    // ── Сделки тянем через серверный API (бежит под service role) ──────────
-    // Прямая выборка из браузера через supabase-js идёт под пользовательским
-    // JWT и применяет RLS на deals (clinic_id = current_clinic_id()). Если у
-    // импорта clinic_id «съехал» относительно user_profiles — клиент видит
-    // 0 строк, при том что view v_pipeline_stage_counts (security_invoker=
-    // false в PG15+) показывает в шапке настоящие цифры. Этот же роут
-    // авторизует пользователя по JWT, читает clinic_id из user_profiles и
-    // под service-role выгружает сделки именно этой клиники.
-    const accessToken = (await supabase.auth.getSession()).data.session?.access_token ?? ''
-    const dealsApiUrl = `/api/crm/deals?owner=${ownerFilter === 'mine' ? 'mine' : 'all'}&limit=5000`
-    let dealsApiData: { count: number | null; deals: DealRow[]; error?: string } = { count: null, deals: [] }
-    let dealsApiError: string | null = null
-    try {
-      const res = await fetch(dealsApiUrl, {
-        headers: { authorization: `Bearer ${accessToken}` },
-        cache: 'no-store',
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        dealsApiError = (json && typeof json.error === 'string' ? json.error : `HTTP ${res.status}`)
-      } else {
-        dealsApiData = json as typeof dealsApiData
-      }
-    } catch (e) {
-      dealsApiError = e instanceof Error ? e.message : 'fetch failed'
+    let dealsQuery = supabase.from('deals').select(`
+        id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
+        responsible_user_id, source_id, amount,
+        preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
+        custom_fields, bot_active, bot_state,
+        stage_entered_at, created_at, updated_at,
+        patient:patients(id, full_name, phones, birth_date, city),
+        responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
+        doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
+      `).eq('clinic_id', clinicId).is('deleted_at', null)
+    if (ownerFilter === 'mine' && profile?.id) {
+      dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
     }
-    if (dealsApiError) console.error('[crm] /api/crm/deals error:', dealsApiError)
-
-    const [p, r, ls, up, doc, cl] = await Promise.all([
+    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(10000)
+    const [p, d, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
+      dealsQuery,
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
-
     const ps = (p.data ?? []) as Pipeline[]
     setPipelines(ps)
-    setUsers((up.data ?? []) as UserLite[])
-    setDoctors((doc.data ?? []) as DoctorLite[])
+    setDeals((d.data ?? []) as unknown as DealRow[])
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
-    setDeals(dealsApiData.deals)
-    setDealsDiag({
-      expected: dealsApiData.count,
-      got: dealsApiData.deals.length,
-      error: dealsApiError,
-    })
+    setUsers((up.data ?? []) as UserLite[])
+    setDoctors((doc.data ?? []) as DoctorLite[])
     const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
     setApptTypes(Array.isArray(at) ? at : [])
 
-    // Этапы + counts + conversion для всех воронок клиники.
-    const pipelineIds = ps.map(x => x.id)
-    if (pipelineIds.length > 0) {
+    const stageIdsByPipeline = ps.map(x => x.id)
+    if (stageIdsByPipeline.length > 0) {
       const [st, c, cv] = await Promise.all([
-        supabase.from('pipeline_stages').select('*').in('pipeline_id', pipelineIds).order('sort_order'),
+        supabase.from('pipeline_stages').select('*').in('pipeline_id', stageIdsByPipeline).order('sort_order'),
         supabase.from('v_pipeline_stage_counts').select('pipeline_id,stage_id,deals_count,open_count'),
         supabase.from('v_pipeline_conversion').select('pipeline_id,total,won,lost,open_count,conversion_pct').eq('clinic_id', clinicId),
       ])
-      if (st.error) console.error('[crm] stages fetch error:', st.error)
       setStages((st.data ?? []) as Stage[])
       setCounts((c.data ?? []) as StageCount[])
       setConversions((cv.data ?? []) as Conversion[])
@@ -530,8 +492,6 @@ export default function CRMKanbanPage() {
     if (n.includes('запис')) return false // Записан/Записана/… — всегда видимо
     return s.stage_role === 'won' || s.stage_role === 'closed'
   }
-  // Кому показывать переключатель «Показать закрытые этапы».
-  // Owner и admin — оба могут просматривать архив воронки.
   const isListCrmAdmin = profile?.role?.slug === 'admin' || profile?.role?.slug === 'owner'
   const hiddenTerminalCount = useMemo(
     () => allActiveStages.filter(isHiddenTerminal).length,
@@ -604,17 +564,15 @@ export default function CRMKanbanPage() {
     return map
   }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
-  // Плоский список для табличного вида. В отличие от канбана здесь показываем
-  // ВСЕ этапы активной воронки, включая терминальные (won/closed) — иначе
-  // закрытые сделки не было бы видно даже в таблице.
+  // Плоский список для табличного вида.
   const tableDeals = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase()
-    const allActiveStageIds = new Set(allActiveStages.map(s => s.id))
+    const activeStageIds = new Set(activeStages.map(s => s.id))
     return deals
-      .filter(d => d.stage_id != null && allActiveStageIds.has(d.stage_id))
+      .filter(d => d.stage_id != null && activeStageIds.has(d.stage_id))
       .filter(d => matchesSearch(d, q))
       .sort(compareDeals)
-  }, [deals, allActiveStages, debouncedSearch, matchesSearch, compareDeals])
+  }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
   // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
   useEffect(() => {
@@ -755,19 +713,6 @@ export default function CRMKanbanPage() {
 
   return (
     <div className="min-h-screen">
-      {/* Диагностический баннер: показываем только если загрузка сделок
-          явно сломалась — есть ошибка, либо count(*) даёт ненулевое
-          число, а реально пришло 0 строк. Это помогает быстро увидеть
-          причину пустого канбана без открывания DevTools. */}
-      {(dealsDiag.error || (dealsDiag.expected !== null && dealsDiag.expected > 0 && dealsDiag.got === 0)) && (
-        <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <div className="font-medium">Не удалось загрузить сделки</div>
-          <div className="text-xs mt-0.5">
-            В клинике {dealsDiag.expected ?? '?'} сделок, в канбане — {dealsDiag.got}.
-            {dealsDiag.error ? ` Ошибка: ${dealsDiag.error}` : ''}
-          </div>
-        </div>
-      )}
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
@@ -1236,7 +1181,7 @@ export default function CRMKanbanPage() {
             const patch: Record<string, unknown> = { stage_id: stageId }
             if (target?.pipeline_id) patch.pipeline_id = target.pipeline_id
             if (target?.code) patch.stage = target.code
-            const err = await bulkUpdateDeals(supabase, ids, patch)
+            const err = await bulkUpdateDeals(ids, patch)
             if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
@@ -1248,7 +1193,7 @@ export default function CRMKanbanPage() {
               .sort((a, b) => a.sort_order - b.sort_order)[0]
             if (!targetStage) { notify.error('В воронке нет активных этапов'); return }
             const ids = Array.from(bulkSelected)
-            const err = await bulkUpdateDeals(supabase, ids, {
+            const err = await bulkUpdateDeals(ids, {
               pipeline_id: pipelineId,
               stage_id: targetStage.id,
               stage: targetStage.code,
@@ -1259,7 +1204,7 @@ export default function CRMKanbanPage() {
           }}
           onAssign={async (userId) => {
             const ids = Array.from(bulkSelected)
-            const err = await bulkUpdateDeals(supabase, ids, { responsible_user_id: userId })
+            const err = await bulkUpdateDeals(ids, { responsible_user_id: userId })
             if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
@@ -1327,7 +1272,7 @@ export default function CRMKanbanPage() {
             } else {
               notify.error('Неизвестное поле'); return
             }
-            const err = await bulkUpdateDeals(supabase, ids, patch)
+            const err = await bulkUpdateDeals(ids, patch)
             if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
@@ -1366,7 +1311,7 @@ export default function CRMKanbanPage() {
           onCancel={() => setBulkDeletePending(false)}
           onConfirm={async () => {
             const ids = Array.from(bulkSelected)
-            const err = await bulkUpdateDeals(supabase, ids, { deleted_at: new Date().toISOString() })
+            const err = await bulkUpdateDeals(ids, { deleted_at: new Date().toISOString() })
             if (err) { notify.error(err); return }
             setBulkDeletePending(false)
             setBulkSelected(new Set())
