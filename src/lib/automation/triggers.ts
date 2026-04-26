@@ -224,6 +224,45 @@ function inFireWindow(fireAt: Date, now: Date): boolean {
   return diff >= 0 && diff < TICK_WINDOW_MIN * 60_000
 }
 
+/** Текущий день недели (1..7, Пн..Вс) и минуты с начала суток в TZ клиники. */
+function nowInTz(tz: string, now: Date): { weekday: number; minutes: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now)
+  const wdMap: Record<string, number> = { Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6, Sun:7 }
+  const wd = wdMap[parts.find(p => p.type === 'weekday')?.value ?? 'Mon'] ?? 1
+  const h  = Number(parts.find(p => p.type === 'hour')?.value ?? 0)
+  const m  = Number(parts.find(p => p.type === 'minute')?.value ?? 0)
+  return { weekday: wd, minutes: h * 60 + m }
+}
+
+const hhmmToMin = (s: string): number => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim())
+  return m ? Math.min(24*60, Number(m[1]) * 60 + Number(m[2])) : 0
+}
+
+/** Попадает ли now в окно расписания триггера. Если расписание пустое
+ *  (всегда) — true. */
+function isInSchedule(
+  s: { days?: number[] | null; from?: string | null; to?: string | null } | null | undefined,
+  now: Date,
+  tz: string,
+): boolean {
+  if (!s) return true
+  const days = Array.isArray(s.days) && s.days.length ? s.days : null
+  const from = typeof s.from === 'string' && s.from ? s.from : null
+  const to   = typeof s.to   === 'string' && s.to   ? s.to   : null
+  if (!days && !from && !to) return true
+  const { weekday, minutes } = nowInTz(tz, now)
+  if (days && !days.includes(weekday)) return false
+  if (from || to) {
+    const fromMin = from ? hhmmToMin(from) : 0
+    const toMin   = to   ? hhmmToMin(to)   : 24 * 60
+    if (minutes < fromMin || minutes >= toMin) return false
+  }
+  return true
+}
+
 // ── Cron entry ───────────────────────────────────────────────────────────────
 
 export async function processCustomTriggers(sb: SupabaseClient): Promise<{
@@ -239,12 +278,29 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
     .returns<PipelineTrigger[]>()
   if (!triggers?.length) return { triggers: 0, fired: 0, failed: 0, skipped: 0 }
 
+  // Подгружаем timezone каждой клиники одним запросом — для проверки расписания.
+  const clinicIds = [...new Set(triggers.map(t => t.clinic_id))]
+  const { data: clinicRows } = await sb
+    .from('clinics').select('id, timezone').in('id', clinicIds)
+    .returns<{ id: string; timezone: string | null }[]>()
+  const tzByClinic = new Map<string, string>(
+    (clinicRows ?? []).map(c => [c.id, c.timezone || 'UTC'])
+  )
+
   let fired = 0, failed = 0, skipped = 0
 
   for (const t of triggers) {
     const handler = HANDLERS[t.type]
     if (!handler) { skipped++; continue }
     const mode = detectMode(t)
+
+    // Расписание (config.schedule): если сейчас вне окна — пропускаем
+    // целиком, чтобы при возврате в окно триггер ещё мог сработать
+    // (executions не пишем).
+    const schedule = (t.config as Record<string, unknown>).schedule as
+      | { days?: number[] | null; from?: string | null; to?: string | null } | null | undefined
+    const tz = tzByClinic.get(t.clinic_id) ?? 'UTC'
+    if (!isInSchedule(schedule, now, tz)) { skipped++; continue }
 
     // Daily-at: вне 5-минутного окна — пропускаем.
     if (mode === 'daily_at') {

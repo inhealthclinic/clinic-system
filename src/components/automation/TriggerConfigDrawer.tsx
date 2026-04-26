@@ -440,6 +440,9 @@ function SalesbotTriggerForm({
         Сообщение будет отправлено контакту, если у него есть открытая беседа в WhatsApp.
       </p>
 
+      {/* Работает: <расписание> ▾ */}
+      <ScheduleButton config={config} set={set} />
+
       {/* Применить к существующим */}
       <label className="flex items-center gap-2 text-sm text-gray-700">
         <input type="checkbox"
@@ -834,5 +837,147 @@ function DropdownItem({
         </span>
       )}
     </button>
+  )
+}
+
+// ── Расписание триггера ─────────────────────────────────────────────────────
+//
+// Хранится в config.schedule:
+//   { days: number[]|null, from: 'HH:MM'|null, to: 'HH:MM'|null }
+//
+// Где days — массив 1..7 (Пн..Вс). null/пусто — «всегда».
+// Cron перед запуском проверяет, что текущее время клиники попадает
+// в окно (см. lib/automation/triggers.ts → isInSchedule).
+
+interface Schedule {
+  days?: number[] | null
+  from?: string | null
+  to?: string | null
+}
+
+const DAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+const DAYS_ALL  = [1, 2, 3, 4, 5, 6, 7]
+const DAYS_MON_SAT = [1, 2, 3, 4, 5, 6]
+
+const SCHEDULE_PRESETS: { id: string; label: string; value: Schedule | null }[] = [
+  { id: 'always',  label: 'Всегда',                       value: null },
+  { id: 'p1',      label: 'Пн - Вс с 08:00 до 23:00',     value: { days: DAYS_ALL,    from: '08:00', to: '23:00' } },
+  { id: 'p2',      label: 'Пн - Сб с 08:00 до 20:00',     value: { days: DAYS_MON_SAT, from: '08:00', to: '20:00' } },
+]
+
+function arrEq(a: number[] | null | undefined, b: number[]): boolean {
+  if (!a || a.length !== b.length) return false
+  const sa = [...a].sort((x, y) => x - y)
+  return sa.every((v, i) => v === b[i])
+}
+
+function describeSchedule(s: Schedule | null | undefined): string {
+  if (!s || (!s.days && !s.from && !s.to)) return 'Всегда'
+  for (const p of SCHEDULE_PRESETS) {
+    if (!p.value) continue
+    if (arrEq(s.days, p.value.days as number[]) && s.from === p.value.from && s.to === p.value.to) {
+      return p.label
+    }
+  }
+  const ds = (s.days ?? []).map(d => DAY_LABELS[d - 1]).join(', ') || 'Пн-Вс'
+  return `${ds} с ${s.from ?? '00:00'} до ${s.to ?? '23:59'}`
+}
+
+function ScheduleButton({
+  config, set,
+}: {
+  config: Record<string, unknown>
+  set: (k: string, v: unknown) => void
+}) {
+  const schedule = (config.schedule as Schedule | null | undefined) ?? null
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  // Локальное состояние для кастомной строки внизу: дни и время.
+  const [days, setDays] = useState<number[]>(schedule?.days ?? DAYS_ALL)
+  const [fromT, setFromT] = useState<string>(schedule?.from ?? '10:00')
+  const [toT, setToT]     = useState<string>(schedule?.to   ?? '19:00')
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const setSchedule = (s: Schedule | null) => set('schedule', s)
+  const apply = (s: Schedule | null) => { setSchedule(s); setOpen(false) }
+
+  const toggleDay = (d: number) => {
+    const next = days.includes(d) ? days.filter(x => x !== d) : [...days, d].sort((a, b) => a - b)
+    setDays(next)
+    setSchedule({ days: next, from: fromT, to: toT })
+  }
+  const updateFrom = (v: string) => { setFromT(v); setSchedule({ days, from: v, to: toT }) }
+  const updateTo   = (v: string) => { setToT(v);   setSchedule({ days, from: fromT, to: v   }) }
+
+  const currentLabel = describeSchedule(schedule)
+
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between border border-gray-300 rounded-md px-3 py-2 text-sm bg-white hover:bg-gray-50">
+        <span className="text-gray-800">
+          <span className="text-gray-500">Работает:&nbsp;</span>
+          {currentLabel}
+        </span>
+        <svg width="16" height="16" viewBox="0 0 20 20" className="text-gray-400">
+          <path d="M5.5 7.5l4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg p-1">
+          {SCHEDULE_PRESETS.map(p => {
+            const active = describeSchedule(schedule) === p.label
+            return (
+              <button key={p.id}
+                type="button"
+                onClick={() => apply(p.value)}
+                className={`w-full flex items-center gap-2 text-left text-sm px-3 py-1.5 hover:bg-blue-50 rounded ${
+                  active ? 'bg-blue-50/70' : ''
+                }`}>
+                <span className="w-3 text-blue-600">{active ? '✓' : ''}</span>
+                <span>{p.label}</span>
+              </button>
+            )
+          })}
+
+          {/* Кастомное расписание */}
+          <div className="px-3 py-2 mt-1 border-t border-gray-100 flex items-center flex-wrap gap-1.5">
+            {DAY_LABELS.map((d, i) => {
+              const dayNum = i + 1
+              const on = days.includes(dayNum)
+              return (
+                <button key={d}
+                  type="button"
+                  onClick={() => toggleDay(dayNum)}
+                  className={`w-9 h-7 rounded border text-xs ${
+                    on
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}>
+                  {d}
+                </button>
+              )
+            })}
+            <span className="text-sm text-gray-700 ml-1">с</span>
+            <input type="time" value={fromT} onChange={e => updateFrom(e.target.value)}
+              className="rounded border border-gray-300 px-1.5 py-0.5 text-sm w-24 text-blue-600" />
+            <span className="text-sm text-gray-700">до</span>
+            <input type="time" value={toT} onChange={e => updateTo(e.target.value)}
+              className="rounded border border-gray-300 px-1.5 py-0.5 text-sm w-24 text-blue-600" />
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
