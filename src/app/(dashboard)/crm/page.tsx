@@ -66,6 +66,7 @@ interface DealRow {
   loss_reason_id: string | null
   contact_phone: string | null
   contact_city: string | null
+  birth_date: string | null  // ISO YYYY-MM-DD; для лидов без пациента
   notes: string | null
   tags: string[]
   // Кастомные поля (мигр. 057): { [field_key]: value }
@@ -388,7 +389,7 @@ export default function CRMKanbanPage() {
           const { data } = await supabase.from('deals').select(`
               id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
               responsible_user_id, source_id, amount,
-              preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
+              preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
               custom_fields, bot_active, bot_state,
               stage_entered_at, created_at, updated_at,
               patient:patients(id, full_name, phones, birth_date, city),
@@ -415,7 +416,7 @@ export default function CRMKanbanPage() {
     let dealsQuery = supabase.from('deals').select(`
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
         responsible_user_id, source_id, amount,
-        preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
+        preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
         custom_fields, bot_active, bot_state,
         stage_entered_at, created_at, updated_at,
         patient:patients(id, full_name, phones, birth_date, city),
@@ -868,7 +869,7 @@ export default function CRMKanbanPage() {
             responsible_user_id: ownerFilter === 'mine' ? (profile?.id ?? null) : null,
             source_id: null, amount: null,
             preferred_doctor_id: null, appointment_type: null, loss_reason_id: null,
-            contact_phone: null, contact_city: null, notes: null, tags: [],
+            contact_phone: null, contact_city: null, birth_date: null, notes: null, tags: [],
             custom_fields: {},
             stage_entered_at: new Date().toISOString(),
             created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
@@ -1712,7 +1713,7 @@ function DealModal({
   const DIRTY_KEYS: (keyof DealRow)[] = [
     'name','patient_id','pipeline_id','stage_id','responsible_user_id',
     'source_id','amount','preferred_doctor_id','appointment_type',
-    'loss_reason_id','contact_phone','contact_city','notes','tags','custom_fields',
+    'loss_reason_id','contact_phone','contact_city','birth_date','notes','tags','custom_fields',
   ]
   const isDirty = isNew || DIRTY_KEYS.some(k => {
     const a = form[k], b = deal[k]
@@ -2092,6 +2093,7 @@ function DealModal({
       loss_reason_id: form.loss_reason_id,
       contact_phone: form.contact_phone?.trim() || null,
       contact_city: form.contact_city?.trim() || null,
+      birth_date: form.birth_date || null,
       notes: form.notes?.trim() || null,
       tags: form.tags ?? [],
       custom_fields: form.custom_fields ?? {},
@@ -2992,6 +2994,19 @@ function DealModal({
                         />
                       </Field>
                     ) : null
+                  ),
+                  birth_date: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'birth_date')!) || 'День рождения'} required={reqFor('birth_date')}>
+                      <input
+                        type="date"
+                        value={form.birth_date ?? ''}
+                        onChange={e => setForm({ ...form, birth_date: e.target.value || null })}
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                      />
+                      {form.patient?.birth_date && form.birth_date == null && (
+                        <p className="text-[11px] text-gray-400 mt-1">У пациента: {form.patient.birth_date}</p>
+                      )}
+                    </Field>
                   ),
                 }
 
@@ -4690,7 +4705,7 @@ function PhoneSearchModal({
         .select(`
           id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel,
           status, responsible_user_id, source_id, amount, preferred_doctor_id,
-          appointment_type, loss_reason_id, contact_phone, contact_city, notes,
+          appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes,
           tags, custom_fields, stage_entered_at, created_at, updated_at,
           patient:patients(id, full_name, phones, birth_date, city),
           responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name)
@@ -4717,7 +4732,7 @@ function PhoneSearchModal({
           .select(`
             id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel,
             status, responsible_user_id, source_id, amount, preferred_doctor_id,
-            appointment_type, loss_reason_id, contact_phone, contact_city, notes,
+            appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes,
             tags, custom_fields, stage_entered_at, created_at, updated_at,
             patient:patients(id, full_name, phones, birth_date, city),
             responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name)
