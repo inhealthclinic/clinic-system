@@ -172,7 +172,7 @@ export default function CRMKanbanPage() {
   // сколько сделок вернул сервер, текст ошибки. Показываем баннер, только
   // когда что-то явно сломано — чтобы причина пустого канбана была видна
   // без DevTools.
-  const [dealsDiag, setDealsDiag] = useState<{ status: number; got: number; clinic: string | null; error: string | null; globalCount: number | null } | null>(null)
+  const [dealsDiag, setDealsDiag] = useState<{ status: number; error: string | null } | null>(null)
 
   // Режим просмотра: канбан (этапы-колонки) или таблица (плоский список).
   // Персистим выбор, чтобы менеджер возвращался к привычному виду.
@@ -458,13 +458,7 @@ export default function CRMKanbanPage() {
     }
     const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
     if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
-    setDealsDiag({
-      status: dealsResp.status,
-      got: (dealsJson?.deals ?? []).length,
-      clinic: dealsJson?.clinic_id ?? null,
-      error: dealsJson?.error ?? null,
-      globalCount: dealsJson?.global_deals_count ?? null,
-    })
+    setDealsDiag({ status: dealsResp.status, error: dealsJson?.error ?? null })
 
     const [p, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
@@ -755,21 +749,18 @@ export default function CRMKanbanPage() {
 
   return (
     <div className="min-h-screen">
-      {/* Диагностический баннер — пока показываем ВСЕГДА, чтобы видеть,
-          что реально возвращает /api/crm/deals на проде. Уберём, когда
-          канбан стабильно оживёт. */}
-      <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
-        dealsDiag && dealsDiag.status === 200 && !dealsDiag.error && dealsDiag.got > 0
-          ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
-          : 'border-amber-300 bg-amber-50 text-amber-900'
-      }`}>
-        <div className="font-medium">Диагностика /api/crm/deals</div>
-        <div className="text-xs mt-0.5">
-          {dealsDiag
-            ? <>HTTP {dealsDiag.status} · сделок: <b>{dealsDiag.got}</b>{dealsDiag.clinic ? ` · clinic ${dealsDiag.clinic.slice(0,8)}…` : ''} · global_deals (RLS bypass test): <b>{dealsDiag.globalCount ?? '—'}</b>{dealsDiag.error ? ` · ошибка: ${dealsDiag.error}` : ''} · в state: <b>{deals.length}</b> · stages: <b>{stages.length}</b> · activePipeline: {activePipelineId.slice(0,8) || '—'}</>
-            : 'Загружаю…'}
+      {/* Баннер показываем только при реальной поломке загрузки сделок:
+          HTTP не 200 либо вернулась ошибка. Тихий путь (200 + got>=0)
+          ничем не мешает. */}
+      {dealsDiag && (dealsDiag.status !== 200 || dealsDiag.error) && (
+        <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <div className="font-medium">Не удалось загрузить сделки</div>
+          <div className="text-xs mt-0.5">
+            /api/crm/deals → HTTP {dealsDiag.status}
+            {dealsDiag.error ? ` · ${dealsDiag.error}` : ''}
+          </div>
         </div>
-      </div>
+      )}
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
