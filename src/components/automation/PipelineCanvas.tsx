@@ -21,9 +21,38 @@
  * единая кнопка «Сохранить» вверху страницы.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import TriggerPicker, { type TriggerType } from './TriggerPicker'
+
+// ─── пользовательские триггеры (мигр. 088) ───────────────────────────────────
+interface CustomTrigger {
+  id: string
+  clinic_id: string
+  stage_id: string
+  type: TriggerType
+  event: 'on_enter' | 'on_exit' | 'on_create' | 'on_no_reply'
+  config: Record<string, unknown>
+  is_active: boolean
+  sort_order: number
+}
+
+const TYPE_LABEL: Record<TriggerType, { icon: string; label: string }> = {
+  salesbot:           { icon: '🤖', label: 'Salesbot' },
+  create_task:        { icon: '✓',  label: 'Создать задачу' },
+  create_deal:        { icon: '$',  label: 'Создать сделку' },
+  send_email:         { icon: '✉',  label: 'Письмо' },
+  webhook:            { icon: '⚡', label: 'Webhook' },
+  change_stage:       { icon: '⇆',  label: 'Смена статуса' },
+  edit_tags:          { icon: '#',  label: 'Теги' },
+  complete_tasks:     { icon: '☑',  label: 'Закрыть задачи' },
+  generate_form:      { icon: '📋', label: 'Анкета' },
+  change_responsible: { icon: '👤', label: 'Ответственный' },
+  change_field:       { icon: '✎',  label: 'Изменить поле' },
+  businessbot:        { icon: '🤖', label: 'Businessbot' },
+  delete_files:       { icon: '🗑',  label: 'Удалить файлы' },
+}
 
 // ─── публичные типы ──────────────────────────────────────────────────────────
 
@@ -164,6 +193,58 @@ export default function PipelineCanvas({
 
   // меню стадии (kebab)
   const [stageMenu, setStageMenu] = useState<string | null>(null)
+
+  // пользовательские триггеры (мигр. 088)
+  const [customTriggers, setCustomTriggers] = useState<CustomTrigger[]>([])
+  const [pickerStageId, setPickerStageId] = useState<string | null>(null)
+
+  const loadCustom = useCallback(async () => {
+    if (!clinicId) return
+    const { data } = await supabase
+      .from('pipeline_stage_triggers')
+      .select('*')
+      .eq('clinic_id', clinicId)
+      .order('sort_order')
+      .returns<CustomTrigger[]>()
+    setCustomTriggers(data ?? [])
+  }, [clinicId, supabase])
+
+  useEffect(() => { loadCustom() }, [loadCustom])
+
+  const addTrigger = async (stageId: string, type: TriggerType) => {
+    if (!clinicId) return
+    setPickerStageId(null)
+    const { error } = await supabase
+      .from('pipeline_stage_triggers')
+      .insert({
+        clinic_id: clinicId,
+        stage_id:  stageId,
+        type,
+        event:     'on_enter',
+        config:    {},
+        is_active: true,
+        sort_order: customTriggers.filter(t => t.stage_id === stageId).length,
+      })
+    if (error) { setError(error.message); return }
+    await loadCustom()
+  }
+
+  const toggleTrigger = async (id: string, val: boolean) => {
+    const { error } = await supabase
+      .from('pipeline_stage_triggers')
+      .update({ is_active: val }).eq('id', id)
+    if (error) { setError(error.message); return }
+    setCustomTriggers(arr => arr.map(t => t.id === id ? { ...t, is_active: val } : t))
+  }
+
+  const removeTrigger = async (id: string) => {
+    if (!confirm('Удалить триггер?')) return
+    const { error } = await supabase
+      .from('pipeline_stage_triggers')
+      .delete().eq('id', id)
+    if (error) { setError(error.message); return }
+    setCustomTriggers(arr => arr.filter(t => t.id !== id))
+  }
 
   // черновики имени стадии
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})
@@ -389,11 +470,49 @@ export default function PipelineCanvas({
                   {autoLoading && (
                     <div className="text-xs text-gray-400 italic text-center py-6">Загрузка…</div>
                   )}
-                  {!autoLoading && cards.length === 0 && (
-                    <div className="text-xs text-gray-400 italic text-center py-6">
-                      Нет триггеров для этого этапа
+                  {!autoLoading && cards.length === 0 && customTriggers.filter(t => t.stage_id === s.id).length === 0 && (
+                    <div className="text-xs text-gray-400 italic text-center py-4">
+                      Триггеров нет
                     </div>
                   )}
+
+                  {/* Пользовательские триггеры (мигр. 088) */}
+                  {!autoLoading && customTriggers.filter(t => t.stage_id === s.id).map(t => {
+                    const meta = TYPE_LABEL[t.type] ?? { icon: '•', label: t.type }
+                    return (
+                      <div key={t.id}
+                        className="rounded-md bg-white border border-gray-200 p-2.5 space-y-1.5 shadow-sm">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-1.5 text-[11px]">
+                            <span className="text-base leading-none">{meta.icon}</span>
+                            <span className="font-semibold uppercase tracking-wide text-gray-500">{meta.label}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <label className="inline-flex shrink-0 items-center gap-1 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 accent-blue-600"
+                                checked={t.is_active}
+                                onChange={e => toggleTrigger(t.id, e.target.checked)}
+                              />
+                              <span className={`text-[11px] ${t.is_active ? 'text-emerald-700' : 'text-gray-400'}`}>
+                                {t.is_active ? 'Вкл' : 'Выкл'}
+                              </span>
+                            </label>
+                            <button
+                              onClick={() => removeTrigger(t.id)}
+                              className="text-gray-400 hover:text-red-600 text-xs"
+                              title="Удалить"
+                            >×</button>
+                          </div>
+                        </div>
+                        <div className="text-[11px] text-gray-500 leading-snug italic">
+                          Конфигурация — в следующем апдейте. Сейчас триггер сохранён, но ещё не исполняется.
+                        </div>
+                      </div>
+                    )
+                  })}
+
                   {!autoLoading && cards.map(card => (
                     <div key={card.flag}
                       className="rounded-md bg-white border border-gray-200 p-2.5 space-y-1.5 shadow-sm">
@@ -425,6 +544,16 @@ export default function PipelineCanvas({
                       />
                     </div>
                   ))}
+
+                  {/* Кнопка «+ Добавить триггер» (амо-стиль) */}
+                  {!autoLoading && (
+                    <button
+                      onClick={() => setPickerStageId(s.id)}
+                      className="w-full rounded-md border border-dashed border-gray-300 bg-white/60 hover:bg-white text-gray-500 hover:text-gray-700 text-xs py-3 transition"
+                    >
+                      <span className="opacity-60">⊕</span>&nbsp; Добавить триггер
+                    </button>
+                  )}
                 </div>
               </div>
             )
@@ -440,6 +569,13 @@ export default function PipelineCanvas({
           </button>
         </div>
       </div>
+
+      {/* Модалка выбора типа триггера */}
+      <TriggerPicker
+        open={pickerStageId !== null}
+        onClose={() => setPickerStageId(null)}
+        onPick={(type) => pickerStageId && addTrigger(pickerStageId, type)}
+      />
     </div>
   )
 }
