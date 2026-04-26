@@ -309,17 +309,46 @@ export default function CRMKanbanPage() {
   // страницы не открывала автоматически последнюю сделку.
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null)
 
-  // На старте подчищаем ?deal=... из URL, если он остался от прошлой сессии,
-  // — иначе модалка авто-открывается на каждом F5.
+  // URL ↔ открытая модалка. F5 на сделке возвращает к ней; F5 без сделки — канбан.
+  // Ждём, пока URL→state отработает (флаг restoredFromUrlRef), иначе на первом
+  // рендере null затрёт ?deal= раньше, чем мы успеем его прочитать.
+  const restoredFromUrlRef = useRef(false)
+
+  // 1) URL → state на старте.
+  useEffect(() => {
+    if (restoredFromUrlRef.current) return
+    const id = searchParams.get('deal')
+    if (!id) { restoredFromUrlRef.current = true; return }
+    if (selectedDeal?.id === id) { restoredFromUrlRef.current = true; return }
+    const inList = deals.find(d => d.id === id)
+    if (inList) {
+      setSelectedDeal(inList)
+      restoredFromUrlRef.current = true
+      return
+    }
+    if (deals.length === 0) return  // ещё не подгрузили — подождём
+    ;(async () => {
+      const { data } = await supabase.from('deals').select('*').eq('id', id).maybeSingle()
+      if (data) setSelectedDeal(data as unknown as DealRow)
+      restoredFromUrlRef.current = true
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deals])
+
+  // 2) state → URL: при открытии/закрытии правим query, не трогая path.
   useEffect(() => {
     if (typeof window === 'undefined') return
-    if (!searchParams.get('deal')) return
+    if (!restoredFromUrlRef.current) return
+    const cur = searchParams.get('deal')
+    const want = selectedDeal?.id ?? null
+    if (cur === want) return
     const sp = new URLSearchParams(searchParams.toString())
-    sp.delete('deal')
+    if (want) sp.set('deal', want); else sp.delete('deal')
     const qs = sp.toString()
-    router.replace(qs ? `${window.location.pathname}?${qs}` : window.location.pathname, { scroll: false })
+    const path = window.location.pathname
+    router.replace(qs ? `${path}?${qs}` : path, { scroll: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [selectedDeal?.id])
 
   const openDeal = useCallback((d: DealRow) => {
     setSelectedDeal(d)
