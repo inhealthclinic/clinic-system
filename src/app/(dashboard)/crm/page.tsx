@@ -324,16 +324,9 @@ export default function CRMKanbanPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    if (selectedDeal) {
-      window.sessionStorage.setItem('crm.openDeal', selectedDeal.id)
-    } else {
-      window.sessionStorage.removeItem('crm.openDeal')
-    }
-  }, [selectedDeal?.id])
-
-  // На старте: подсасываем сохранённый id из sessionStorage.
+  // На старте: восстанавливаем открытую сделку ДО того, как эффект «сохранить»
+  // успеет затереть ключ при selectedDeal=null. Поэтому save-эффект гейтим
+  // флагом restoredFromStorageRef.
   const restoredFromStorageRef = useRef(false)
   useEffect(() => {
     if (restoredFromStorageRef.current) return
@@ -356,6 +349,16 @@ export default function CRMKanbanPage() {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deals])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!restoredFromStorageRef.current) return  // не трогаем хранилище до восстановления
+    if (selectedDeal) {
+      window.sessionStorage.setItem('crm.openDeal', selectedDeal.id)
+    } else {
+      window.sessionStorage.removeItem('crm.openDeal')
+    }
+  }, [selectedDeal?.id])
 
   const openDeal = useCallback((d: DealRow) => {
     setSelectedDeal(d)
