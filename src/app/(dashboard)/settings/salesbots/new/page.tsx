@@ -23,8 +23,9 @@
  */
 
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
 
 interface BuilderAnswer {
   value: string
@@ -71,8 +72,45 @@ const TRIGGER_LABEL: Record<TriggerEvent, { title: string; sub: string; emoji: s
   manual:           { title: 'Запуск вручную',              sub: 'Из карточки сделки кнопкой',          emoji: '👆' },
 }
 
+/**
+ * Преобразует сохранённый normalized-flow обратно в BuilderStep[] —
+ * нужно для редактирования: исходно шаги хранятся с числовыми next,
+ * а UI оперирует ссылками на BuilderStep.id (string).
+ */
+interface SavedStep {
+  text?: string
+  buttons?: string[]
+  answers?: Array<{ value: string; synonyms?: string[]; next: number }>
+  else_next?: number | null
+  unconditional_next?: number | null
+}
+function flowToBuilder(steps: Record<string, SavedStep>, start: number) {
+  const numericKeys = Object.keys(steps).filter(k => /^\d+$/.test(k)).map(Number).sort((a, b) => a - b)
+  const idByNum = new Map<number, string>()
+  // Сохраняем порядок: стартовый шаг идёт первым, потом всё остальное.
+  const ordered: number[] = [start, ...numericKeys.filter(k => k !== start)]
+  ordered.forEach((n, i) => idByNum.set(n, `s_load_${i}_${n}`))
+  const result: BuilderStep[] = ordered.map(n => {
+    const s = steps[String(n)] ?? {}
+    return {
+      id: idByNum.get(n)!,
+      text: s.text ?? '',
+      answers: (s.answers ?? []).map(a => ({
+        value: a.value ?? '',
+        synonyms: Array.isArray(a.synonyms) ? a.synonyms.join(', ') : '',
+        next_step_id: idByNum.get(a.next) ?? null,
+      })),
+      else_next_id: s.else_next != null ? (idByNum.get(s.else_next) ?? null) : null,
+    }
+  })
+  return result
+}
+
 export default function NewSalesbotPage() {
   const router = useRouter()
+  const sp = useSearchParams()
+  const flowId = sp.get('id')
+  const isEdit = !!flowId
   const [name, setName] = useState('')
   const [triggerEvent, setTriggerEvent] = useState<TriggerEvent | null>(null)
   const [isDefault, setIsDefault] = useState(true)
@@ -80,6 +118,35 @@ export default function NewSalesbotPage() {
   const [steps, setSteps] = useState<BuilderStep[]>([])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
+  const [loading, setLoading] = useState(isEdit)
+
+  useEffect(() => {
+    if (!flowId) return
+    let cancelled = false
+    ;(async () => {
+      const sb = createClient()
+      const { data, error } = await sb
+        .from('salesbot_flows')
+        .select('id, name, steps, start_step, trigger_event, is_default')
+        .eq('id', flowId)
+        .maybeSingle<{
+          id: string; name: string; steps: Record<string, SavedStep>;
+          start_step: number; trigger_event: string; is_default: boolean
+        }>()
+      if (cancelled) return
+      if (error || !data) {
+        setErr('Не удалось загрузить flow: ' + (error?.message ?? 'не найден'))
+        setLoading(false)
+        return
+      }
+      setName(data.name)
+      setTriggerEvent(data.trigger_event === 'manual' ? 'manual' : 'on_first_inbound')
+      setIsDefault(data.is_default)
+      setSteps(flowToBuilder(data.steps ?? {}, data.start_step ?? 0))
+      setLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [flowId])
 
   const stepIndexById = useMemo(() => {
     const m = new Map<string, number>()
@@ -213,18 +280,21 @@ export default function NewSalesbotPage() {
 
     setSaving(true)
     try {
-      const res = await fetch('/api/salesbot-flows', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          steps: normalized,
-          start_step: 0,
-          trigger_event: triggerEvent ?? 'manual',
-          is_default: triggerEvent === 'on_first_inbound' ? isDefault : false,
-          is_active: true,
-        }),
-      })
+      const res = await fetch(
+        isEdit ? `/api/salesbot-flows/${flowId}` : '/api/salesbot-flows',
+        {
+          method: isEdit ? 'PATCH' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name.trim(),
+            steps: normalized,
+            start_step: 0,
+            trigger_event: triggerEvent ?? 'manual',
+            is_default: triggerEvent === 'on_first_inbound' ? isDefault : false,
+            is_active: true,
+          }),
+        },
+      )
       const j = await res.json()
       if (!res.ok) throw new Error(j.error || 'save failed')
       router.push('/settings/salesbots')
@@ -232,6 +302,12 @@ export default function NewSalesbotPage() {
       setErr((e as Error).message)
       setSaving(false)
     }
+  }
+
+  if (loading) {
+    return (
+      <div className="p-12 text-center text-sm text-gray-500">Загружаем sales-бот…</div>
+    )
   }
 
   return (
@@ -246,9 +322,12 @@ export default function NewSalesbotPage() {
             type="text"
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="SALES-БОТ"
+            placeholder={isEdit ? 'Название бота' : 'SALES-БОТ'}
             className="text-xl font-semibold text-gray-900 bg-transparent border-b border-transparent hover:border-gray-200 focus:border-blue-400 outline-none px-1 py-0.5 min-w-[200px]"
           />
+          {isEdit && (
+            <span className="text-xs text-gray-400 uppercase tracking-wide">редактирование</span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {err && <span className="text-xs text-red-600">{err}</span>}
@@ -258,7 +337,7 @@ export default function NewSalesbotPage() {
             disabled={saving}
             className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
           >
-            {saving ? 'Сохраняем…' : 'Сохранить и вернуться'}
+            {saving ? 'Сохраняем…' : (isEdit ? 'Сохранить изменения' : 'Сохранить и вернуться')}
           </button>
         </div>
       </div>

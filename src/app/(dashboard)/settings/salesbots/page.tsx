@@ -309,6 +309,12 @@ function SalesbotsTab({ supabase, clinicId }: { supabase: SupaClient; clinicId: 
                     Сделать default
                   </button>
                 )}
+                <Link
+                  href={`/settings/salesbots/new?id=${f.id}`}
+                  className="px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 rounded"
+                >
+                  Редактировать
+                </Link>
                 <button type="button"
                   onClick={() => deleteFlow(f.id)}
                   className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded">

@@ -13,11 +13,18 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx) {
   const { id } = await ctx.params
   const body = await req.json().catch(() => ({})) as Partial<{
     name: string; is_active: boolean; is_default: boolean
+    steps: Record<string, unknown>; start_step: number
+    trigger_event: 'on_first_inbound' | 'manual' | 'on_deal_create'
   }>
 
   const patch: Record<string, unknown> = {}
   if (typeof body.name === 'string') patch.name = body.name.trim()
   if (typeof body.is_active === 'boolean') patch.is_active = body.is_active
+  if (body.steps && typeof body.steps === 'object') patch.steps = body.steps
+  if (typeof body.start_step === 'number') patch.start_step = body.start_step
+  if (body.trigger_event === 'on_first_inbound' || body.trigger_event === 'manual' || body.trigger_event === 'on_deal_create') {
+    patch.trigger_event = body.trigger_event
+  }
 
   // Если делаем default — снимаем default с прочих ботов клиники.
   if (body.is_default === true) {
