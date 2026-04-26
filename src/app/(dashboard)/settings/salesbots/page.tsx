@@ -1,18 +1,22 @@
 'use client'
 
 /**
- * Список Salesbot — отдельная страница (как в amoCRM):
- * управление текстами, которые рассылает Salesbot из триггеров воронки
- * и системных событий (приветствие, напоминание о неответе).
+ * Объединённая страница «Salesbot и шаблоны».
  *
- * CRUD поверх message_templates с фильтром kind='salesbot' (мигр. 093).
- * key — стабильный машинный идентификатор; именно на него ссылаются
- * pipeline_stage_triggers.config.template_key и системные ключи
- * bot_greeting / bot_followup_no_answer (трогать нельзя).
+ * Две вкладки (как в amoCRM «Чаты и мессенджеры»):
+ *   • Salesbot         — диалоговые flow-боты (полные сценарии) и одиночные
+ *                        текстовые шаблоны kind='salesbot' (для триггеров).
+ *   • Шаблоны ответов  — заготовки для ручной отправки оператором из чата
+ *                        сделки (kind='quick_reply').
+ *
+ * Активная вкладка управляется query-параметром ?tab= — это позволяет
+ * редиректу со старого `/settings/message-templates` приземлять
+ * пользователя сразу в нужный раздел.
  */
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 
@@ -22,6 +26,16 @@ interface Bot {
   title: string
   body: string
   key: string | null
+  sort_order: number
+  is_active: boolean
+}
+
+interface QuickReply {
+  id: string
+  clinic_id: string
+  title: string
+  body: string
+  is_favorite: boolean
   sort_order: number
   is_active: boolean
 }
@@ -56,27 +70,85 @@ function slugifyKey(t: string): string {
   return s.slice(0, 60) || `bot_${Date.now()}`
 }
 
-export default function SalesbotsSettingsPage() {
+type Tab = 'salesbots' | 'quick_replies'
+
+export default function SalesbotsAndTemplatesPage() {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id ?? null
+  const router = useRouter()
+  const sp = useSearchParams()
+  const initialTab: Tab = sp.get('tab') === 'quick_replies' ? 'quick_replies' : 'salesbots'
+  const [tab, setTab] = useState<Tab>(initialTab)
 
+  function switchTab(t: Tab) {
+    setTab(t)
+    const url = t === 'salesbots' ? '/settings/salesbots' : '/settings/salesbots?tab=quick_replies'
+    router.replace(url)
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900">Salesbot и шаблоны</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          Раздел объединяет диалоговых ботов и заготовки для оператора —
+          как «Чаты и мессенджеры» в amoCRM.
+        </p>
+      </div>
+
+      {/* Tabs */}
+      <div className="border-b border-gray-200 flex gap-1">
+        <TabButton active={tab === 'salesbots'} onClick={() => switchTab('salesbots')}>
+          🤖 Salesbot
+        </TabButton>
+        <TabButton active={tab === 'quick_replies'} onClick={() => switchTab('quick_replies')}>
+          💬 Шаблоны ответов
+        </TabButton>
+      </div>
+
+      {tab === 'salesbots' && clinicId && <SalesbotsTab supabase={supabase} clinicId={clinicId} />}
+      {tab === 'quick_replies' && clinicId && <QuickRepliesTab supabase={supabase} clinicId={clinicId} />}
+    </div>
+  )
+}
+
+function TabButton(props: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      className={[
+        'px-4 py-2 text-sm border-b-2 -mb-px transition-colors',
+        props.active
+          ? 'border-blue-500 text-blue-700 font-medium'
+          : 'border-transparent text-gray-500 hover:text-gray-900',
+      ].join(' ')}
+    >
+      {props.children}
+    </button>
+  )
+}
+
+// ─── Tab: Salesbot (flow + одиночные шаблоны kind='salesbot') ──────────────────
+
+type SupaClient = ReturnType<typeof createClient>
+
+function SalesbotsTab({ supabase, clinicId }: { supabase: SupaClient; clinicId: string }) {
   const [rows, setRows] = useState<Bot[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [draft, setDraft] = useState<{ title: string; body: string }>({ title: '', body: '' })
   const [usage, setUsage] = useState<Record<string, string[]>>({})
 
-  // Диалоговые flows
   const [flows, setFlows] = useState<FlowRow[]>([])
   const [flowName, setFlowName] = useState('')
   const [flowJson, setFlowJson] = useState('')
   const [flowDefault, setFlowDefault] = useState(true)
   const [flowImporting, setFlowImporting] = useState(false)
-  const [flowMsg, setFlowMsg] = useState<string>('')
+  const [flowMsg, setFlowMsg] = useState('')
 
   const loadFlows = useCallback(async () => {
-    if (!clinicId) return
     const { data } = await supabase
       .from('salesbot_flows')
       .select('id, name, start_step, is_active, is_default, trigger_event, created_at, steps')
@@ -86,7 +158,6 @@ export default function SalesbotsSettingsPage() {
   }, [supabase, clinicId])
 
   const load = useCallback(async () => {
-    if (!clinicId) return
     setLoading(true)
     const [bots, trgs] = await Promise.all([
       supabase
@@ -155,8 +226,7 @@ export default function SalesbotsSettingsPage() {
     await loadFlows()
   }
 
-  async function create() {
-    if (!clinicId) return
+  async function createSimple() {
     const title = draft.title.trim()
     const body = draft.body.trim()
     if (!title || !body) { alert('Укажите название и текст'); return }
@@ -165,13 +235,7 @@ export default function SalesbotsSettingsPage() {
     if (rows.some(r => r.key === key)) key = `${key}_${Math.random().toString(36).slice(2, 6)}`
     const nextOrder = rows.length === 0 ? 0 : Math.max(...rows.map(r => r.sort_order)) + 1
     const { error } = await supabase.from('message_templates').insert({
-      clinic_id: clinicId,
-      title,
-      body,
-      key,
-      sort_order: nextOrder,
-      kind: 'salesbot',
-      is_active: true,
+      clinic_id: clinicId, title, body, key, sort_order: nextOrder, kind: 'salesbot', is_active: true,
     })
     setSaving(false)
     if (error) { alert('Не удалось создать: ' + error.message); return }
@@ -201,44 +265,25 @@ export default function SalesbotsSettingsPage() {
     setRows(prev => prev.filter(x => x.id !== r.id))
   }
 
-  async function move(id: string, dir: -1 | 1) {
-    const idx = rows.findIndex(r => r.id === id)
-    const j = idx + dir
-    if (idx < 0 || j < 0 || j >= rows.length) return
-    const a = rows[idx], b = rows[j]
-    await supabase.from('message_templates').update({ sort_order: b.sort_order }).eq('id', a.id)
-    await supabase.from('message_templates').update({ sort_order: a.sort_order }).eq('id', b.id)
-    load()
-  }
-
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Salesbot</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Заготовленные тексты, которые рассылает бот из триггеров воронки и системных
-          событий (приветствие, напоминание о неответе). Привязка к триггеру делается
-          в редакторе воронки —{' '}
-          <Link href="/settings/pipelines" className="text-blue-600 hover:underline">
-            Настройки → CRM воронки
-          </Link>
-          . Шаблоны для ручной отправки оператором живут в разделе{' '}
-          <Link href="/settings/message-templates" className="text-blue-600 hover:underline">
-            «Шаблоны ответов»
-          </Link>.
-        </p>
-      </div>
-
-      {/* Диалоговый Salesbot (flow) */}
+      {/* Диалоговые flow-боты + большая кнопка создания */}
       <div className="bg-white border border-gray-100 rounded-xl p-5 space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">Диалоговые боты (flow)</h2>
-          <p className="text-xs text-gray-500 mt-1">
-            Полноценный диалог с ветвлениями: бот шлёт вопрос с вариантами,
-            ждёт ответ клиента, по ключевым словам/синонимам переходит дальше.
-            Когда новый лид пишет в WhatsApp — default-бот стартует автоматически.
-            Поддерживается импорт экспорта Salesbot из amoCRM (JSON).
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Диалоговые боты (flow)</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              Полноценный диалог с ветвлениями: бот шлёт вопрос с вариантами,
+              ждёт ответ клиента, по ключевым словам/синонимам переходит дальше.
+              Когда новый лид пишет в WhatsApp — default-бот стартует автоматически.
+            </p>
+          </div>
+          <Link
+            href="/settings/salesbots/new"
+            className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 whitespace-nowrap"
+          >
+            + Создать sales-бот
+          </Link>
         </div>
 
         {flows.length > 0 && (
@@ -280,17 +325,13 @@ export default function SalesbotsSettingsPage() {
           </summary>
           <div className="p-3 space-y-2">
             <input
-              type="text"
-              value={flowName}
-              onChange={e => setFlowName(e.target.value)}
+              type="text" value={flowName} onChange={e => setFlowName(e.target.value)}
               placeholder="Название бота (например: Приветствие)"
               className="w-full border border-gray-200 rounded px-3 py-2 text-sm bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
             <textarea
-              value={flowJson}
-              onChange={e => setFlowJson(e.target.value)}
-              rows={8}
-              placeholder='Вставьте сюда JSON-экспорт Salesbot из amoCRM (объект с ключами "0", "7" и т.д.).'
+              value={flowJson} onChange={e => setFlowJson(e.target.value)} rows={8}
+              placeholder='Вставьте сюда JSON-экспорт Salesbot из amoCRM (целиком файл, обёртку с model.text принимаем).'
               className="w-full border border-gray-200 rounded px-3 py-2 text-xs font-mono bg-white hover:border-gray-300 focus:border-blue-400 outline-none resize-y"
             />
             <label className="flex items-center gap-2 text-xs text-gray-700">
@@ -303,9 +344,7 @@ export default function SalesbotsSettingsPage() {
               </div>
             )}
             <div className="flex justify-end">
-              <button type="button"
-                onClick={importFlow}
-                disabled={flowImporting}
+              <button type="button" onClick={importFlow} disabled={flowImporting}
                 className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60">
                 {flowImporting ? 'Импортируем…' : 'Импортировать flow'}
               </button>
@@ -314,12 +353,18 @@ export default function SalesbotsSettingsPage() {
         </details>
       </div>
 
-      {/* Новый одиночный шаблон-бот */}
+      {/* Одиночные шаблоны kind='salesbot' (для триггеров воронки) */}
       <div className="bg-white border border-gray-100 rounded-xl p-5 space-y-3">
-        <h2 className="text-sm font-semibold text-gray-900">Создать нового бота (одиночный шаблон)</h2>
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">Одиночные шаблоны Salesbot</h2>
+          <p className="text-xs text-gray-500 mt-1">
+            Простые тексты без диалога — на них ссылаются триггеры воронки
+            (см. «CRM — воронки и автоматизации») и системные события вроде
+            <code className="text-[11px] mx-1">bot_greeting</code>.
+          </p>
+        </div>
         <input
-          type="text"
-          value={draft.title}
+          type="text" value={draft.title}
           onChange={e => setDraft(d => ({ ...d, title: e.target.value }))}
           placeholder="Название (например: Приветствие новой заявки)"
           className="w-full border border-gray-200 rounded px-3 py-2 text-sm hover:border-gray-300 focus:border-blue-400 outline-none"
@@ -328,39 +373,33 @@ export default function SalesbotsSettingsPage() {
           value={draft.body}
           onChange={e => setDraft(d => ({ ...d, body: e.target.value }))}
           placeholder="Текст, который отправит бот клиенту."
-          rows={4}
+          rows={3}
           className="w-full border border-gray-200 rounded px-3 py-2 text-sm hover:border-gray-300 focus:border-blue-400 outline-none resize-y"
         />
-        <button
-          type="button"
-          onClick={create}
-          disabled={saving}
-          className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
-        >
-          {saving ? 'Сохраняем…' : 'Добавить бота'}
+        <button type="button" onClick={createSimple} disabled={saving}
+          className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60">
+          {saving ? 'Сохраняем…' : 'Добавить шаблон'}
         </button>
       </div>
 
-      {/* Список */}
       <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-gray-100 text-sm font-semibold text-gray-900">
-          Список Salesbot
+          Список одиночных шаблонов
         </div>
         {loading ? (
           <div className="p-5 text-sm text-gray-500">Загрузка…</div>
         ) : rows.length === 0 ? (
-          <div className="p-5 text-sm text-gray-500">Пока нет ботов. Создайте первого выше.</div>
+          <div className="p-5 text-sm text-gray-500">Пока нет шаблонов.</div>
         ) : (
           <ul className="divide-y divide-gray-100">
-            {rows.map((r, idx) => {
+            {rows.map(r => {
               const isSystem = !!r.key && SYSTEM_KEYS.has(r.key)
               const used = (r.key && usage[r.key]) || []
               return (
                 <li key={r.id} className="p-4 space-y-2">
                   <div className="flex items-center gap-2">
                     <input
-                      type="text"
-                      value={r.title}
+                      type="text" value={r.title}
                       onChange={e => setRows(prev => prev.map(x => x.id === r.id ? { ...x, title: e.target.value } : x))}
                       onBlur={e => update(r.id, { title: e.target.value.trim() })}
                       className="flex-1 text-sm font-medium text-gray-900 bg-transparent border-b border-transparent hover:border-gray-200 focus:border-blue-400 outline-none py-1"
@@ -370,38 +409,16 @@ export default function SalesbotsSettingsPage() {
                         системный
                       </span>
                     )}
-                    {r.key && (
-                      <code className="text-[11px] text-gray-400 font-mono">{r.key}</code>
-                    )}
+                    {r.key && <code className="text-[11px] text-gray-400 font-mono">{r.key}</code>}
                     <label className="flex items-center gap-1.5 text-xs text-gray-500">
-                      <input
-                        type="checkbox"
-                        checked={r.is_active}
-                        onChange={e => update(r.id, { is_active: e.target.checked })}
-                      />
+                      <input type="checkbox" checked={r.is_active}
+                        onChange={e => update(r.id, { is_active: e.target.checked })} />
                       активен
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => move(r.id, -1)}
-                      disabled={idx === 0}
-                      className="px-2 py-1 text-xs text-gray-500 hover:bg-gray-50 rounded disabled:opacity-30"
-                      title="Выше"
-                    >↑</button>
-                    <button
-                      type="button"
-                      onClick={() => move(r.id, 1)}
-                      disabled={idx === rows.length - 1}
-                      className="px-2 py-1 text-xs text-gray-500 hover:bg-gray-50 rounded disabled:opacity-30"
-                      title="Ниже"
-                    >↓</button>
-                    <button
-                      type="button"
-                      onClick={() => remove(r)}
-                      disabled={isSystem}
-                      className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded disabled:opacity-30 disabled:hover:bg-transparent"
-                      title={isSystem ? 'Нельзя удалить системного бота' : 'Удалить'}
-                    >Удалить</button>
+                    <button type="button" onClick={() => remove(r)} disabled={isSystem}
+                      className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded disabled:opacity-30 disabled:hover:bg-transparent">
+                      Удалить
+                    </button>
                   </div>
                   <textarea
                     value={r.body}
@@ -419,6 +436,147 @@ export default function SalesbotsSettingsPage() {
                 </li>
               )
             })}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Tab: Шаблоны ответов (kind='quick_reply') ────────────────────────────────
+
+function QuickRepliesTab({ supabase, clinicId }: { supabase: SupaClient; clinicId: string }) {
+  const [rows, setRows] = useState<QuickReply[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [draft, setDraft] = useState<{ title: string; body: string }>({ title: '', body: '' })
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data } = await supabase
+      .from('message_templates')
+      .select('*')
+      .eq('clinic_id', clinicId)
+      .eq('kind', 'quick_reply')
+      .order('sort_order')
+      .order('created_at')
+    setRows((data ?? []) as QuickReply[])
+    setLoading(false)
+  }, [supabase, clinicId])
+
+  useEffect(() => { load() }, [load])
+
+  async function create() {
+    const title = draft.title.trim()
+    const body = draft.body.trim()
+    if (!title || !body) { alert('Укажите название и текст шаблона'); return }
+    setSaving(true)
+    const nextOrder = rows.length === 0 ? 0 : Math.max(...rows.map(r => r.sort_order)) + 1
+    const { error } = await supabase.from('message_templates').insert({
+      clinic_id: clinicId, title, body, sort_order: nextOrder, kind: 'quick_reply',
+    })
+    setSaving(false)
+    if (error) { alert('Не удалось создать: ' + error.message); return }
+    setDraft({ title: '', body: '' })
+    load()
+  }
+
+  async function update(id: string, patch: Partial<QuickReply>) {
+    const { error } = await supabase.from('message_templates').update(patch).eq('id', id)
+    if (error) { alert('Не удалось сохранить: ' + error.message); return }
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r))
+  }
+
+  async function remove(id: string) {
+    if (!confirm('Удалить шаблон? Это действие необратимо.')) return
+    const { error } = await supabase.from('message_templates').delete().eq('id', id)
+    if (error) { alert('Не удалось удалить: ' + error.message); return }
+    setRows(prev => prev.filter(r => r.id !== id))
+  }
+
+  async function move(id: string, dir: -1 | 1) {
+    const idx = rows.findIndex(r => r.id === id)
+    const j = idx + dir
+    if (idx < 0 || j < 0 || j >= rows.length) return
+    const a = rows[idx], b = rows[j]
+    await supabase.from('message_templates').update({ sort_order: b.sort_order }).eq('id', a.id)
+    await supabase.from('message_templates').update({ sort_order: a.sort_order }).eq('id', b.id)
+    load()
+  }
+
+  return (
+    <div className="space-y-6">
+      <p className="text-sm text-gray-500">
+        Заранее заготовленные тексты для ручной отправки оператором — кнопка «Шаблоны»
+        в композере чата сделки. Отмеченные ★ попадают в секцию «Избранные».
+      </p>
+
+      <div className="bg-white border border-gray-100 rounded-xl p-5 space-y-3">
+        <h2 className="text-sm font-semibold text-gray-900">Новый шаблон</h2>
+        <input
+          type="text" value={draft.title}
+          onChange={e => setDraft(d => ({ ...d, title: e.target.value }))}
+          placeholder="Название (например: Приветствие)"
+          className="w-full border border-gray-200 rounded px-3 py-2 text-sm hover:border-gray-300 focus:border-blue-400 outline-none"
+        />
+        <textarea
+          value={draft.body}
+          onChange={e => setDraft(d => ({ ...d, body: e.target.value }))}
+          placeholder="Текст шаблона — именно он вставляется в поле ввода композера."
+          rows={4}
+          className="w-full border border-gray-200 rounded px-3 py-2 text-sm hover:border-gray-300 focus:border-blue-400 outline-none resize-y"
+        />
+        <button type="button" onClick={create} disabled={saving}
+          className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60">
+          {saving ? 'Сохраняем…' : 'Добавить шаблон'}
+        </button>
+      </div>
+
+      <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-100 text-sm font-semibold text-gray-900">
+          Имеющиеся шаблоны
+        </div>
+        {loading ? (
+          <div className="p-5 text-sm text-gray-500">Загрузка…</div>
+        ) : rows.length === 0 ? (
+          <div className="p-5 text-sm text-gray-500">Пока нет шаблонов. Создайте первый выше.</div>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {rows.map((r, idx) => (
+              <li key={r.id} className="p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => update(r.id, { is_favorite: !r.is_favorite })}
+                    title={r.is_favorite ? 'Убрать из избранного' : 'В избранное'}
+                    className={`text-lg leading-none ${r.is_favorite ? 'text-amber-500' : 'text-gray-300 hover:text-gray-500'}`}>
+                    ★
+                  </button>
+                  <input
+                    type="text" value={r.title}
+                    onChange={e => setRows(prev => prev.map(x => x.id === r.id ? { ...x, title: e.target.value } : x))}
+                    onBlur={e => update(r.id, { title: e.target.value.trim() })}
+                    className="flex-1 text-sm font-medium text-gray-900 bg-transparent border-b border-transparent hover:border-gray-200 focus:border-blue-400 outline-none py-1"
+                  />
+                  <label className="flex items-center gap-1.5 text-xs text-gray-500">
+                    <input type="checkbox" checked={r.is_active}
+                      onChange={e => update(r.id, { is_active: e.target.checked })} />
+                    активен
+                  </label>
+                  <button type="button" onClick={() => move(r.id, -1)} disabled={idx === 0}
+                    className="px-2 py-1 text-xs text-gray-500 hover:bg-gray-50 rounded disabled:opacity-30">↑</button>
+                  <button type="button" onClick={() => move(r.id, 1)} disabled={idx === rows.length - 1}
+                    className="px-2 py-1 text-xs text-gray-500 hover:bg-gray-50 rounded disabled:opacity-30">↓</button>
+                  <button type="button" onClick={() => remove(r.id)}
+                    className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded">Удалить</button>
+                </div>
+                <textarea
+                  value={r.body}
+                  onChange={e => setRows(prev => prev.map(x => x.id === r.id ? { ...x, body: e.target.value } : x))}
+                  onBlur={e => update(r.id, { body: e.target.value })}
+                  rows={3}
+                  className="w-full border border-gray-200 rounded px-3 py-2 text-sm hover:border-gray-300 focus:border-blue-400 outline-none resize-y"
+                />
+              </li>
+            ))}
           </ul>
         )}
       </div>
