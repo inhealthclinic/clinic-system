@@ -70,18 +70,36 @@ export async function GET(req: NextRequest) {
 
   // 3) Тянем сделки клиники + связанные справочники.
   const owner = req.nextUrl.searchParams.get('owner') ?? 'all'
-  let q = admin
-    .from('deals')
-    .select(DEAL_COLUMNS)
-    .eq('clinic_id', profile.clinic_id)
-    .is('deleted_at', null)
-  if (owner === 'mine') q = q.eq('responsible_user_id', profile.id)
-  q = q.order('stage_entered_at', { ascending: false }).limit(10000)
 
-  const { data: deals, error: dealsErr } = await q
+  // Пагинируем через .range(), потому что PostgREST имеет жёсткий
+  // server-side cap (по умолчанию 1000 строк): даже с .limit(10000)
+  // одним запросом приходит не больше 1000. У нас 1565+ сделок —
+  // без пагинации ранние 1000 это самые свежие по stage_entered_at,
+  // а это в основном «Закрыто»/«Успешно»; колонки активных этапов
+  // оказываются пустыми. Тянем чанками по 1000, пока приходит ровно
+  // PAGE_SIZE — значит, есть следующая страница.
+  type DealRowSrv = { id: string; patient_id: string | null }
+  const PAGE_SIZE = 1000
+  const all: DealRowSrv[] = []
+  let dealsErr: { message: string } | null = null
+  for (let from = 0; from < 100_000; from += PAGE_SIZE) {
+    let q = admin
+      .from('deals')
+      .select(DEAL_COLUMNS)
+      .eq('clinic_id', profile.clinic_id)
+      .is('deleted_at', null)
+    if (owner === 'mine') q = q.eq('responsible_user_id', profile.id)
+    q = q.order('stage_entered_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
+    const { data, error } = await q
+    if (error) { dealsErr = error; break }
+    const chunk = (data ?? []) as DealRowSrv[]
+    all.push(...chunk)
+    if (chunk.length < PAGE_SIZE) break
+  }
   if (dealsErr) {
     return NextResponse.json({ error: dealsErr.message }, { status: 500 })
   }
+  const deals = all
 
   // Диагностика: считаем все сделки в БД БЕЗ фильтра по клинике.
   // Если service-role реально bypass'ит RLS — count покажет суммарное
@@ -94,7 +112,7 @@ export async function GET(req: NextRequest) {
 
   // 4) Подгружаем пациентов чанками, без embed-ов (PostgREST на больших
   //    выборках с FK на удалённые/недоступные patients схлопывает родителей).
-  const dealRows = (deals ?? []) as Array<{ id: string; patient_id: string | null }>
+  const dealRows = deals as Array<{ id: string; patient_id: string | null }>
   const patientIds = Array.from(
     new Set(dealRows.map(d => d.patient_id).filter((x): x is string => !!x)),
   )
