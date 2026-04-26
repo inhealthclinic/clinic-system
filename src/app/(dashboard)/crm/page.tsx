@@ -174,6 +174,14 @@ export default function CRMKanbanPage() {
   const [doctors, setDoctors] = useState<DoctorLite[]>([])
   const [apptTypes, setApptTypes] = useState<ApptType[]>([])
   const [loading, setLoading] = useState(true)
+  // Видимая диагностика загрузки сделок: сколько строк по count(*),
+  // сколько реально получили, и текст ошибки, если пришла.
+  // Показываем баннер только когда есть расхождение или ошибка —
+  // чтобы пользователь сразу видел причину пустого канбана, не лазая
+  // в DevTools.
+  const [dealsDiag, setDealsDiag] = useState<{ expected: number | null; got: number; error: string | null }>(
+    { expected: null, got: 0, error: null }
+  )
 
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
@@ -435,30 +443,40 @@ export default function CRMKanbanPage() {
     setLoading(true)
     // Базовый запрос сделок. При ownerFilter='mine' ограничиваем по
     // responsible_user_id на стороне БД (не в памяти).
-    // Тянем сделки клиники одним запросом — раскладку по этапам/воронкам
-    // делает клиентский dealsByStage. Никакого фильтра по pipeline_id
-    // или stage_id здесь НЕТ: у импортированных сделок эти поля могут быть
-    // пустыми/указывать на удалённые этапы, а серверный view
-    // v_pipeline_stage_counts всё равно их видит → канбан был бы пуст
-    // при ненулевых счётчиках. Лимит 5000 закрывает текущий объём с запасом.
+    // ── Сделки тянем БЕЗ embed-ов ──────────────────────────────────────────
+    // Раньше в select был patient:patients(...), responsible:user_profiles(...),
+    // doctor:doctors(...). На больших импортах это уносило выборку в 0 строк
+    // (PostgREST в некоторых версиях схлопывает embedded resource в INNER JOIN
+    // и отфильтровывает все сделки, у которых FK ссылается на неактивную/
+    // удалённую запись). Серверный view v_pipeline_stage_counts всё равно
+    // их видит — отсюда расхождение «бейджи 1284, карточек 0».
+    //
+    // Решение: грузим плоский deals + отдельно patients по списку ID
+    // (чанками по 200, чтобы не упереться в лимит длины URL у PostgREST).
+    // responsible/doctor резолвим из уже загруженных users/doctors-словарей
+    // в render'е DealCard — данные те же.
     let dealsQuery = supabase.from('deals').select(`
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
         responsible_user_id, source_id, amount,
         preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
         custom_fields, bot_active, bot_state,
-        stage_entered_at, created_at, updated_at,
-        patient:patients(id, full_name, phones, birth_date, city),
-        responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
-        doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
+        stage_entered_at, created_at, updated_at
       `).eq('clinic_id', clinicId).is('deleted_at', null)
+    let dealsCountQuery = supabase
+      .from('deals')
+      .select('id', { count: 'exact', head: true })
+      .eq('clinic_id', clinicId)
+      .is('deleted_at', null)
     if (ownerFilter === 'mine' && profile?.id) {
       dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
+      dealsCountQuery = dealsCountQuery.eq('responsible_user_id', profile.id)
     }
     dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(5000)
 
-    const [p, d, r, ls, up, doc, cl] = await Promise.all([
+    const [p, d, dCount, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       dealsQuery,
+      dealsCountQuery,
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
@@ -466,13 +484,44 @@ export default function CRMKanbanPage() {
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
     if (d.error) console.error('[crm] deals fetch error:', d.error)
+    if (dCount.error) console.error('[crm] deals count error:', dCount.error)
+
     const ps = (p.data ?? []) as Pipeline[]
+    const usersList = (up.data ?? []) as UserLite[]
+    const doctorsList = (doc.data ?? []) as DoctorLite[]
     setPipelines(ps)
-    setDeals((d.data ?? []) as unknown as DealRow[])
+    setUsers(usersList)
+    setDoctors(doctorsList)
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
-    setUsers((up.data ?? []) as UserLite[])
-    setDoctors((doc.data ?? []) as DoctorLite[])
+
+    // ── Подгружаем пациентов отдельно, чанками по 200 id ───────────────────
+    type PatientLite = { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }
+    const dealRows = (d.data ?? []) as DealRow[]
+    const patientIds = Array.from(new Set(dealRows.map(x => x.patient_id).filter((x): x is string => !!x)))
+    const patientsById = new Map<string, PatientLite>()
+    for (let i = 0; i < patientIds.length; i += 200) {
+      const slice = patientIds.slice(i, i + 200)
+      const { data: pp } = await supabase
+        .from('patients')
+        .select('id, full_name, phones, birth_date, city')
+        .in('id', slice)
+      for (const row of (pp ?? []) as PatientLite[]) patientsById.set(row.id, row)
+    }
+    const usersById = new Map(usersList.map(u => [u.id, u]))
+    const doctorsById = new Map(doctorsList.map(x => [x.id, x]))
+    const enriched: DealRow[] = dealRows.map(d0 => ({
+      ...d0,
+      patient: d0.patient_id ? (patientsById.get(d0.patient_id) ?? null) : null,
+      responsible: d0.responsible_user_id ? (usersById.get(d0.responsible_user_id) ?? null) : null,
+      doctor: d0.preferred_doctor_id ? (doctorsById.get(d0.preferred_doctor_id) ?? null) : null,
+    }))
+    setDeals(enriched)
+    setDealsDiag({
+      expected: dCount.count ?? null,
+      got: enriched.length,
+      error: d.error?.message ?? dCount.error?.message ?? null,
+    })
     const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
     setApptTypes(Array.isArray(at) ? at : [])
 
@@ -736,6 +785,19 @@ export default function CRMKanbanPage() {
 
   return (
     <div className="min-h-screen">
+      {/* Диагностический баннер: показываем только если загрузка сделок
+          явно сломалась — есть ошибка, либо count(*) даёт ненулевое
+          число, а реально пришло 0 строк. Это помогает быстро увидеть
+          причину пустого канбана без открывания DevTools. */}
+      {(dealsDiag.error || (dealsDiag.expected !== null && dealsDiag.expected > 0 && dealsDiag.got === 0)) && (
+        <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <div className="font-medium">Не удалось загрузить сделки</div>
+          <div className="text-xs mt-0.5">
+            В клинике {dealsDiag.expected ?? '?'} сделок, в канбане — {dealsDiag.got}.
+            {dealsDiag.error ? ` Ошибка: ${dealsDiag.error}` : ''}
+          </div>
+        </div>
+      )}
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
