@@ -168,6 +168,12 @@ export default function CRMKanbanPage() {
     window.localStorage.setItem('crm.showTerminalStages', showTerminal ? '1' : '0')
   }, [showTerminal])
 
+  // Видимая диагностика загрузки сделок: HTTP-статус /api/crm/deals,
+  // сколько сделок вернул сервер, текст ошибки. Показываем баннер, только
+  // когда что-то явно сломано — чтобы причина пустого канбана была видна
+  // без DevTools.
+  const [dealsDiag, setDealsDiag] = useState<{ status: number; got: number; clinic: string | null; error: string | null } | null>(null)
+
   // Режим просмотра: канбан (этапы-колонки) или таблица (плоский список).
   // Персистим выбор, чтобы менеджер возвращался к привычному виду.
   const [viewMode, setViewMode] = useState<'kanban' | 'table'>('kanban')
@@ -451,6 +457,12 @@ export default function CRMKanbanPage() {
     }
     const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
     if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
+    setDealsDiag({
+      status: dealsResp.status,
+      got: (dealsJson?.deals ?? []).length,
+      clinic: dealsJson?.clinic_id ?? null,
+      error: dealsJson?.error ?? null,
+    })
 
     const [p, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
@@ -741,6 +753,20 @@ export default function CRMKanbanPage() {
 
   return (
     <div className="min-h-screen">
+      {/* Диагностический баннер: показываем, когда /api/crm/deals
+          явно сломан (HTTP != 200 или вернул 0 сделок при ненулевых
+          counters в шапке). Помогает увидеть причину пустого канбана
+          без открывания DevTools. */}
+      {dealsDiag && (dealsDiag.status !== 200 || dealsDiag.error || dealsDiag.got === 0) && (
+        <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <div className="font-medium">Не удалось загрузить сделки</div>
+          <div className="text-xs mt-0.5">
+            /api/crm/deals → HTTP {dealsDiag.status}, сделок: {dealsDiag.got}
+            {dealsDiag.clinic ? `, clinic: ${dealsDiag.clinic.slice(0, 8)}…` : ''}
+            {dealsDiag.error ? ` · ошибка: ${dealsDiag.error}` : ''}
+          </div>
+        </div>
+      )}
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
