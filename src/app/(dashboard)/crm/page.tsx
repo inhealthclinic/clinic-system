@@ -1002,9 +1002,12 @@ export default function CRMKanbanPage() {
         </div>
       </div>
 
-      {/* Kanban / сетка — колонки по этапам с drag&drop */}
+      {/* Kanban / сетка — колонки по этапам с drag&drop.
+          Контейнер занимает всю оставшуюся высоту вьюпорта, чтобы
+          горизонтальная полоса прокрутки прижималась к низу экрана и
+          не перекрывала карточки в верхней части рабочей зоны. */}
       {viewMode === 'kanban' && (
-        <div className="flex gap-3 overflow-x-auto pb-4">
+        <div className="flex gap-3 overflow-x-auto pb-2 h-[calc(100vh-220px)]">
           {activeStages.map(stage => {
             const cards = dealsByStage.get(stage.id) ?? []
             const count = counts.find(c => c.stage_id === stage.id)
@@ -1012,19 +1015,19 @@ export default function CRMKanbanPage() {
             return (
               <div
                 key={stage.id}
-                className={`min-w-[280px] w-[280px] bg-gray-50 border rounded-lg transition-colors ${
+                className={`min-w-[280px] w-[280px] h-full flex flex-col bg-gray-50 border rounded-lg transition-colors ${
                   isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
                 }`}
                 onDragOver={(e) => onDragOver(e, stage.id)}
                 onDragLeave={() => onDragLeave(stage.id)}
                 onDrop={(e) => onDrop(e, stage.id)}
               >
-                <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2">
+                <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 flex-shrink-0">
                   <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
                   <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
                   <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
                 </div>
-                <div className="p-2 space-y-2 min-h-[40px] max-h-[calc(100vh-240px)] overflow-y-auto">
+                <div className="p-2 space-y-2 min-h-0 flex-1 overflow-y-auto">
                   {cards.map(d => (
                     <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
                   ))}
