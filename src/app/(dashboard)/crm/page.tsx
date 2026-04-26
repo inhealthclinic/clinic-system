@@ -443,84 +443,54 @@ export default function CRMKanbanPage() {
     setLoading(true)
     // Базовый запрос сделок. При ownerFilter='mine' ограничиваем по
     // responsible_user_id на стороне БД (не в памяти).
-    // ── Сделки тянем БЕЗ embed-ов ──────────────────────────────────────────
-    // Раньше в select был patient:patients(...), responsible:user_profiles(...),
-    // doctor:doctors(...). На больших импортах это уносило выборку в 0 строк
-    // (PostgREST в некоторых версиях схлопывает embedded resource в INNER JOIN
-    // и отфильтровывает все сделки, у которых FK ссылается на неактивную/
-    // удалённую запись). Серверный view v_pipeline_stage_counts всё равно
-    // их видит — отсюда расхождение «бейджи 1284, карточек 0».
-    //
-    // Решение: грузим плоский deals + отдельно patients по списку ID
-    // (чанками по 200, чтобы не упереться в лимит длины URL у PostgREST).
-    // responsible/doctor резолвим из уже загруженных users/doctors-словарей
-    // в render'е DealCard — данные те же.
-    let dealsQuery = supabase.from('deals').select(`
-        id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
-        responsible_user_id, source_id, amount,
-        preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
-        custom_fields, bot_active, bot_state,
-        stage_entered_at, created_at, updated_at
-      `).eq('clinic_id', clinicId).is('deleted_at', null)
-    let dealsCountQuery = supabase
-      .from('deals')
-      .select('id', { count: 'exact', head: true })
-      .eq('clinic_id', clinicId)
-      .is('deleted_at', null)
-    if (ownerFilter === 'mine' && profile?.id) {
-      dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
-      dealsCountQuery = dealsCountQuery.eq('responsible_user_id', profile.id)
+    // ── Сделки тянем через серверный API (бежит под service role) ──────────
+    // Прямая выборка из браузера через supabase-js идёт под пользовательским
+    // JWT и применяет RLS на deals (clinic_id = current_clinic_id()). Если у
+    // импорта clinic_id «съехал» относительно user_profiles — клиент видит
+    // 0 строк, при том что view v_pipeline_stage_counts (security_invoker=
+    // false в PG15+) показывает в шапке настоящие цифры. Этот же роут
+    // авторизует пользователя по JWT, читает clinic_id из user_profiles и
+    // под service-role выгружает сделки именно этой клиники.
+    const accessToken = (await supabase.auth.getSession()).data.session?.access_token ?? ''
+    const dealsApiUrl = `/api/crm/deals?owner=${ownerFilter === 'mine' ? 'mine' : 'all'}&limit=5000`
+    let dealsApiData: { count: number | null; deals: DealRow[]; error?: string } = { count: null, deals: [] }
+    let dealsApiError: string | null = null
+    try {
+      const res = await fetch(dealsApiUrl, {
+        headers: { authorization: `Bearer ${accessToken}` },
+        cache: 'no-store',
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        dealsApiError = (json && typeof json.error === 'string' ? json.error : `HTTP ${res.status}`)
+      } else {
+        dealsApiData = json as typeof dealsApiData
+      }
+    } catch (e) {
+      dealsApiError = e instanceof Error ? e.message : 'fetch failed'
     }
-    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(5000)
+    if (dealsApiError) console.error('[crm] /api/crm/deals error:', dealsApiError)
 
-    const [p, d, dCount, r, ls, up, doc, cl] = await Promise.all([
+    const [p, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
-      dealsQuery,
-      dealsCountQuery,
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
-    if (d.error) console.error('[crm] deals fetch error:', d.error)
-    if (dCount.error) console.error('[crm] deals count error:', dCount.error)
 
     const ps = (p.data ?? []) as Pipeline[]
-    const usersList = (up.data ?? []) as UserLite[]
-    const doctorsList = (doc.data ?? []) as DoctorLite[]
     setPipelines(ps)
-    setUsers(usersList)
-    setDoctors(doctorsList)
+    setUsers((up.data ?? []) as UserLite[])
+    setDoctors((doc.data ?? []) as DoctorLite[])
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
-
-    // ── Подгружаем пациентов отдельно, чанками по 200 id ───────────────────
-    type PatientLite = { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }
-    const dealRows = (d.data ?? []) as DealRow[]
-    const patientIds = Array.from(new Set(dealRows.map(x => x.patient_id).filter((x): x is string => !!x)))
-    const patientsById = new Map<string, PatientLite>()
-    for (let i = 0; i < patientIds.length; i += 200) {
-      const slice = patientIds.slice(i, i + 200)
-      const { data: pp } = await supabase
-        .from('patients')
-        .select('id, full_name, phones, birth_date, city')
-        .in('id', slice)
-      for (const row of (pp ?? []) as PatientLite[]) patientsById.set(row.id, row)
-    }
-    const usersById = new Map(usersList.map(u => [u.id, u]))
-    const doctorsById = new Map(doctorsList.map(x => [x.id, x]))
-    const enriched: DealRow[] = dealRows.map(d0 => ({
-      ...d0,
-      patient: d0.patient_id ? (patientsById.get(d0.patient_id) ?? null) : null,
-      responsible: d0.responsible_user_id ? (usersById.get(d0.responsible_user_id) ?? null) : null,
-      doctor: d0.preferred_doctor_id ? (doctorsById.get(d0.preferred_doctor_id) ?? null) : null,
-    }))
-    setDeals(enriched)
+    setDeals(dealsApiData.deals)
     setDealsDiag({
-      expected: dCount.count ?? null,
-      got: enriched.length,
-      error: d.error?.message ?? dCount.error?.message ?? null,
+      expected: dealsApiData.count,
+      got: dealsApiData.deals.length,
+      error: dealsApiError,
     })
     const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
     setApptTypes(Array.isArray(at) ? at : [])
