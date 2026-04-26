@@ -14,6 +14,7 @@ import { useAuthStore } from '@/lib/stores/authStore'
 import { notify, confirmAction } from '@/lib/ui/notify'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
+import { VoiceBubble } from '@/components/crm/VoiceBubble'
 import {
   type DealFieldConfig,
   DEFAULT_FIELD_CONFIGS,
@@ -3304,14 +3305,11 @@ function DealModal({
                                     const att = (m.attachments?.[0] as { kind?: string; url?: string; duration_s?: number | null } | undefined)
                                     if (att?.kind === 'voice' && att.url) {
                                       return (
-                                        <div className="space-y-1">
-                                          <audio controls preload="none" src={att.url} className="w-full max-w-[260px] h-9" />
-                                          {att.duration_s != null && (
-                                            <div className={`text-[10px] ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
-                                              🎙 {Math.floor(att.duration_s / 60)}:{String(att.duration_s % 60).padStart(2, '0')}
-                                            </div>
-                                          )}
-                                        </div>
+                                        <VoiceBubble
+                                          url={att.url}
+                                          duration_s={att.duration_s ?? null}
+                                          direction={m.direction as 'in' | 'out'}
+                                        />
                                       )
                                     }
                                     return <div className="whitespace-pre-wrap break-words">{m.body}</div>
