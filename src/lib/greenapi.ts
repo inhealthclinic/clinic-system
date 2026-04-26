@@ -46,6 +46,35 @@ export async function sendWhatsAppText(phoneE164: string, text: string): Promise
   return res.json()
 }
 
+/**
+ * Отправить файл по публичному URL. Для голосовых сообщений (audio/ogg;codecs=opus)
+ * Green-API определит это как PTT и отрендерит как голосовое в нативном WhatsApp.
+ *
+ * Docs: https://green-api.com/docs/api/sending/SendFileByUrl/
+ */
+export async function sendWhatsAppFileByUrl(
+  phoneE164: string,
+  fileUrl: string,
+  fileName: string,
+  caption?: string,
+): Promise<{ idMessage: string }> {
+  const res = await fetch(`${base()}/sendFileByUrl/${TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chatId: toChatId(phoneE164),
+      urlFile: fileUrl,
+      fileName,
+      caption: caption ?? '',
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`GreenAPI sendFileByUrl ${res.status}: ${body}`)
+  }
+  return res.json()
+}
+
 export type InstanceState =
   | 'authorized'       // готов к работе
   | 'notAuthorized'    // QR не отсканирован

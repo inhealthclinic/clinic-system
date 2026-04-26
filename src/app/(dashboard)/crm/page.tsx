@@ -1697,6 +1697,14 @@ function DealModal({
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
   const [sendingPrepay, setSendingPrepay] = useState(false)
   const [sending, setSending] = useState(false)
+  // Голосовое сообщение: MediaRecorder + UI-таймер.
+  // Хранится в ref, чтобы не пересоздавать рекордер на каждый ререндер.
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const recordStartRef = useRef<number>(0)
+  const [recording, setRecording] = useState(false)
+  const [recordSecs, setRecordSecs] = useState(0)
+  const [sendingVoice, setSendingVoice] = useState(false)
   // Защита кнопок «добавить» от двойного клика → дубликаты в БД.
   const [addingComment, setAddingComment] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
@@ -2096,6 +2104,93 @@ function DealModal({
       setSending(false)
     }
   }
+
+  // ─── Voice recording ────────────────────────────────────────────────
+  // Алгоритм: getUserMedia → MediaRecorder (opus) → onstop собирает Blob →
+  // POST FormData в /api/deals/:id/voice. Таймер тикает каждую секунду из
+  // setInterval, чтобы UI не зависел от MediaRecorder.requestData().
+  async function startRecording() {
+    if (recording || sendingVoice || isNew) return
+    // Проверяем поддержку — Safari < 14.1 не умеет MediaRecorder, в iOS < 17 нет ogg.
+    if (typeof window === 'undefined' || !navigator.mediaDevices || !window.MediaRecorder) {
+      notify.error('Браузер не поддерживает запись звука')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Предпочитаем audio/ogg;codecs=opus (нативный WhatsApp PTT).
+      // Fallback — webm/opus (Chrome старее), внутри тот же opus, файл переименуется в .ogg на сервере.
+      const mime = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : ''
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
+      audioChunksRef.current = []
+      rec.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        // Останавливаем дорожки микрофона — иначе у юзера светится индикатор «идёт запись» в браузере.
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || 'audio/ogg' })
+        const duration_s = Math.round((Date.now() - recordStartRef.current) / 1000)
+        if (blob.size < 1024 || duration_s < 1) {
+          // Слишком короткая запись — скорее всего случайный клик.
+          notify.error('Слишком короткая запись')
+          return
+        }
+        await uploadVoice(blob, duration_s)
+      }
+      mediaRecorderRef.current = rec
+      recordStartRef.current = Date.now()
+      setRecordSecs(0)
+      rec.start()
+      setRecording(true)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'mic error'
+      notify.error(`Не удалось включить микрофон: ${msg}`)
+    }
+  }
+
+  function stopRecording(send: boolean) {
+    const rec = mediaRecorderRef.current
+    if (!rec) { setRecording(false); return }
+    if (!send) {
+      // Отмена: подменяем onstop на чистильщик.
+      rec.onstop = () => {
+        rec.stream.getTracks().forEach(t => t.stop())
+        audioChunksRef.current = []
+      }
+    }
+    if (rec.state !== 'inactive') rec.stop()
+    setRecording(false)
+    mediaRecorderRef.current = null
+  }
+
+  async function uploadVoice(blob: Blob, duration_s: number) {
+    if (isNew) return
+    setSendingVoice(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', blob, 'voice.ogg')
+      fd.append('duration_s', String(duration_s))
+      const res = await fetch(`/api/deals/${form.id}/voice`, { method: 'POST', body: fd })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { notify.error(json.error ?? 'Не удалось отправить'); return }
+      const m = json.message as MessageRow | undefined
+      if (m) setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+    } finally {
+      setSendingVoice(false)
+    }
+  }
+
+  // Таймер UI: каждую секунду пока идёт запись.
+  useEffect(() => {
+    if (!recording) return
+    const t = setInterval(() => {
+      setRecordSecs(Math.round((Date.now() - recordStartRef.current) / 1000))
+    }, 250)
+    return () => clearInterval(t)
+  }, [recording])
 
   async function sendPrepayRequest() {
     if (isNew || sendingPrepay) return
@@ -3185,7 +3280,24 @@ function DealModal({
                                       <span>· {m.external_sender}</span>
                                     )}
                                   </div>
-                                  <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                  {/* Голосовое: рендерим <audio>, если в attachments[0].kind==='voice'.
+                                      Иначе — обычный текст. */}
+                                  {(() => {
+                                    const att = (m.attachments?.[0] as { kind?: string; url?: string; duration_s?: number | null } | undefined)
+                                    if (att?.kind === 'voice' && att.url) {
+                                      return (
+                                        <div className="space-y-1">
+                                          <audio controls preload="none" src={att.url} className="w-full max-w-[260px] h-9" />
+                                          {att.duration_s != null && (
+                                            <div className={`text-[10px] ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
+                                              🎙 {Math.floor(att.duration_s / 60)}:{String(att.duration_s % 60).padStart(2, '0')}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )
+                                    }
+                                    return <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                  })()}
                                   <div className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
                                     <span>{new Date(m.created_at).toLocaleString('ru-RU')}</span>
                                     {m.direction === 'out' && (
@@ -3458,34 +3570,79 @@ function DealModal({
 
                         {/* Input + send */}
                         <div className="flex gap-2 p-3">
-                          <textarea
-                            value={msgDraft}
-                            onChange={e => setMsgDraft(e.target.value)}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                                e.preventDefault(); submitComposer()
+                          {recording ? (
+                            // Режим записи: вместо textarea — индикатор с таймером и кнопками отмены/отправки.
+                            <div className="flex-1 flex items-center gap-2 border border-red-200 rounded px-3 py-1.5 bg-red-50">
+                              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                              <span className="text-sm text-red-700 font-mono tabular-nums">
+                                {String(Math.floor(recordSecs / 60)).padStart(2, '0')}:{String(recordSecs % 60).padStart(2, '0')}
+                              </span>
+                              <span className="text-xs text-red-600/70">запись…</span>
+                            </div>
+                          ) : (
+                            <textarea
+                              value={msgDraft}
+                              onChange={e => setMsgDraft(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                  e.preventDefault(); submitComposer()
+                                }
+                              }}
+                              placeholder={
+                                composerMode === 'chat' ? 'Сообщение клиенту…  (⌘+Enter — отправить)' :
+                                composerMode === 'note' ? 'Внутреннее примечание — видно только команде' :
+                                composerMode === 'call' ? 'О чём говорили: итог звонка, договорённости…' :
+                                'Название задачи…'
                               }
-                            }}
-                            placeholder={
-                              composerMode === 'chat' ? 'Сообщение клиенту…  (⌘+Enter — отправить)' :
-                              composerMode === 'note' ? 'Внутреннее примечание — видно только команде' :
-                              composerMode === 'call' ? 'О чём говорили: итог звонка, договорённости…' :
-                              'Название задачи…'
-                            }
-                            rows={composerMode === 'task' ? 1 : 2}
-                            className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
-                          />
-                          <button
-                            onClick={submitComposer}
-                            disabled={!msgDraft.trim() || sending}
-                            className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
-                          >
-                            {sending ? '…' :
-                             composerMode === 'chat' ? 'Отправить' :
-                             composerMode === 'note' ? 'Сохранить' :
-                             composerMode === 'call' ? 'Записать звонок' :
-                             'Поставить'}
-                          </button>
+                              rows={composerMode === 'task' ? 1 : 2}
+                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
+                            />
+                          )}
+
+                          {/* Микрофон — только в режиме чата (whatsapp). */}
+                          {composerMode === 'chat' && (
+                            recording ? (
+                              <>
+                                <button
+                                  onClick={() => stopRecording(false)}
+                                  title="Отменить запись"
+                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                                >
+                                  ✕
+                                </button>
+                                <button
+                                  onClick={() => stopRecording(true)}
+                                  title="Отправить голосовое"
+                                  className="self-end px-4 py-1.5 text-sm rounded bg-red-600 hover:bg-red-700 text-white"
+                                >
+                                  ▶ Отправить
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={startRecording}
+                                disabled={sendingVoice || sending || !!msgDraft.trim()}
+                                title={msgDraft.trim() ? 'Очистите текст, чтобы записать голосовое' : 'Записать голосовое'}
+                                className="self-end px-3 py-1.5 text-base rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {sendingVoice ? '…' : '🎙'}
+                              </button>
+                            )
+                          )}
+
+                          {!recording && (
+                            <button
+                              onClick={submitComposer}
+                              disabled={!msgDraft.trim() || sending}
+                              className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
+                            >
+                              {sending ? '…' :
+                               composerMode === 'chat' ? 'Отправить' :
+                               composerMode === 'note' ? 'Сохранить' :
+                               composerMode === 'call' ? 'Записать звонок' :
+                               'Поставить'}
+                            </button>
+                          )}
                         </div>
 
                         {composerMode === 'chat' && waConnected === false && (
