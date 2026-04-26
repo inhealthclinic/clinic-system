@@ -3589,13 +3589,25 @@ function DealModal({
                         {/* Input + send */}
                         <div className="flex gap-2 p-3">
                           {recording ? (
-                            // Режим записи: вместо textarea — индикатор с таймером и кнопками отмены/отправки.
-                            <div className="flex-1 flex items-center gap-2 border border-red-200 rounded px-3 py-1.5 bg-red-50">
-                              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                            // Режим записи: бегущий «эквалайзер» — наглядно, что мик активен.
+                            <div className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50">
+                              <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
                               <span className="text-sm text-red-700 font-mono tabular-nums">
                                 {String(Math.floor(recordSecs / 60)).padStart(2, '0')}:{String(recordSecs % 60).padStart(2, '0')}
                               </span>
-                              <span className="text-xs text-red-600/70">запись…</span>
+                              <span className="flex items-end gap-[3px] h-5 flex-1 min-w-0">
+                                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(i => (
+                                  <span
+                                    key={i}
+                                    className="w-[3px] bg-red-500/80 rounded-full animate-voice-bar"
+                                    style={{
+                                      animationDelay: `${(i % 7) * 0.09}s`,
+                                      animationDuration: `${0.7 + (i % 5) * 0.12}s`,
+                                    }}
+                                  />
+                                ))}
+                              </span>
+                              <span className="text-xs text-red-600/70 shrink-0">запись…</span>
                             </div>
                           ) : pendingVoice ? (
                             // Превью записанного голосового — можно прослушать перед отправкой.

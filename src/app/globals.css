@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* Бегущая «волна» эквалайзера для индикатора записи голосового. */
+@keyframes voice-bar {
+  0%, 100% { height: 15%; }
+  50%      { height: 100%; }
+}
+.animate-voice-bar {
+  animation: voice-bar 0.9s ease-in-out infinite;
+  height: 15%;
+}
