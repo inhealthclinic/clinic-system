@@ -64,11 +64,19 @@ function makeStep(): BuilderStep {
   return { id: newId(), text: '', answers: [], else_next_id: null }
 }
 
+type TriggerEvent = 'on_first_inbound' | 'manual'
+
+const TRIGGER_LABEL: Record<TriggerEvent, { title: string; sub: string; emoji: string }> = {
+  on_first_inbound: { title: 'Первое входящее в WhatsApp', sub: 'Лид написал впервые — бот стартует', emoji: '💬' },
+  manual:           { title: 'Запуск вручную',              sub: 'Из карточки сделки кнопкой',          emoji: '👆' },
+}
+
 export default function NewSalesbotPage() {
   const router = useRouter()
   const [name, setName] = useState('')
-  const [triggerEvent, setTriggerEvent] = useState<'on_first_inbound' | 'manual'>('on_first_inbound')
+  const [triggerEvent, setTriggerEvent] = useState<TriggerEvent | null>(null)
   const [isDefault, setIsDefault] = useState(true)
+  const [triggerModalOpen, setTriggerModalOpen] = useState(false)
   const [steps, setSteps] = useState<BuilderStep[]>([])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
@@ -176,8 +184,8 @@ export default function NewSalesbotPage() {
           name: name.trim(),
           steps: normalized,
           start_step: 0,
-          trigger_event: triggerEvent,
-          is_default: isDefault,
+          trigger_event: triggerEvent ?? 'manual',
+          is_default: triggerEvent === 'on_first_inbound' ? isDefault : false,
           is_active: true,
         }),
       })
@@ -222,44 +230,36 @@ export default function NewSalesbotPage() {
       {/* Канва amoCRM-стиля */}
       <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 overflow-x-auto">
         <div className="flex items-start gap-6 min-w-[1100px]">
-          {/* Левая колонка — Триггеры */}
-          <div className="w-72 flex-shrink-0 bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
-            <div className="text-sm font-semibold text-gray-900">Триггеры</div>
-            <p className="text-xs text-gray-500 mt-1 mb-3">
-              Автоматизируйте запуск ботов, установив правила, или запускайте вручную через карточку сделки.
+          {/* Левая колонка — Триггеры (как в amoCRM) */}
+          <div className="w-72 flex-shrink-0 bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
+            <div className="text-base font-semibold text-gray-900">Триггеры</div>
+            <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+              Автоматизируйте запуск ботов, установив правила, или запускайте вручную через карточку сделки
             </p>
-            <label className="flex items-start gap-2 text-sm text-gray-700 py-1.5">
-              <input
-                type="radio"
-                name="trigger"
-                checked={triggerEvent === 'on_first_inbound'}
-                onChange={() => setTriggerEvent('on_first_inbound')}
-                className="mt-0.5"
-              />
-              <span>
-                <div>Первое входящее в WhatsApp</div>
-                <div className="text-xs text-gray-500">Лид написал впервые — бот стартует</div>
-              </span>
-            </label>
-            <label className="flex items-start gap-2 text-sm text-gray-700 py-1.5">
-              <input
-                type="radio"
-                name="trigger"
-                checked={triggerEvent === 'manual'}
-                onChange={() => setTriggerEvent('manual')}
-                className="mt-0.5"
-              />
-              <span>
-                <div>Запуск вручную</div>
-                <div className="text-xs text-gray-500">Из карточки сделки кнопкой</div>
-              </span>
-            </label>
-            {triggerEvent === 'on_first_inbound' && (
-              <label className="flex items-center gap-2 text-xs text-gray-700 mt-3 pt-3 border-t border-gray-100">
-                <input type="checkbox" checked={isDefault} onChange={e => setIsDefault(e.target.checked)} />
-                Сделать ботом по умолчанию для входящих
-              </label>
+
+            {triggerEvent && (
+              <div className="mt-4 flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-md">
+                <span className="text-base leading-none">{TRIGGER_LABEL[triggerEvent].emoji}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-blue-900 truncate">{TRIGGER_LABEL[triggerEvent].title}</div>
+                  {triggerEvent === 'on_first_inbound' && isDefault && (
+                    <div className="text-[11px] text-blue-700">по умолчанию</div>
+                  )}
+                </div>
+                <button type="button" onClick={() => setTriggerModalOpen(true)}
+                  className="text-xs text-blue-600 hover:underline">изм.</button>
+                <button type="button" onClick={() => setTriggerEvent(null)}
+                  className="text-xs text-red-500 hover:underline">×</button>
+              </div>
             )}
+
+            <button
+              type="button"
+              onClick={() => setTriggerModalOpen(true)}
+              className="mt-4 w-full px-3 py-2 text-sm text-gray-500 border border-gray-200 rounded-md hover:bg-gray-50 hover:text-gray-700 hover:border-gray-300 text-left"
+            >
+              + Триггер
+            </button>
           </div>
 
           {/* Стрелка */}
@@ -444,6 +444,82 @@ export default function NewSalesbotPage() {
           ))}
         </div>
       )}
+
+      {triggerModalOpen && (
+        <TriggerModal
+          initialEvent={triggerEvent ?? 'on_first_inbound'}
+          initialDefault={isDefault}
+          onClose={() => setTriggerModalOpen(false)}
+          onSave={(ev, def) => { setTriggerEvent(ev); setIsDefault(def); setTriggerModalOpen(false) }}
+        />
+      )}
+    </div>
+  )
+}
+
+function TriggerModal(props: {
+  initialEvent: TriggerEvent
+  initialDefault: boolean
+  onClose: () => void
+  onSave: (ev: TriggerEvent, isDefault: boolean) => void
+}) {
+  const [ev, setEv] = useState<TriggerEvent>(props.initialEvent)
+  const [def, setDef] = useState(props.initialDefault)
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={props.onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900">Выбор триггера</h3>
+          <button type="button" onClick={props.onClose}
+            className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
+        </div>
+        <p className="text-sm text-gray-500">Когда бот должен запускаться?</p>
+
+        <div className="space-y-2">
+          {(['on_first_inbound', 'manual'] as const).map(opt => {
+            const meta = TRIGGER_LABEL[opt]
+            const active = ev === opt
+            return (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => setEv(opt)}
+                className={[
+                  'w-full text-left flex items-start gap-3 p-3 rounded-lg border transition-colors',
+                  active
+                    ? 'border-blue-400 bg-blue-50'
+                    : 'border-gray-200 hover:bg-gray-50',
+                ].join(' ')}
+              >
+                <span className="text-xl leading-none mt-0.5">{meta.emoji}</span>
+                <span className="flex-1">
+                  <div className={`text-sm font-medium ${active ? 'text-blue-900' : 'text-gray-900'}`}>
+                    {meta.title}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">{meta.sub}</div>
+                </span>
+                {active && <span className="text-blue-500 text-base">✓</span>}
+              </button>
+            )
+          })}
+        </div>
+
+        {ev === 'on_first_inbound' && (
+          <label className="flex items-center gap-2 text-sm text-gray-700 pt-2 border-t border-gray-100">
+            <input type="checkbox" checked={def} onChange={e => setDef(e.target.checked)} />
+            Сделать ботом по умолчанию для входящих
+          </label>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={props.onClose}
+            className="px-4 py-2 text-sm rounded text-gray-600 hover:bg-gray-100">Отмена</button>
+          <button type="button" onClick={() => props.onSave(ev, def)}
+            className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700">
+            Сохранить триггер
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
