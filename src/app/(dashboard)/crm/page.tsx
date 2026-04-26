@@ -753,20 +753,21 @@ export default function CRMKanbanPage() {
 
   return (
     <div className="min-h-screen">
-      {/* Диагностический баннер: показываем, когда /api/crm/deals
-          явно сломан (HTTP != 200 или вернул 0 сделок при ненулевых
-          counters в шапке). Помогает увидеть причину пустого канбана
-          без открывания DevTools. */}
-      {dealsDiag && (dealsDiag.status !== 200 || dealsDiag.error || dealsDiag.got === 0) && (
-        <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <div className="font-medium">Не удалось загрузить сделки</div>
-          <div className="text-xs mt-0.5">
-            /api/crm/deals → HTTP {dealsDiag.status}, сделок: {dealsDiag.got}
-            {dealsDiag.clinic ? `, clinic: ${dealsDiag.clinic.slice(0, 8)}…` : ''}
-            {dealsDiag.error ? ` · ошибка: ${dealsDiag.error}` : ''}
-          </div>
+      {/* Диагностический баннер — пока показываем ВСЕГДА, чтобы видеть,
+          что реально возвращает /api/crm/deals на проде. Уберём, когда
+          канбан стабильно оживёт. */}
+      <div className={`mb-3 rounded-md border px-3 py-2 text-sm ${
+        dealsDiag && dealsDiag.status === 200 && !dealsDiag.error && dealsDiag.got > 0
+          ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
+          : 'border-amber-300 bg-amber-50 text-amber-900'
+      }`}>
+        <div className="font-medium">Диагностика /api/crm/deals</div>
+        <div className="text-xs mt-0.5">
+          {dealsDiag
+            ? <>HTTP {dealsDiag.status} · сделок: <b>{dealsDiag.got}</b>{dealsDiag.clinic ? ` · clinic ${dealsDiag.clinic.slice(0,8)}…` : ''}{dealsDiag.error ? ` · ошибка: ${dealsDiag.error}` : ''} · в state: <b>{deals.length}</b> · stages: <b>{stages.length}</b> · activePipeline: {activePipelineId.slice(0,8) || '—'}</>
+            : 'Загружаю…'}
         </div>
-      )}
+      </div>
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
