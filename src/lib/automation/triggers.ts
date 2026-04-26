@@ -171,19 +171,45 @@ function todayKey(now: Date): string {
   return now.toISOString().slice(0, 10) // YYYY-MM-DD UTC
 }
 
+/** ISO-week number (1..53) — без зависимостей. */
+function weekNumber(d: Date): number {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+  const dayNum = (t.getUTCDay() + 6) % 7 // пн=0..вс=6
+  t.setUTCDate(t.getUTCDate() - dayNum + 3)
+  const firstThu = new Date(Date.UTC(t.getUTCFullYear(), 0, 4))
+  const diff = (t.getTime() - firstThu.getTime()) / 86400_000
+  return 1 + Math.round((diff - ((firstThu.getUTCDay() + 6) % 7) + 3) / 7)
+}
+
+/** Начало периода (UTC), для фильтра «было ли inbound в этом периоде». */
+function startOfPeriod(now: Date, period: 'day' | 'week' | 'month'): Date {
+  if (period === 'month') return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+  if (period === 'week') {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+    const dayNum = (d.getUTCDay() + 6) % 7 // пн=0
+    d.setUTCDate(d.getUTCDate() - dayNum)
+    return d
+  }
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+}
+
 type Mode =
   | 'immediate' | 'delay' | 'daily_at' | 'no_reply_hours'
   | 'at_datetime' | 'before_datetime'
+  | 'on_chat_created_in' | 'on_chat_created_out' | 'on_first_inbound'
 
 /** Определяем режим триггера. По умолчанию immediate/delay (on_enter). */
 function detectMode(t: PipelineTrigger): Mode {
   const m = cfgStr(t.config, 'mode')
-  if (m === 'daily_at')         return 'daily_at'
-  if (m === 'no_reply_hours')   return 'no_reply_hours'
-  if (m === 'at_datetime')      return 'at_datetime'
-  if (m === 'before_datetime')  return 'before_datetime'
-  if (m === 'delay')            return 'delay'
-  if (m === 'immediate')        return 'immediate'
+  if (m === 'daily_at')             return 'daily_at'
+  if (m === 'no_reply_hours')       return 'no_reply_hours'
+  if (m === 'at_datetime')          return 'at_datetime'
+  if (m === 'before_datetime')      return 'before_datetime'
+  if (m === 'on_chat_created_in')   return 'on_chat_created_in'
+  if (m === 'on_chat_created_out')  return 'on_chat_created_out'
+  if (m === 'on_first_inbound')     return 'on_first_inbound'
+  if (m === 'delay')                return 'delay'
+  if (m === 'immediate')            return 'immediate'
   // обратная совместимость: если есть delay_minutes → delay, иначе immediate
   return cfgNum(t.config, 'delay_minutes', 0) > 0 ? 'delay' : 'immediate'
 }
@@ -283,6 +309,39 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
         const ageMs = now.getTime() - new Date(last[0].created_at).getTime()
         if (ageMs < hours * 3600_000) continue
         dedup = last[0].id // дедуп по конкретному «последнему inbound»
+      } else if (mode === 'on_chat_created_in' || mode === 'on_chat_created_out') {
+        // «При создании беседы»: проверяем, что у сделки есть хотя бы
+        // одно сообщение нужного направления. Дедуп — one-shot per сделке.
+        const dir = mode === 'on_chat_created_in' ? 'in' : 'out'
+        const { data: any1 } = await sb
+          .from('deal_messages')
+          .select('id')
+          .eq('deal_id', d.id)
+          .eq('direction', dir)
+          .limit(1)
+          .returns<{ id: string }[]>()
+        if (!any1?.length) continue
+        dedup = null // one-shot
+      } else if (mode === 'on_first_inbound') {
+        // Первое входящее за период (день/неделя/месяц). Дедуп —
+        // по периоду: для day → 'YYYY-MM-DD', для week → 'YYYY-Www', для month → 'YYYY-MM'.
+        const period = cfgStr(t.config, 'period', 'day')
+        const periodKey =
+          period === 'month' ? now.toISOString().slice(0, 7) :
+          period === 'week'  ? `${now.getUTCFullYear()}-W${String(weekNumber(now)).padStart(2, '0')}` :
+          /* day */            todayKey(now)
+        // Проверяем: было ли inbound в этом периоде.
+        const periodStart = startOfPeriod(now, period as 'day' | 'week' | 'month')
+        const { data: any1 } = await sb
+          .from('deal_messages')
+          .select('id')
+          .eq('deal_id', d.id)
+          .eq('direction', 'in')
+          .gte('created_at', periodStart.toISOString())
+          .limit(1)
+          .returns<{ id: string }[]>()
+        if (!any1?.length) continue
+        dedup = `${period}:${periodKey}`
       }
 
       const key = `${d.id}|${dedup ?? ''}`

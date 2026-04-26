@@ -312,9 +312,9 @@ const IMPLEMENTED: Record<SalesbotMode, boolean> = {
   immediate: true, delay: true,
   before_datetime: true, at_datetime: true,
   daily_at: true,
-  on_chat_created_in: false, on_chat_created_out: false,
+  on_chat_created_in: true, on_chat_created_out: true,
   no_reply_hours: true,
-  on_first_inbound: false, on_read: false, on_chat_close: false,
+  on_first_inbound: true, on_read: false, on_chat_close: false,
 }
 
 function SalesbotTriggerForm({
@@ -363,7 +363,9 @@ function SalesbotTriggerForm({
   const currentLabel =
     mode === 'immediate' || mode === 'delay'
       ? `${formatStageTiming(Number(config.delay_minutes ?? 0))} после создания в этапе`
-      : MODE_LABELS[mode]
+      : mode === 'on_first_inbound'
+        ? `Первое входящее за ${ ({day:'день',week:'неделю',month:'месяц'} as Record<string,string>)[String(config.period ?? 'day')] ?? 'день' }`
+        : MODE_LABELS[mode]
 
   return (
     <div className="space-y-4">
@@ -416,41 +418,11 @@ function SalesbotTriggerForm({
             </DropdownGroup>
 
             <DropdownGroup title="Триггеры по беседам">
-              <DropdownItem
-                label={MODE_LABELS.on_chat_created_in}
-                checked={mode === 'on_chat_created_in'}
-                onSelect={() => setMode('on_chat_created_in')}
-                available={IMPLEMENTED.on_chat_created_in}
-              />
-              <DropdownItem
-                label={MODE_LABELS.on_chat_created_out}
-                checked={mode === 'on_chat_created_out'}
-                onSelect={() => setMode('on_chat_created_out')}
-                available={IMPLEMENTED.on_chat_created_out}
-              />
-              <DropdownItem
-                label={MODE_LABELS.no_reply_hours}
-                checked={mode === 'no_reply_hours'}
-                onSelect={() => setMode('no_reply_hours')}
-                available={IMPLEMENTED.no_reply_hours}
-              />
-              <DropdownItem
-                label={MODE_LABELS.on_first_inbound}
-                checked={mode === 'on_first_inbound'}
-                onSelect={() => setMode('on_first_inbound')}
-                available={IMPLEMENTED.on_first_inbound}
-              />
-              <DropdownItem
-                label={MODE_LABELS.on_read}
-                checked={mode === 'on_read'}
-                onSelect={() => setMode('on_read')}
-                available={IMPLEMENTED.on_read}
-              />
-              <DropdownItem
-                label={MODE_LABELS.on_chat_close}
-                checked={mode === 'on_chat_close'}
-                onSelect={() => setMode('on_chat_close')}
-                available={IMPLEMENTED.on_chat_close}
+              <ChatTriggersRow
+                mode={mode}
+                config={config}
+                set={set}
+                setMode={(m) => set('mode', m)}
               />
             </DropdownGroup>
           </div>
@@ -711,6 +683,91 @@ function TimeTriggersRow({
           onClick={e => e.stopPropagation()}
           className={`${FIELD} w-24`}
         />
+      </div>
+    </div>
+  )
+}
+
+/** Группа «Триггеры по беседам» — амо-стиль с инлайн-параметрами в тексте.
+ *  Источник один — WhatsApp (Green-API), направление переключается кликом
+ *  по слову «входящим/исходящим». */
+function ChatTriggersRow({
+  mode, config, set, setMode,
+}: {
+  mode: SalesbotMode
+  config: Record<string, unknown>
+  set: (k: string, v: unknown) => void
+  setMode: (m: SalesbotMode) => void
+}) {
+  const ROW    = 'flex items-center flex-wrap gap-2 text-sm px-3 py-1.5 hover:bg-blue-50/40'
+  const ROW_OFF= 'flex items-center flex-wrap gap-2 text-sm px-3 py-1.5 text-gray-400'
+  const CHK    = (active: boolean) =>
+    `w-3 inline-flex items-center justify-center text-blue-600 ${active ? '' : 'opacity-0'}`
+  const LINK   = 'text-blue-600 hover:underline cursor-pointer'
+  const FIELD  = 'rounded border border-gray-300 px-2 py-0.5 text-sm bg-white w-16 text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20'
+  const SOURCE = <span className="text-blue-600">WhatsApp</span> // у нас один канал
+
+  const createdChecked = mode === 'on_chat_created_in' || mode === 'on_chat_created_out'
+  const createdDir = mode === 'on_chat_created_out' ? 'out' : 'in'
+  const toggleCreatedDir = () =>
+    setMode(createdDir === 'in' ? 'on_chat_created_out' : 'on_chat_created_in')
+
+  const period = String(config.period ?? 'day')
+  const PERIODS: Record<string, string> = { day: 'день', week: 'неделю', month: 'месяц' }
+  const cyclePeriod = () => {
+    const keys = Object.keys(PERIODS)
+    const next = keys[(keys.indexOf(period) + 1) % keys.length]
+    setMode('on_first_inbound'); set('period', next)
+  }
+
+  return (
+    <div className="space-y-1">
+      {/* При создании беседы <входящим|исходящим> сообщением в WhatsApp */}
+      <div className={ROW} onClick={() => setMode(createdDir === 'in' ? 'on_chat_created_in' : 'on_chat_created_out')}>
+        <span className={CHK(createdChecked)}>✓</span>
+        <span>При создании беседы</span>
+        <button type="button" className={LINK}
+          onClick={(e) => { e.stopPropagation(); toggleCreatedDir() }}>
+          {createdDir === 'in' ? 'входящим' : 'исходящим'}
+        </button>
+        <span>сообщением в</span> {SOURCE}
+      </div>
+
+      {/* [N] часов с последнего входящего сообщения в WhatsApp */}
+      <div className={ROW} onClick={() => setMode('no_reply_hours')}>
+        <span className={CHK(mode === 'no_reply_hours')}>✓</span>
+        <input type="number" min={1} max={720}
+          value={Number(config.no_reply_hours ?? 0)}
+          onChange={e => { setMode('no_reply_hours'); set('no_reply_hours', parseInt(e.target.value, 10) || 0) }}
+          onClick={e => e.stopPropagation()}
+          className={FIELD}
+        />
+        <span>часов с последнего вход. сообщения в</span> {SOURCE}
+      </div>
+
+      {/* При первом входящем сообщении в WhatsApp за <день|неделю|месяц> */}
+      <div className={ROW} onClick={() => setMode('on_first_inbound')}>
+        <span className={CHK(mode === 'on_first_inbound')}>✓</span>
+        <span>При первом</span>
+        <span className="text-gray-700">входящем</span>
+        <span>сообщении в</span> {SOURCE}
+        <span>за</span>
+        <button type="button" className={LINK}
+          onClick={(e) => { e.stopPropagation(); cyclePeriod() }}>
+          {PERIODS[period] ?? PERIODS.day}
+        </button>
+      </div>
+
+      {/* Не реализованные — серым с плашкой «Скоро» */}
+      <div className={ROW_OFF}>
+        <span className={CHK(false)}>✓</span>
+        <span>При прочтении сообщения клиентом в WhatsApp (24 ч.)</span>
+        <span className="ml-auto text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">Скоро</span>
+      </div>
+      <div className={ROW_OFF}>
+        <span className={CHK(false)}>✓</span>
+        <span>Сразу после закрытия беседы WhatsApp</span>
+        <span className="ml-auto text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">Скоро</span>
       </div>
     </div>
   )
