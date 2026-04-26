@@ -368,7 +368,7 @@ function SalesbotTriggerForm({
         : mode === 'on_read'
           ? `При прочтении (${Number(config.read_window_hours ?? 24)} ч.)`
           : mode === 'on_chat_close'
-            ? 'Сразу после закрытия беседы'
+            ? `${formatStageTiming(Number(config.close_delay_minutes ?? 0))} после закрытия беседы`
             : MODE_LABELS[mode]
 
   return (
@@ -517,12 +517,12 @@ const STAGE_PRESETS: { label: string; minutes: number }[] = [
   { label: 'Один день',      minutes: 1440 },
 ]
 
-/** Строка «<тайминг> после создания в этапе» с поповером пресетов
- *  и кастомным интервалом «N ч M м». Не закрывает основной дропдаун. */
-function StageTimingRow({
-  checked, delayMinutes, onChange,
+/** Кликабельная подпись «Сразу / Через 5 минут / …» с amo-поповером
+ *  пресетов и custom-интервалом. Используется и в строке «триггеры
+ *  воронки», и в строке «Сразу после закрытия беседы». */
+function TimingButton({
+  delayMinutes, onChange,
 }: {
-  checked: boolean
   delayMinutes: number
   onChange: (min: number) => void
 }) {
@@ -540,14 +540,18 @@ function StageTimingRow({
     return () => document.removeEventListener('mousedown', onDown)
   }, [popOpen])
 
+  // Локальные H/M синхронизируем с приходящим извне delayMinutes,
+  // чтобы открыть поповер не сбрасывало уже введённое значение.
+  useEffect(() => {
+    setCustomH(Math.floor(delayMinutes / 60))
+    setCustomM(delayMinutes % 60)
+  }, [delayMinutes])
+
   const apply = (min: number) => { onChange(min); setPopOpen(false) }
   const applyCustom = () => apply(Math.max(0, customH * 60 + customM))
 
   return (
-    <div className="flex items-center gap-2 text-sm px-3 py-1.5 hover:bg-blue-50/40 relative" ref={ref}>
-      <span className={`w-3 inline-flex items-center justify-center text-blue-600`}>
-        {checked ? '✓' : ''}
-      </span>
+    <span className="relative inline-block" ref={ref}>
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); setPopOpen(o => !o) }}
@@ -555,10 +559,9 @@ function StageTimingRow({
       >
         {formatStageTiming(delayMinutes)}
       </button>
-      <span className="text-gray-700">после создания в этапе</span>
 
       {popOpen && (
-        <div className="absolute z-30 left-3 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg w-[260px] py-1"
+        <div className="absolute z-30 left-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg w-[260px] py-1"
              onClick={(e) => e.stopPropagation()}>
           {STAGE_PRESETS.map(p => (
             <button key={p.minutes}
@@ -598,6 +601,25 @@ function StageTimingRow({
           </div>
         </div>
       )}
+    </span>
+  )
+}
+
+/** Строка «<тайминг> после создания в этапе» в группе «Триггеры воронки». */
+function StageTimingRow({
+  checked, delayMinutes, onChange,
+}: {
+  checked: boolean
+  delayMinutes: number
+  onChange: (min: number) => void
+}) {
+  return (
+    <div className="flex items-center gap-2 text-sm px-3 py-1.5 hover:bg-blue-50/40">
+      <span className={`w-3 inline-flex items-center justify-center text-blue-600`}>
+        {checked ? '✓' : ''}
+      </span>
+      <TimingButton delayMinutes={delayMinutes} onChange={onChange} />
+      <span className="text-gray-700">после создания в этапе</span>
     </div>
   )
 }
@@ -775,10 +797,13 @@ function ChatTriggersRow({
         <span>ч.)</span>
       </div>
 
-      {/* Сразу после закрытия беседы WhatsApp */}
+      {/* <тайминг> после закрытия беседы WhatsApp */}
       <div className={ROW} onClick={() => setMode('on_chat_close')}>
         <span className={CHK(mode === 'on_chat_close')}>✓</span>
-        <span className="text-blue-600">Сразу</span>
+        <TimingButton
+          delayMinutes={Number(config.close_delay_minutes ?? 0)}
+          onChange={(min) => { setMode('on_chat_close'); set('close_delay_minutes', min) }}
+        />
         <span>после закрытия беседы</span> {SOURCE}
       </div>
     </div>

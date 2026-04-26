@@ -345,8 +345,15 @@ export async function processCustomTriggers(sb: SupabaseClient): Promise<{
         dedup = `read:${rd[0].id}`
       } else if (mode === 'on_chat_close') {
         // «Закрытие беседы» — мапим на закрытие сделки (won/lost),
-        // т.к. отдельной сущности «беседа» в схеме нет. One-shot per сделке.
+        // т.к. отдельной сущности «беседа» в схеме нет. С учётом
+        // close_delay_minutes ждём заданное время после входа в стадию
+        // (stage_entered_at — прокси момента закрытия). One-shot per (deal, status).
         if (d.status === 'open' || !d.status) continue
+        const closeDelay = cfgNum(t.config, 'close_delay_minutes', 0)
+        if (closeDelay > 0 && d.stage_entered_at) {
+          const ageMs = now.getTime() - new Date(d.stage_entered_at).getTime()
+          if (ageMs < closeDelay * 60_000) continue
+        }
         dedup = `close:${d.status}`
       } else if (mode === 'on_first_inbound') {
         // Первое входящее за период (день/неделя/месяц). Дедуп —
