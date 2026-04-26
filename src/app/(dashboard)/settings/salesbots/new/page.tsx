@@ -5,25 +5,30 @@
  *
  * Канва:
  *   ┌─ Триггеры ─┐    ┌─ Запуск бота ─┐    ┌─ Следующий шаг ─┐
- *   │ событие    │ ─► │ зелёный пилл │ ─►  │ типы действий   │
- *   └────────────┘    └──────────────┘     └─────────────────┘
+ *   │ событие    │ ─► │ зелёный пилл  │ ─► │ типы действий   │
+ *   └────────────┘    └───────────────┘    └─────────────────┘
  *
- * Когда пользователь добавляет первый шаг через «Отправить сообщение» —
- * под канвой раскрывается редактор шагов: текст + варианты ответов
- * (с переходами на следующие шаги). Сохранение собирает нормализованный
- * steps-объект (как у amoCRM-импорта) и POST-ит на /api/salesbot-flows.
+ * Связи между шагами рисуются SVG-кривыми (амо-стиль):
+ *   • На каждой карточке слева — input-порт (точка), справа — output-порты
+ *     (по одному на каждый ответ-кнопку и один для else-ветки).
+ *   • Тянем мышью с output-порта на любую другую карточку — связь создаётся.
+ *     Бросаем в пустоту — действие отменяется.
+ *   • Клик по существующей кривой → связь удаляется.
+ *   • На один target можно сходиться нескольким ответам (несколько
+ *     связей — нет проблем).
+ *   • Параллельно работает старый dropdown-пикер «→ Шаг N» — оставлен
+ *     как клавиатурный fallback.
  *
  * MVP-ограничения:
  *   • работает только action «Отправить сообщение» (остальные — заглушки
  *     в стиле amoCRM, помечены «скоро»);
  *   • синонимы пока заводятся через запятую в одном поле;
- *   • else-ветка пока не настраивается из UI — добавим, как только
- *     потребуется (для on_first_inbound с вопросом «откуда вы» —
- *     синонимы и числовой fallback закрывают 95% кейсов).
+ *   • расположение карточек авто (BFS-колонки от стартового шага); ручного
+ *     перетаскивания позиций пока нет — для 30-шагового импорта хватает.
  */
 
 import Link from 'next/link'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
@@ -70,6 +75,39 @@ type TriggerEvent = 'on_first_inbound' | 'manual'
 const TRIGGER_LABEL: Record<TriggerEvent, { title: string; sub: string; emoji: string }> = {
   on_first_inbound: { title: 'Первое входящее в WhatsApp', sub: 'Лид написал впервые — бот стартует', emoji: '💬' },
   manual:           { title: 'Запуск вручную',              sub: 'Из карточки сделки кнопкой',          emoji: '👆' },
+}
+
+// ─── порты для коннектора ────────────────────────────────────────────────────
+
+type OutputKind = 'answer' | 'else'
+
+function outputPortKey(stepId: string, kind: OutputKind, idx?: number): string {
+  return kind === 'answer' ? `${stepId}|a|${idx}` : `${stepId}|e`
+}
+
+interface XY { x: number; y: number }
+
+/**
+ * Безье-кривая между двумя точками (горизонтальный flow слева→направо).
+ * dx масштабируем от расстояния, чтобы для близких точек кривая не «вспухала»,
+ * для далёких — оставалась плавной (как в amoCRM/Reaktor/n8n).
+ */
+function bezierPath(a: XY, b: XY): string {
+  const dx = Math.max(40, Math.abs(b.x - a.x) * 0.4)
+  return `M ${a.x},${a.y} C ${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`
+}
+
+function shallowEqualPosMap(a: Record<string, XY>, b: Record<string, XY>): boolean {
+  const ak = Object.keys(a)
+  const bk = Object.keys(b)
+  if (ak.length !== bk.length) return false
+  for (const k of ak) {
+    const av = a[k]
+    const bv = b[k]
+    if (!bv) return false
+    if (av.x !== bv.x || av.y !== bv.y) return false
+  }
+  return true
 }
 
 /**
@@ -190,6 +228,198 @@ export default function NewSalesbotPage() {
     return cols
   }, [steps])
 
+  // ─── Refs / порты / измерения ────────────────────────────────────────────
+  const canvasRef = useRef<HTMLDivElement | null>(null)
+  // Карты ref-ов, чтобы getBoundingClientRect-нуть позиции портов.
+  const inputPortRefs = useRef<Map<string, HTMLElement | null>>(new Map())
+  const outputPortRefs = useRef<Map<string, HTMLElement | null>>(new Map())
+
+  const registerInputPort = useCallback((stepId: string, el: HTMLElement | null) => {
+    if (el) inputPortRefs.current.set(stepId, el)
+    else inputPortRefs.current.delete(stepId)
+  }, [])
+  const registerOutputPort = useCallback((key: string, el: HTMLElement | null) => {
+    if (el) outputPortRefs.current.set(key, el)
+    else outputPortRefs.current.delete(key)
+  }, [])
+
+  const [positions, setPositions] = useState<{ inputs: Record<string, XY>; outputs: Record<string, XY> }>({
+    inputs: {}, outputs: {},
+  })
+
+  const measure = useCallback(() => {
+    const root = canvasRef.current
+    if (!root) return
+    const rb = root.getBoundingClientRect()
+    const inputs: Record<string, XY> = {}
+    const outputs: Record<string, XY> = {}
+    inputPortRefs.current.forEach((el, key) => {
+      if (!el || !el.isConnected) return
+      const r = el.getBoundingClientRect()
+      inputs[key] = {
+        x: r.left + r.width / 2 - rb.left + root.scrollLeft,
+        y: r.top + r.height / 2 - rb.top + root.scrollTop,
+      }
+    })
+    outputPortRefs.current.forEach((el, key) => {
+      if (!el || !el.isConnected) return
+      const r = el.getBoundingClientRect()
+      outputs[key] = {
+        x: r.left + r.width / 2 - rb.left + root.scrollLeft,
+        y: r.top + r.height / 2 - rb.top + root.scrollTop,
+      }
+    })
+    setPositions(prev => {
+      if (shallowEqualPosMap(prev.inputs, inputs) && shallowEqualPosMap(prev.outputs, outputs)) {
+        return prev
+      }
+      return { inputs, outputs }
+    })
+  }, [])
+
+  // Перемер делаем после каждого render — карточки могли подрасти от ввода
+  // текста, переноса по ширине, добавления новых строк-кнопок и т.д.
+  useLayoutEffect(() => { measure() })
+  useEffect(() => {
+    const root = canvasRef.current
+    const handler = () => measure()
+    window.addEventListener('resize', handler)
+    root?.addEventListener('scroll', handler, { passive: true })
+    // Содержимое карточек растягивается асинхронно (textarea autosize и т.п.) —
+    // ResizeObserver на корне канвы ловит общий рост.
+    let ro: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined' && root) {
+      ro = new ResizeObserver(() => measure())
+      ro.observe(root)
+    }
+    return () => {
+      window.removeEventListener('resize', handler)
+      root?.removeEventListener('scroll', handler)
+      ro?.disconnect()
+    }
+  }, [measure])
+
+  // ─── Drag-to-connect ─────────────────────────────────────────────────────
+  const [drag, setDrag] = useState<null | {
+    sourceKey: string
+    sourceStepId: string
+    sourceKind: OutputKind
+    sourceIdx?: number
+    x: number
+    y: number
+  }>(null)
+  const [hoverTargetStepId, setHoverTargetStepId] = useState<string | null>(null)
+
+  function startDragFromPort(
+    e: React.MouseEvent,
+    sourceStepId: string,
+    sourceKind: OutputKind,
+    sourceIdx?: number,
+  ) {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    const root = canvasRef.current
+    if (!root) return
+    const rb = root.getBoundingClientRect()
+    setDrag({
+      sourceKey: outputPortKey(sourceStepId, sourceKind, sourceIdx),
+      sourceStepId, sourceKind, sourceIdx,
+      x: e.clientX - rb.left + root.scrollLeft,
+      y: e.clientY - rb.top + root.scrollTop,
+    })
+    setHoverTargetStepId(null)
+  }
+
+  useEffect(() => {
+    if (!drag) return
+    const root = canvasRef.current
+    if (!root) return
+    function move(e: MouseEvent) {
+      const root = canvasRef.current
+      if (!root) return
+      const rb = root.getBoundingClientRect()
+      const x = e.clientX - rb.left + root.scrollLeft
+      const y = e.clientY - rb.top + root.scrollTop
+      setDrag(d => (d ? { ...d, x, y } : null))
+      // Подсветка карточки-цели под курсором.
+      const t = document.elementFromPoint(e.clientX, e.clientY)
+      const card = (t as HTMLElement | null)?.closest('[data-step-card]') as HTMLElement | null
+      const id = card?.dataset.stepId ?? null
+      setHoverTargetStepId(prev => (prev === id ? prev : id))
+    }
+    function up(e: MouseEvent) {
+      const t = document.elementFromPoint(e.clientX, e.clientY)
+      const card = (t as HTMLElement | null)?.closest('[data-step-card]') as HTMLElement | null
+      const targetId = card?.dataset.stepId
+      setDrag(curDrag => {
+        if (curDrag && targetId && targetId !== curDrag.sourceStepId) {
+          applyConnect(curDrag.sourceStepId, curDrag.sourceKind, curDrag.sourceIdx, targetId)
+        }
+        return null
+      })
+      setHoverTargetStepId(null)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag != null])
+
+  function applyConnect(
+    sourceStepId: string,
+    kind: OutputKind,
+    idx: number | undefined,
+    targetStepId: string | null,
+  ) {
+    if (kind === 'answer' && idx != null) {
+      setSteps(prev => prev.map(s => s.id === sourceStepId
+        ? { ...s, answers: s.answers.map((a, i) => i === idx ? { ...a, next_step_id: targetStepId } : a) }
+        : s))
+    } else {
+      setSteps(prev => prev.map(s => s.id === sourceStepId
+        ? { ...s, else_next_id: targetStepId }
+        : s))
+    }
+  }
+
+  // Все актуальные связи для отрисовки SVG.
+  const connections = useMemo(() => {
+    const out: Array<{
+      key: string
+      sourceKey: string
+      targetStepId: string
+      sourceStepId: string
+      kind: OutputKind
+      sourceIdx?: number
+    }> = []
+    for (const s of steps) {
+      s.answers.forEach((a, i) => {
+        if (a.next_step_id) {
+          out.push({
+            key: `${s.id}|a|${i}|${a.next_step_id}`,
+            sourceKey: outputPortKey(s.id, 'answer', i),
+            targetStepId: a.next_step_id,
+            sourceStepId: s.id, kind: 'answer', sourceIdx: i,
+          })
+        }
+      })
+      if (s.else_next_id) {
+        out.push({
+          key: `${s.id}|e|${s.else_next_id}`,
+          sourceKey: outputPortKey(s.id, 'else'),
+          targetStepId: s.else_next_id,
+          sourceStepId: s.id, kind: 'else',
+        })
+      }
+    }
+    return out
+  }, [steps])
+
+  // ─── Простые мутаторы шагов ──────────────────────────────────────────────
   function addFirstStep() {
     setSteps([makeStep()])
   }
@@ -342,9 +572,17 @@ export default function NewSalesbotPage() {
         </div>
       </div>
 
+      {/* Подсказка по работе с коннектами */}
+      {steps.length > 0 && (
+        <div className="text-xs text-gray-500 leading-relaxed">
+          Тяните мышью с правого порта (●) карточки на любую другую карточку, чтобы создать связь.
+          Клик по линии — отвязать. Один шаг можно сделать целью сразу для нескольких ответов.
+        </div>
+      )}
+
       {/* Канва amoCRM-стиля */}
       <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 overflow-x-auto">
-        <div className="flex items-start gap-6 min-w-[1100px]">
+        <div ref={canvasRef} className="relative flex items-start gap-6 min-w-[1100px]">
           {/* Левая колонка — Триггеры (как в amoCRM) */}
           <div className="w-72 flex-shrink-0 bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
             <div className="text-base font-semibold text-gray-900">Триггеры</div>
@@ -423,13 +661,18 @@ export default function NewSalesbotPage() {
             </div>
           )}
 
-          {/* Колонки шагов — каждая колонка стопкой карточек, между колонками стрелка */}
+          {/* Колонки шагов */}
           {columns.map((col, ci) => (
             <FlowColumn
               key={ci}
               stepIds={col}
               allSteps={steps}
               stepIndexById={stepIndexById}
+              hoverTargetStepId={hoverTargetStepId}
+              dragSourceStepId={drag?.sourceStepId ?? null}
+              registerInputPort={registerInputPort}
+              registerOutputPort={registerOutputPort}
+              startDragFromPort={startDragFromPort}
               updateStep={updateStep}
               updateAnswer={updateAnswer}
               addAnswer={addAnswer}
@@ -438,6 +681,69 @@ export default function NewSalesbotPage() {
               addStepAfter={addStepAfter}
             />
           ))}
+
+          {/* SVG-оверлей для связей. pointer-events: none на корне, auto на путях. */}
+          <svg
+            className="absolute inset-0 pointer-events-none"
+            style={{ overflow: 'visible' }}
+            width="100%"
+            height="100%"
+          >
+            <defs>
+              <marker
+                id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#3b82f6" />
+              </marker>
+              <marker
+                id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#9ca3af" />
+              </marker>
+            </defs>
+            {connections.map(c => {
+              const src = positions.outputs[c.sourceKey]
+              const tgt = positions.inputs[c.targetStepId]
+              if (!src || !tgt) return null
+              const d = bezierPath(src, tgt)
+              const stroke = c.kind === 'else' ? '#9ca3af' : '#3b82f6'
+              const marker = c.kind === 'else' ? 'url(#arrow-gray)' : 'url(#arrow-blue)'
+              return (
+                <g key={c.key} className="connection-group">
+                  {/* Толстый прозрачный hit-area для удобного клика. */}
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke="transparent"
+                    strokeWidth={14}
+                    style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+                    onClick={() => applyConnect(c.sourceStepId, c.kind, c.sourceIdx, null)}
+                  >
+                    <title>Клик — отвязать</title>
+                  </path>
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke={stroke}
+                    strokeWidth={2}
+                    markerEnd={marker}
+                    style={{ pointerEvents: 'none' }}
+                  />
+                </g>
+              )
+            })}
+            {/* Призрачная линия во время drag-to-connect. */}
+            {drag && (() => {
+              const src = positions.outputs[drag.sourceKey]
+              if (!src) return null
+              const tgt = { x: drag.x, y: drag.y }
+              const d = bezierPath(src, tgt)
+              return (
+                <path d={d} fill="none" stroke="#3b82f6" strokeWidth={2}
+                  strokeDasharray="4 4" style={{ pointerEvents: 'none' }} />
+              )
+            })()}
+          </svg>
         </div>
       </div>
 
@@ -460,6 +766,11 @@ interface StepCardProps {
   stepNo: number
   allSteps: BuilderStep[]
   stepIndexById: Map<string, number>
+  hoverTargetStepId: string | null
+  dragSourceStepId: string | null
+  registerInputPort: (stepId: string, el: HTMLElement | null) => void
+  registerOutputPort: (key: string, el: HTMLElement | null) => void
+  startDragFromPort: (e: React.MouseEvent, sourceStepId: string, sourceKind: OutputKind, sourceIdx?: number) => void
   updateStep: (id: string, patch: Partial<BuilderStep>) => void
   updateAnswer: (sid: string, idx: number, patch: Partial<BuilderAnswer>) => void
   addAnswer: (sid: string) => void
@@ -469,11 +780,25 @@ interface StepCardProps {
 }
 
 function StepCard(p: StepCardProps) {
-  const { step, stepNo, allSteps, stepIndexById } = p
+  const { step, stepNo, allSteps, stepIndexById, hoverTargetStepId, dragSourceStepId } = p
+  const isDragHover = hoverTargetStepId === step.id && dragSourceStepId !== step.id
   return (
-    <div className="w-80 flex-shrink-0 bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-      {/* Заголовок карточки */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-gray-50">
+    <div
+      data-step-card
+      data-step-id={step.id}
+      className={[
+        'w-80 flex-shrink-0 bg-white border rounded-lg shadow-sm relative transition-colors',
+        isDragHover ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200',
+      ].join(' ')}
+    >
+      {/* Заголовок */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-gray-50 relative">
+        {/* Input-порт — слева, торчит за границу */}
+        <span
+          ref={el => p.registerInputPort(step.id, el)}
+          className="absolute -left-2 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white border-2 border-gray-400"
+          aria-hidden
+        />
         <span className="w-6 h-6 rounded bg-white border border-gray-200 text-xs font-mono flex items-center justify-center text-gray-700">
           {stepNo}
         </span>
@@ -482,7 +807,7 @@ function StepCard(p: StepCardProps) {
           className="text-gray-400 hover:text-red-500 text-base leading-none" title="Удалить шаг">×</button>
       </div>
 
-      {/* Тело — синяя «капсула» с textarea (как у amoCRM композер) */}
+      {/* Тело — синяя «капсула» с textarea (как amoCRM-композер) */}
       <div className="p-3 space-y-2">
         <div className="bg-blue-500 rounded-lg p-2.5">
           <textarea
@@ -492,7 +817,7 @@ function StepCard(p: StepCardProps) {
             placeholder="Напишите текст сообщения…"
             className="w-full bg-transparent text-white placeholder-blue-200 text-sm outline-none resize-none"
           />
-          {/* Кнопки внутри композера */}
+          {/* Бейджи-кнопки внутри композера */}
           <div className="flex flex-wrap gap-1.5 mt-1.5 pt-1.5 border-t border-blue-400/40">
             {step.answers.map((a, i) => (
               <span key={i} className="inline-flex items-center gap-1 bg-white/95 text-blue-700 text-xs rounded px-2 py-0.5">
@@ -514,37 +839,52 @@ function StepCard(p: StepCardProps) {
         {/* Редактор кнопок (раскрытый — value/synonyms/next) */}
         {step.answers.length > 0 && (
           <div className="space-y-1.5 pt-1">
-            {step.answers.map((a, i) => (
-              <div key={i} className="border border-gray-100 rounded p-2 bg-gray-50/60 space-y-1">
-                <div className="flex items-center gap-1.5">
+            {step.answers.map((a, i) => {
+              const portKey = outputPortKey(step.id, 'answer', i)
+              return (
+                <div key={i} className="border border-gray-100 rounded p-2 bg-gray-50/60 space-y-1 relative">
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text" value={a.value}
+                      onChange={e => p.updateAnswer(step.id, i, { value: e.target.value })}
+                      placeholder={`Кнопка ${i + 1}`}
+                      className="flex-1 bg-white border border-gray-200 rounded px-2 py-1 text-xs hover:border-gray-300 focus:border-blue-400 outline-none"
+                    />
+                    <NextStepPicker
+                      value={a.next_step_id}
+                      onChange={(v) => p.updateAnswer(step.id, i, { next_step_id: v })}
+                      allSteps={allSteps}
+                      stepIndexById={stepIndexById}
+                      excludeId={step.id}
+                      onAddNew={() => p.addStepAfter(step.id, i)}
+                    />
+                  </div>
                   <input
-                    type="text" value={a.value}
-                    onChange={e => p.updateAnswer(step.id, i, { value: e.target.value })}
-                    placeholder={`Кнопка ${i + 1}`}
-                    className="flex-1 bg-white border border-gray-200 rounded px-2 py-1 text-xs hover:border-gray-300 focus:border-blue-400 outline-none"
+                    type="text" value={a.synonyms}
+                    onChange={e => p.updateAnswer(step.id, i, { synonyms: e.target.value })}
+                    placeholder="Синонимы через запятую"
+                    className="w-full bg-white border border-gray-200 rounded px-2 py-1 text-xs hover:border-gray-300 focus:border-blue-400 outline-none"
                   />
-                  <NextStepPicker
-                    value={a.next_step_id}
-                    onChange={(v) => p.updateAnswer(step.id, i, { next_step_id: v })}
-                    allSteps={allSteps}
-                    stepIndexById={stepIndexById}
-                    excludeId={step.id}
-                    onAddNew={() => p.addStepAfter(step.id, i)}
+                  {/* Output-порт — справа, торчит за границу */}
+                  <span
+                    ref={el => p.registerOutputPort(portKey, el)}
+                    onMouseDown={e => p.startDragFromPort(e, step.id, 'answer', i)}
+                    title="Перетащите на другую карточку, чтобы связать"
+                    className={[
+                      'absolute -right-2 top-3 w-3 h-3 rounded-full border-2 cursor-crosshair',
+                      a.next_step_id
+                        ? 'bg-blue-500 border-blue-600 hover:bg-blue-600'
+                        : 'bg-white border-blue-400 hover:bg-blue-100',
+                    ].join(' ')}
                   />
                 </div>
-                <input
-                  type="text" value={a.synonyms}
-                  onChange={e => p.updateAnswer(step.id, i, { synonyms: e.target.value })}
-                  placeholder="Синонимы через запятую"
-                  className="w-full bg-white border border-gray-200 rounded px-2 py-1 text-xs hover:border-gray-300 focus:border-blue-400 outline-none"
-                />
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
 
         {/* Else-выход */}
-        <div className="flex items-center gap-1.5 pt-1.5 border-t border-gray-100 text-[11px] text-gray-500">
+        <div className="flex items-center gap-1.5 pt-1.5 border-t border-gray-100 text-[11px] text-gray-500 relative">
           <span>Если не подошло:</span>
           <NextStepPicker
             value={step.else_next_id}
@@ -554,6 +894,17 @@ function StepCard(p: StepCardProps) {
             excludeId={step.id}
             onAddNew={() => p.addStepAfter(step.id)}
             placeholder="— остаться"
+          />
+          <span
+            ref={el => p.registerOutputPort(outputPortKey(step.id, 'else'), el)}
+            onMouseDown={e => p.startDragFromPort(e, step.id, 'else')}
+            title="Перетащите на карточку — else-ветка"
+            className={[
+              'absolute -right-2 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 cursor-crosshair',
+              step.else_next_id
+                ? 'bg-gray-500 border-gray-600 hover:bg-gray-700'
+                : 'bg-white border-gray-400 hover:bg-gray-100',
+            ].join(' ')}
           />
         </div>
       </div>
@@ -594,11 +945,16 @@ function NextStepPicker(props: {
   )
 }
 
-// Колонка карточек одной BFS-глубины + стрелка на следующий уровень.
+// Колонка карточек одной BFS-глубины.
 function FlowColumn(props: {
   stepIds: string[]
   allSteps: BuilderStep[]
   stepIndexById: Map<string, number>
+  hoverTargetStepId: string | null
+  dragSourceStepId: string | null
+  registerInputPort: (stepId: string, el: HTMLElement | null) => void
+  registerOutputPort: (key: string, el: HTMLElement | null) => void
+  startDragFromPort: (e: React.MouseEvent, sourceStepId: string, sourceKind: OutputKind, sourceIdx?: number) => void
   updateStep: (id: string, patch: Partial<BuilderStep>) => void
   updateAnswer: (sid: string, idx: number, patch: Partial<BuilderAnswer>) => void
   addAnswer: (sid: string) => void
@@ -607,31 +963,33 @@ function FlowColumn(props: {
   addStepAfter: (sid: string, answerIdx?: number) => void
 }) {
   return (
-    <>
-      <div className="flex flex-col gap-4 flex-shrink-0">
-        {props.stepIds.map(sid => {
-          const step = props.allSteps.find(s => s.id === sid)
-          if (!step) return null
-          const stepNo = (props.stepIndexById.get(sid) ?? 0) + 1
-          return (
-            <StepCard
-              key={sid}
-              step={step}
-              stepNo={stepNo}
-              allSteps={props.allSteps}
-              stepIndexById={props.stepIndexById}
-              updateStep={props.updateStep}
-              updateAnswer={props.updateAnswer}
-              addAnswer={props.addAnswer}
-              removeAnswer={props.removeAnswer}
-              removeStep={props.removeStep}
-              addStepAfter={props.addStepAfter}
-            />
-          )
-        })}
-      </div>
-      <div className="flex-shrink-0 mt-9 text-gray-300 text-2xl select-none">→</div>
-    </>
+    <div className="flex flex-col gap-6 flex-shrink-0">
+      {props.stepIds.map(sid => {
+        const step = props.allSteps.find(s => s.id === sid)
+        if (!step) return null
+        const stepNo = (props.stepIndexById.get(sid) ?? 0) + 1
+        return (
+          <StepCard
+            key={sid}
+            step={step}
+            stepNo={stepNo}
+            allSteps={props.allSteps}
+            stepIndexById={props.stepIndexById}
+            hoverTargetStepId={props.hoverTargetStepId}
+            dragSourceStepId={props.dragSourceStepId}
+            registerInputPort={props.registerInputPort}
+            registerOutputPort={props.registerOutputPort}
+            startDragFromPort={props.startDragFromPort}
+            updateStep={props.updateStep}
+            updateAnswer={props.updateAnswer}
+            addAnswer={props.addAnswer}
+            removeAnswer={props.removeAnswer}
+            removeStep={props.removeStep}
+            addStepAfter={props.addStepAfter}
+          />
+        )
+      })}
+    </div>
   )
 }
 
