@@ -142,6 +142,15 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
     return null
   }
 
+  // Бот включён в настройках клиники? clinics.settings — JSONB, читаем плоско.
+  // Если настройка отсутствует — bot_enabled считаем false (бот по умолчанию OFF).
+  const { data: clinicRow } = await db
+    .from('clinics')
+    .select('settings')
+    .eq('id', clinicId)
+    .maybeSingle()
+  const botEnabled = (clinicRow?.settings as { bot_enabled?: boolean } | null)?.bot_enabled === true
+
   // Если в WA у собеседника задано имя — используем его без префикса.
   // Иначе ставим номер (чтобы в списке сделок сразу было видно, с кем чат).
   const dealName = waName ?? `+${phone}`
@@ -183,12 +192,15 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
     name: dealName,
     contact_phone: phone,
     status: 'open',
+    // Включаем бота сразу при insert — cron подхватит на ближайшем тике (≤5 мин).
+    // Если bot_enabled=false на уровне клиники, ставим false: меньше работы для cron.
+    bot_active: botEnabled,
     ...(waSourceId ? { source_id: waSourceId } : {}),
   }
 
   let { data: deal, error } = await db.from('deals').insert(payload).select('id, clinic_id, name').single()
 
-  if (error && /contact_phone|source|column/.test(error.message)) {
+  if (error && /contact_phone|source|column|bot_active/.test(error.message)) {
     console.warn('[greenapi] deals insert failed on extra cols, retry minimal:', error.message)
     const minimal = {
       clinic_id: clinicId,

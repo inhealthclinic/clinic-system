@@ -69,6 +69,13 @@ interface DealRow {
   tags: string[]
   // Кастомные поля (мигр. 057): { [field_key]: value }
   custom_fields: Record<string, unknown> | null
+  // Состояние приветственного бота (мигр. 083):
+  //   bot_active=true     — бот ещё может что-то прислать (cron подхватит)
+  //   bot_state='greeted' — приветствие отправлено, ждём 1ч ответа
+  //   bot_state='followup_sent' — фоллоуап ушёл, бот завершён
+  //   bot_state='done'    — клиент ответил / менеджер взял сделку
+  bot_active?: boolean
+  bot_state?: string | null
   //
   stage_entered_at: string
   created_at: string
@@ -330,7 +337,7 @@ export default function CRMKanbanPage() {
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
         responsible_user_id, source_id, amount,
         preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
-        custom_fields,
+        custom_fields, bot_active, bot_state,
         stage_entered_at, created_at, updated_at,
         patient:patients(id, full_name, phones, birth_date, city),
         responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
@@ -1318,6 +1325,19 @@ function DealCard({ deal, unread = 0, onDragStart, onClick }: {
     >
       <div className="flex items-start gap-2">
         <div className="text-sm font-medium text-gray-900 truncate flex-1">{title}</div>
+        {/* Бейдж бота: зелёный — активен, серый — фоллоуап уже отправлен */}
+        {deal.bot_active && (
+          <span
+            title="Приветственный бот сейчас работает по этой сделке"
+            className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-semibold leading-none"
+          >🤖</span>
+        )}
+        {!deal.bot_active && deal.bot_state === 'followup_sent' && (
+          <span
+            title="Бот отправил фоллоуап — клиент не ответил за час"
+            className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 text-[10px] font-semibold leading-none"
+          >🤖</span>
+        )}
         {unread > 0 && (
           <span
             title={`${unread} непрочитанных сообщений`}
@@ -1459,6 +1479,8 @@ interface MessageRow {
   created_at: string
   status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed' | null
   error_text?: string | null
+  /** 'bot' — отправил приветственный/фоллоуап-бот; null — менеджер/клиент. */
+  sender_type?: 'bot' | null
   author?: { first_name: string; last_name: string | null } | null
 }
 
@@ -3105,20 +3127,30 @@ function DealModal({
                                 </div>
                               )
                             }
-                            // Обычное сообщение — входящее (серое) / исходящее (синее)
+                            // Обычное сообщение — входящее (серое) / исходящее (синее).
+                            // Сообщения от приветственного бота (sender_type='bot') —
+                            // отдельный фиолетовый стиль + иконка 🤖, чтобы менеджер
+                            // сразу видел, где ответил автомат, а где он сам.
+                            const isBot = m.sender_type === 'bot'
                             return (
                               <div key={`msg-${m.id}`} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
-                                  m.direction === 'out'
+                                  isBot
+                                    ? 'bg-violet-50 border border-violet-200 text-gray-700 font-light'
+                                    : m.direction === 'out'
                                     ? 'bg-blue-600 text-white'
                                     : 'bg-slate-100 text-gray-900'
                                 }`}>
-                                  <div className={`flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
-                                    <span>{CHANNEL_LABEL[m.channel]}</span>
-                                    {m.author && (
+                                  <div className={`flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider ${
+                                    isBot ? 'text-violet-600' :
+                                    m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'
+                                  }`}>
+                                    {isBot && <span aria-label="Сообщение от бота">🤖</span>}
+                                    <span>{isBot ? 'Бот' : CHANNEL_LABEL[m.channel]}</span>
+                                    {m.author && !isBot && (
                                       <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
                                     )}
-                                    {m.external_sender && (
+                                    {m.external_sender && !isBot && (
                                       <span>· {m.external_sender}</span>
                                     )}
                                   </div>

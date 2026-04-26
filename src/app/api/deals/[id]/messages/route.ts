@@ -41,15 +41,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const supabase = await createClient()
 
-  // 1. Получаем сделку + телефон
+  // 1. Получаем сделку + телефон + статус бота (нужен для отключения).
   const { data: deal, error: dealErr } = await supabase
     .from('deals')
-    .select('id, clinic_id, contact_phone, patient:patients(phones)')
+    .select('id, clinic_id, contact_phone, bot_active, patient:patients(phones)')
     .eq('id', dealId)
     .single()
 
   if (dealErr || !deal) {
     return NextResponse.json({ error: dealErr?.message ?? 'deal not found' }, { status: 404 })
+  }
+
+  // Менеджер взял сделку в работу — выключаем бота немедленно. Делаем ДО
+  // отправки, чтобы между нашим INSERT и cron-тиком не успело уйти приветствие.
+  // bot_state='done' отличает «менеджер ответил» от 'followup_sent' / NULL.
+  if ((deal as { bot_active?: boolean }).bot_active) {
+    await supabase
+      .from('deals')
+      .update({ bot_active: false, bot_state: 'done' })
+      .eq('id', deal.id)
   }
 
   const { data: auth } = await supabase.auth.getUser()
