@@ -316,14 +316,44 @@ export default function CRMKanbanPage() {
     setSelectedDeal(null)
   }, [])
 
-  // Если в URL остался старый ?deal=<id> (от прошлой версии или внешней
-  // ссылки) — чистим его при первой загрузке, не открывая сделку.
+  // Если в URL остался старый ?deal=<id> (от прошлой версии) — чистим
+  // его при первой загрузке, не открывая сделку.
+  // Если пришёл одноразовый ?openDeal=<id> (permalink из /crm/[id] или
+  // уведомления) — открываем сделку и сразу зачищаем URL, чтобы F5 её
+  // не переоткрывал.
   useEffect(() => {
-    if (searchParams.get('deal')) {
-      router.replace('/crm', { scroll: false })
+    const stale = searchParams.get('deal')
+    const intent = searchParams.get('openDeal')
+    if (!stale && !intent) return
+
+    if (intent && clinicId) {
+      // Сначала пробуем найти в текущем стейте; если нет — тянем из БД.
+      // (Запрашиваем те же поля, что и основная выборка, чтобы DealCard
+      // / DealModal не падали на отсутствующих джойнах.)
+      ;(async () => {
+        let row: DealRow | null = deals.find(d => d.id === intent) || null
+        if (!row) {
+          const { data } = await supabase.from('deals').select(`
+              id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
+              responsible_user_id, source_id, amount,
+              preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
+              custom_fields, bot_active, bot_state,
+              stage_entered_at, created_at, updated_at,
+              patient:patients(id, full_name, phones, birth_date, city),
+              responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
+              doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
+            `)
+            .eq('id', intent)
+            .eq('clinic_id', clinicId)
+            .maybeSingle()
+          row = (data as unknown as DealRow) || null
+        }
+        if (row) setSelectedDeal(row)
+      })()
     }
+    router.replace('/crm', { scroll: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [clinicId])
 
   const load = useCallback(async () => {
     if (!clinicId) return
