@@ -1997,6 +1997,7 @@ function DealModal({
       .select('id,title,body,is_favorite,sort_order')
       .eq('clinic_id', profile.clinic_id)
       .eq('is_active', true)
+      .eq('kind', 'quick_reply')
       .order('sort_order')
       .then(({ data }) => {
         if (!alive) return

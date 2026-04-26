@@ -87,6 +87,7 @@ export default function TriggerConfigDrawer({ open, trigger, onClose, onSave }: 
           .select('key, title')
           .eq('clinic_id', clinicId)
           .eq('is_active', true)
+          .eq('kind', 'salesbot')
           .order('title'),
       ])
       setStages((s.data ?? []) as unknown as StageRef[])
@@ -1029,7 +1030,7 @@ function SalesbotPicker({
       if (tmpls.some(t => t.key === key)) key = `${key}_${Math.random().toString(36).slice(2, 6)}`
       const { error } = await supabase
         .from('message_templates')
-        .insert({ clinic_id: clinicId, title: title.trim(), body: body.trim(), key, is_active: true })
+        .insert({ clinic_id: clinicId, title: title.trim(), body: body.trim(), key, is_active: true, kind: 'salesbot' })
       if (error) throw error
       setTmpls(prev => [...prev, { key, title: title.trim() }].sort((a, b) => a.title.localeCompare(b.title)))
       onChange(key)

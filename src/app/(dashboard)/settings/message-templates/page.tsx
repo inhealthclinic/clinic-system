@@ -38,6 +38,7 @@ export default function MessageTemplatesSettingsPage() {
       .from('message_templates')
       .select('*')
       .eq('clinic_id', clinicId)
+      .eq('kind', 'quick_reply')
       .order('sort_order')
       .order('created_at')
     if (!error) setRows((data ?? []) as MessageTemplate[])
@@ -58,6 +59,7 @@ export default function MessageTemplatesSettingsPage() {
       title,
       body,
       sort_order: nextOrder,
+      kind: 'quick_reply',
     })
     setSaving(false)
     if (error) { alert('Не удалось создать: ' + error.message); return }
@@ -91,10 +93,11 @@ export default function MessageTemplatesSettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Шаблоны сообщений</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">Шаблоны ответов</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Используются в карточке сделки через кнопку «Шаблоны» в чате. Отмеченные звёздочкой
-          попадают в секцию «Избранные» в выпадающем меню.
+          Заранее заготовленные тексты для ручной отправки оператором — кнопка «Шаблоны»
+          в композере чата сделки. Отмеченные звёздочкой попадают в секцию «Избранные».
+          Тексты для Salesbot настраиваются отдельно в разделе «Salesbot».
         </p>
       </div>
 
