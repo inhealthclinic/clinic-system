@@ -1,3 +1,10 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    { "path": "/api/cron/automation",     "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/bot-greeting",   "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/bot-followup",   "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/send-reminders", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/generate-tasks", "schedule": "0 6 * * *" }
+  ]
 }
