@@ -426,15 +426,24 @@ export default function CRMKanbanPage() {
     setLoading(true)
     // Базовый запрос сделок. При ownerFilter='mine' ограничиваем по
     // responsible_user_id на стороне БД (не в памяти).
+    // ── Сделки тянем БЕЗ embed-ов ──────────────────────────────────────────
+    // Раньше в select был patient:patients(...), responsible:user_profiles(...),
+    // doctor:doctors(...). На больших импортах (amoCRM ~1500 сделок) это
+    // схлопывало выборку в 0 строк: PostgREST в части версий собирает
+    // embedded resource как INNER JOIN и отфильтровывает все сделки, у
+    // которых FK ссылается на удалённую/неактивную/недоступную по RLS
+    // запись. Серверный view v_pipeline_stage_counts всё равно их видит —
+    // отсюда симптом «бейджи 1283/283, карточек 0».
+    //
+    // Решение: грузим плоский deals + отдельно patients чанками по 200 id
+    // (чтобы не упереться в лимит длины URL у PostgREST). responsible/
+    // doctor резолвим из уже загруженных users/doctors-словарей.
     let dealsQuery = supabase.from('deals').select(`
         id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
         responsible_user_id, source_id, amount,
         preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
         custom_fields, bot_active, bot_state,
-        stage_entered_at, created_at, updated_at,
-        patient:patients(id, full_name, phones, birth_date, city),
-        responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
-        doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
+        stage_entered_at, created_at, updated_at
       `).eq('clinic_id', clinicId).is('deleted_at', null)
     if (ownerFilter === 'mine' && profile?.id) {
       dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
@@ -449,13 +458,38 @@ export default function CRMKanbanPage() {
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
+    if (d.error) console.error('[crm] deals fetch error:', d.error)
     const ps = (p.data ?? []) as Pipeline[]
+    const usersList = (up.data ?? []) as UserLite[]
+    const doctorsList = (doc.data ?? []) as DoctorLite[]
     setPipelines(ps)
-    setDeals((d.data ?? []) as unknown as DealRow[])
+    setUsers(usersList)
+    setDoctors(doctorsList)
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
-    setUsers((up.data ?? []) as UserLite[])
-    setDoctors((doc.data ?? []) as DoctorLite[])
+
+    // Подгружаем пациентов отдельно по списку patient_id из сделок.
+    type PatientLite = { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }
+    const dealRows = (d.data ?? []) as DealRow[]
+    const patientIds = Array.from(new Set(dealRows.map(x => x.patient_id).filter((x): x is string => !!x)))
+    const patientsById = new Map<string, PatientLite>()
+    for (let i = 0; i < patientIds.length; i += 200) {
+      const slice = patientIds.slice(i, i + 200)
+      const { data: pp } = await supabase
+        .from('patients')
+        .select('id, full_name, phones, birth_date, city')
+        .in('id', slice)
+      for (const row of (pp ?? []) as PatientLite[]) patientsById.set(row.id, row)
+    }
+    const usersById = new Map(usersList.map(u => [u.id, u]))
+    const doctorsById = new Map(doctorsList.map(x => [x.id, x]))
+    const enriched: DealRow[] = dealRows.map(d0 => ({
+      ...d0,
+      patient: d0.patient_id ? (patientsById.get(d0.patient_id) ?? null) : null,
+      responsible: d0.responsible_user_id ? (usersById.get(d0.responsible_user_id) ?? null) : null,
+      doctor: d0.preferred_doctor_id ? (doctorsById.get(d0.preferred_doctor_id) ?? null) : null,
+    }))
+    setDeals(enriched)
     const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
     setApptTypes(Array.isArray(at) ? at : [])
 
