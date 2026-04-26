@@ -17,8 +17,11 @@
  *   • patients: find по нормализ. телефону → если нет, создаём «амо-стаб».
  *   • deal_messages: по (channel, external_id) — повторный запуск не дублирует.
  *
- * Маппинг ролей/менеджеров — НЕ делаем (responsible_user_id = NULL); если надо,
- * после импорта пройтись SQL-ом по responsible_user_id из таблицы маппинга.
+ * Маппинг менеджеров — через JSON-файл (--users-map=<path>):
+ *   { "<amo_user_id>": "<user_profiles.id UUID>", ... }
+ *   Сначала запусти scripts/amocrm-list-users.mjs чтобы получить список amo_id.
+ *   Если файл не передан или amo-юзер в нём отсутствует — responsible_user_id=NULL
+ *   и в stdout улетает warning.
  *
  * Использование:
  *   AMOCRM_SUBDOMAIN=mycompany \
@@ -27,11 +30,14 @@
  *   SUPABASE_SERVICE_ROLE_KEY=eyJ... \
  *   CLINIC_ID=<uuid> \
  *   PIPELINE_CODE=leads \
- *   node scripts/import-amocrm.mjs [--with-notes] [--dry-run] [--limit=500]
+ *   node scripts/import-amocrm.mjs \
+ *     [--with-notes] [--dry-run] [--limit=500] \
+ *     [--users-map=scripts/amocrm-user-map.json]
  *
  * Перед запуском: snapshot-db.mjs > snapshots/before-amo-import.json
  */
 import { createClient } from '@supabase/supabase-js'
+import { readFileSync } from 'node:fs'
 
 // ── ENV ──────────────────────────────────────────────────────────────────────
 const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN
@@ -46,6 +52,8 @@ const WITH_NOTES = args.has('--with-notes')
 const DRY_RUN    = args.has('--dry-run')
 const LIMIT_ARG  = [...args].find(a => a.startsWith('--limit='))
 const LIMIT      = LIMIT_ARG ? parseInt(LIMIT_ARG.split('=')[1], 10) : Infinity
+const USERS_MAP_ARG = [...args].find(a => a.startsWith('--users-map='))
+const USERS_MAP_PATH = USERS_MAP_ARG ? USERS_MAP_ARG.split('=')[1] : null
 
 if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) die('AMOCRM_SUBDOMAIN и AMOCRM_TOKEN обязательны')
 if (!SUPABASE_URL || !SERVICE_KEY)      die('SUPABASE_URL и SUPABASE_SERVICE_ROLE_KEY обязательны')
@@ -53,6 +61,25 @@ if (!CLINIC_ID)                          die('CLINIC_ID обязателен')
 
 const sb   = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } })
 const AMO  = `https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4`
+
+// ── Users map (amo_user_id → user_profiles.id) ───────────────────────────────
+const usersMap = (() => {
+  if (!USERS_MAP_PATH) return null
+  try {
+    const raw = JSON.parse(readFileSync(USERS_MAP_PATH, 'utf8'))
+    // Игнорируем служебные ключи (всё что начинается с _)
+    const out = new Map()
+    for (const [k, v] of Object.entries(raw)) {
+      if (k.startsWith('_')) continue
+      if (typeof v !== 'string' || v.length < 10) continue
+      out.set(String(k), v)
+    }
+    return out
+  } catch (e) {
+    die(`не могу прочитать --users-map=${USERS_MAP_PATH}: ${e.message}`)
+  }
+})()
+const unmappedAmoUsers = new Set() // для итогового warning
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function die(msg) { console.error('ERR:', msg); process.exit(1) }
@@ -205,23 +232,36 @@ async function importLeads({ pipeline, resolveStage }) {
       const status    = stage.stage_role === 'won'  ? 'won'
                       : stage.stage_role === 'lost' ? 'lost' : 'open'
 
+      // amo responsible_user_id → наш user_profiles.id
+      let responsibleUserId = null
+      if (lead.responsible_user_id != null) {
+        const amoUid = String(lead.responsible_user_id)
+        if (usersMap && usersMap.has(amoUid)) {
+          responsibleUserId = usersMap.get(amoUid)
+        } else if (usersMap) {
+          unmappedAmoUsers.add(amoUid)
+        }
+      }
+
       const payload = {
-        clinic_id:     CLINIC_ID,
-        external_id:   externalId,
-        pipeline_id:   pipeline.id,
-        stage_id:      stage.id,
-        stage:         stage.code,
-        funnel:        PIPELINE_CODE === 'leads' ? 'leads' : 'medical',
-        patient_id:    patientId,
-        contact_phone: normalizePhone(phone),
-        name:          lead.name || `Сделка #${lead.id}`,
-        amount:        lead.price || null,
+        clinic_id:           CLINIC_ID,
+        external_id:         externalId,
+        pipeline_id:         pipeline.id,
+        stage_id:            stage.id,
+        stage:               stage.code,
+        funnel:              PIPELINE_CODE === 'leads' ? 'leads' : 'medical',
+        patient_id:          patientId,
+        contact_phone:       normalizePhone(phone),
+        name:                lead.name || `Сделка #${lead.id}`,
+        amount:              lead.price || null,
+        responsible_user_id: responsibleUserId,
         status,
-        created_at:    lead.created_at ? new Date(lead.created_at * 1000).toISOString() : undefined,
+        created_at:          lead.created_at ? new Date(lead.created_at * 1000).toISOString() : undefined,
       }
 
       if (DRY_RUN) {
-        log(`DRY ${externalId} → "${stage.name}" (${stage.code}) phone=${phone || '—'}`)
+        const respMark = responsibleUserId ? '✓' : (lead.responsible_user_id ? '?' : '—')
+        log(`DRY ${externalId} → "${stage.name}" (${stage.code}) phone=${phone || '—'} resp=${respMark}`)
         imported++
         continue
       }
@@ -325,7 +365,19 @@ async function importNotes(amoLeadId, dealId) {
   const maps = await loadPipelineMaps()
   log(`pipeline ${maps.pipeline.id} (${maps.pipeline.name}) — стадии загружены`)
 
+  if (usersMap) {
+    log(`users-map: ${usersMap.size} записей загружено из ${USERS_MAP_PATH}`)
+  } else {
+    log('users-map: НЕ задан — все сделки будут без ответственного (responsible_user_id=NULL)')
+  }
+
   const stats = await importLeads(maps)
   log('done:', stats)
   log(`patients touched: ${patientCache.size}`)
+
+  if (unmappedAmoUsers.size > 0) {
+    log(`⚠ ${unmappedAmoUsers.size} amo-юзеров отсутствуют в карте (responsible_user_id=NULL):`)
+    log(`  ${[...unmappedAmoUsers].sort().join(', ')}`)
+    log('  Добавь их в --users-map и перезапусти импорт (UPDATE на existing сделках не делается, только на новых).')
+  }
 })().catch(err => { console.error(err); process.exit(1) })

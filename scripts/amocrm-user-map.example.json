@@ -1,0 +1,5 @@
+{
+  "_comment": "Маппинг amoCRM user.id → user_profiles.id (UUID) нашей системы. Скопируй файл как amocrm-user-map.json и заполни. Незаполненных — responsible_user_id будет NULL, в stdout пойдёт warning.",
+  "12345": "00000000-0000-0000-0000-000000000000",
+  "12346": "11111111-1111-1111-1111-111111111111"
+}
