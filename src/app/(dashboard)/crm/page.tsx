@@ -624,15 +624,12 @@ export default function CRMKanbanPage() {
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
           Аналитика
         </Link>
-        <Link href="/settings/pipelines" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
-          Настройка этапов
-        </Link>
         <Link
-          href="/settings/automation"
+          href="/settings/pipelines"
           className="text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
-          title="Автоматизации воронки: бот, касания, задачи"
+          title="Этапы, причины потери, источники, автоматизации (бот / касания / задачи)"
         >
-          🤖 Настроить воронку
+          ⚙ Настроить воронку
         </Link>
 
         {/* Кнопка «…» — меню сортировки, автообновления, импорта/экспорта и т. п. */}

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import AutomationKanban from '@/components/automation/AutomationKanban'
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -517,6 +518,23 @@ export default function PipelinesSettingsPage() {
           ))}
           {sources.length === 0 && <li className="px-4 py-6 text-center text-gray-400 text-sm">Нет источников</li>}
         </ul>
+      </div>
+
+      {/* ─── Автоматизации ─────────────────────────────────────────────────
+          Тот же канбан-редактор, что на /settings/automation. Здесь он
+          живёт прямо под этапами — чтобы пользователь, как в amoCRM,
+          видел воронку и автоматизации в одном месте. */}
+      <div id="automation" className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-200">
+          <div className="font-medium text-gray-900">Автоматизации этапов</div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            Бот, касания и автозадачи — как в amoCRM Salesbot. Текст с маркером
+            «[ЗАПОЛНИТЬ&nbsp;…]» клиентам не отправляется.
+          </div>
+        </div>
+        <div className="p-3">
+          <AutomationKanban />
+        </div>
       </div>
     </div>
   )
