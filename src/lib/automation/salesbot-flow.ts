@@ -334,24 +334,39 @@ export async function startFlowForDeal(
   dealId: string,
 ): Promise<boolean> {
   const existing = await fetchActiveRun(sb, dealId)
-  if (existing) return false
+  if (existing) {
+    console.log('[salesbot] startFlowForDeal: deal', dealId, 'already has active run', existing.id, 'step=', existing.current_step)
+    return false
+  }
 
   const deal = await fetchDeal(sb, dealId)
-  if (!deal) return false
+  if (!deal) {
+    console.warn('[salesbot] startFlowForDeal: deal', dealId, 'not found')
+    return false
+  }
 
   const flow = await fetchDefaultFlow(sb, deal.clinic_id)
-  if (!flow) return false
+  if (!flow) {
+    console.log('[salesbot] startFlowForDeal: no default flow for clinic', deal.clinic_id, '— импортируйте бота на /settings/salesbots и сделайте default')
+    return false
+  }
 
+  console.log('[salesbot] starting flow', flow.id, '("' + flow.name + '") for deal', dealId, 'from step', flow.start_step)
   const start = flow.start_step
   const r = await deliverChain(sb, deal, flow.steps, start)
 
-  await sb.from('salesbot_runs').insert({
+  const { error } = await sb.from('salesbot_runs').insert({
     flow_id: flow.id,
     deal_id: dealId,
     current_step: r.stepNo,
     status: r.finished ? 'finished' : 'active',
     finished_at: r.finished ? new Date().toISOString() : null,
   })
+  if (error) {
+    console.error('[salesbot] failed to insert run:', error.message)
+  } else {
+    console.log('[salesbot] run created, parked at step', r.stepNo, r.finished ? '(finished)' : '(waiting for answer)')
+  }
   return true
 }
 
@@ -365,27 +380,37 @@ export async function routeInboundForDeal(
   dealId: string,
   text: string,
 ): Promise<void> {
+  console.log('[salesbot] routeInbound: deal', dealId, 'text=', JSON.stringify(text))
   const run = await fetchActiveRun(sb, dealId)
   if (!run) {
+    console.log('[salesbot] routeInbound: no active run → delegating to startFlowForDeal')
     await startFlowForDeal(sb, dealId)
     return
   }
+  console.log('[salesbot] routeInbound: active run', run.id, 'flow', run.flow_id, 'current_step', run.current_step)
 
   const cur = run.steps[String(run.current_step)]
   if (!cur) {
-    // Шаг исчез из flow (почистили после редактирования) — закрываем run.
+    console.warn('[salesbot] routeInbound: step', run.current_step, 'missing from flow steps — stopping run')
     await sb
       .from('salesbot_runs')
       .update({ status: 'stopped', finished_at: new Date().toISOString() })
       .eq('id', run.id)
     return
   }
+  console.log('[salesbot] routeInbound: step has', cur.answers.length, 'answers,', cur.buttons.length, 'buttons, else_next=', cur.else_next)
 
   let nextStep: number | null = matchAnswer(cur, text)
-  if (nextStep == null && cur.else_next != null) nextStep = cur.else_next
+  if (nextStep != null) {
+    console.log('[salesbot] routeInbound: matched → next step', nextStep)
+  } else if (cur.else_next != null) {
+    nextStep = cur.else_next
+    console.log('[salesbot] routeInbound: no match, using else_next →', nextStep)
+  } else {
+    console.log('[salesbot] routeInbound: no match and no else_next — staying at step', run.current_step)
+  }
 
   if (nextStep == null) {
-    // Не поняли ответ и нет fallback — оставляем run на месте, ждём дальше.
     await sb
       .from('salesbot_runs')
       .update({ last_event_at: new Date().toISOString() })
@@ -394,8 +419,12 @@ export async function routeInboundForDeal(
   }
 
   const deal = await fetchDeal(sb, dealId)
-  if (!deal) return
+  if (!deal) {
+    console.warn('[salesbot] routeInbound: deal', dealId, 'not found when delivering next step')
+    return
+  }
   const r = await deliverChain(sb, deal, run.steps, nextStep)
+  console.log('[salesbot] routeInbound: delivered chain, parked at step', r.stepNo, r.finished ? '(finished)' : '(waiting)')
 
   await sb
     .from('salesbot_runs')
