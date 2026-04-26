@@ -627,6 +627,13 @@ export default function CRMKanbanPage() {
         <Link href="/settings/pipelines" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
           Настройка этапов
         </Link>
+        <Link
+          href="/settings/automation"
+          className="text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
+          title="Автоматизации воронки: бот, касания, задачи"
+        >
+          🤖 Настроить воронку
+        </Link>
 
         {/* Кнопка «…» — меню сортировки, автообновления, импорта/экспорта и т. п. */}
         <div className="relative">
@@ -769,13 +776,6 @@ export default function CRMKanbanPage() {
           </button>
         </div>
 
-        <Link
-          href="/settings/automation"
-          className="text-sm px-3 py-1.5 rounded-md border border-gray-300 bg-white hover:bg-gray-50 text-gray-700"
-          title="Автоматизации воронки: бот, касания, задачи"
-        >
-          🤖 Настроить воронку
-        </Link>
         <button
           onClick={() => setQuickCreateOpen(true)}
           className="text-sm px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
