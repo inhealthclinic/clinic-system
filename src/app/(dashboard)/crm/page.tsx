@@ -132,6 +132,28 @@ function fmtDuration(seconds: number | null): string {
   return `${seconds} с`
 }
 
+/**
+ * Bulk-апдейт сделок чанками. У PostgREST лимит длины URL ~16k символов,
+ * а `.in('id', [...UUIDs])` уезжает в query-string. На пачке >300 ID
+ * запрос отлетает с 400 Bad Request. Поэтому режем на батчи.
+ *
+ * Возвращает строку с ошибкой первого упавшего чанка либо null, если ок.
+ */
+async function bulkUpdateDeals(
+  supabase: ReturnType<typeof createClient>,
+  ids: string[],
+  patch: Record<string, unknown>,
+  chunkSize = 200,
+): Promise<string | null> {
+  if (ids.length === 0) return null
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const slice = ids.slice(i, i + chunkSize)
+    const { error } = await supabase.from('deals').update(patch).in('id', slice)
+    if (error) return error.message
+  }
+  return null
+}
+
 // ─── page ────────────────────────────────────────────────────────────────────
 
 export default function CRMKanbanPage() {
@@ -1175,8 +1197,8 @@ export default function CRMKanbanPage() {
             const patch: Record<string, unknown> = { stage_id: stageId }
             if (target?.pipeline_id) patch.pipeline_id = target.pipeline_id
             if (target?.code) patch.stage = target.code
-            const { error } = await supabase.from('deals').update(patch).in('id', ids)
-            if (error) { notify.error(error.message); return }
+            const err = await bulkUpdateDeals(supabase, ids, patch)
+            if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
           }}
@@ -1187,19 +1209,19 @@ export default function CRMKanbanPage() {
               .sort((a, b) => a.sort_order - b.sort_order)[0]
             if (!targetStage) { notify.error('В воронке нет активных этапов'); return }
             const ids = Array.from(bulkSelected)
-            const { error } = await supabase.from('deals').update({
+            const err = await bulkUpdateDeals(supabase, ids, {
               pipeline_id: pipelineId,
               stage_id: targetStage.id,
               stage: targetStage.code,
-            }).in('id', ids)
-            if (error) { notify.error(error.message); return }
+            })
+            if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
           }}
           onAssign={async (userId) => {
             const ids = Array.from(bulkSelected)
-            const { error } = await supabase.from('deals').update({ responsible_user_id: userId }).in('id', ids)
-            if (error) { notify.error(error.message); return }
+            const err = await bulkUpdateDeals(supabase, ids, { responsible_user_id: userId })
+            if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
           }}
@@ -1266,8 +1288,8 @@ export default function CRMKanbanPage() {
             } else {
               notify.error('Неизвестное поле'); return
             }
-            const { error } = await supabase.from('deals').update(patch).in('id', ids)
-            if (error) { notify.error(error.message); return }
+            const err = await bulkUpdateDeals(supabase, ids, patch)
+            if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
           }}
@@ -1305,10 +1327,8 @@ export default function CRMKanbanPage() {
           onCancel={() => setBulkDeletePending(false)}
           onConfirm={async () => {
             const ids = Array.from(bulkSelected)
-            const { error } = await supabase.from('deals')
-              .update({ deleted_at: new Date().toISOString() })
-              .in('id', ids)
-            if (error) { notify.error(error.message); return }
+            const err = await bulkUpdateDeals(supabase, ids, { deleted_at: new Date().toISOString() })
+            if (err) { notify.error(err); return }
             setBulkDeletePending(false)
             setBulkSelected(new Set())
             load()
