@@ -77,6 +77,7 @@ async function findDealByPhone(phone: string): Promise<DealRef | null> {
     .from('deals')
     .select('id, clinic_id, status, name')
     .or(`contact_phone.ilike.%${tail}%`)
+    .is('deleted_at', null)               // soft-deleted сделки не возвращаем
     .order('updated_at', { ascending: false })
     .limit(5)
 
@@ -102,6 +103,7 @@ async function findDealByPhone(phone: string): Promise<DealRef | null> {
       .from('deals')
       .select('id, clinic_id, status, name')
       .in('patient_id', patientIds)
+      .is('deleted_at', null)
       .order('updated_at', { ascending: false })
       .limit(5)
     if (deals && deals.length > 0) {
