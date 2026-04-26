@@ -424,41 +424,42 @@ export default function CRMKanbanPage() {
   const load = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
-    // Базовый запрос сделок. При ownerFilter='mine' ограничиваем по
-    // responsible_user_id на стороне БД (не в памяти).
-    // ── Сделки тянем БЕЗ embed-ов ──────────────────────────────────────────
-    // Раньше в select был patient:patients(...), responsible:user_profiles(...),
-    // doctor:doctors(...). На больших импортах (amoCRM ~1500 сделок) это
-    // схлопывало выборку в 0 строк: PostgREST в части версий собирает
-    // embedded resource как INNER JOIN и отфильтровывает все сделки, у
-    // которых FK ссылается на удалённую/неактивную/недоступную по RLS
-    // запись. Серверный view v_pipeline_stage_counts всё равно их видит —
-    // отсюда симптом «бейджи 1283/283, карточек 0».
+    // ── Сделки тянем через server-side роут (service role, обход RLS) ────
+    // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
+    // например при просроченном refresh-токене или когда auth.uid() не
+    // совпадает с user_profiles.id. RLS-политика deals при этом режет
+    // выборку в 0 строк, хотя view v_pipeline_stage_counts (owned by
+    // postgres → bypassRLS) корректно показывает счётчики. Симптом —
+    // «бейджи 1283/283, карточек 0».
     //
-    // Решение: грузим плоский deals + отдельно patients чанками по 200 id
-    // (чтобы не упереться в лимит длины URL у PostgREST). responsible/
-    // doctor резолвим из уже загруженных users/doctors-словарей.
-    let dealsQuery = supabase.from('deals').select(`
-        id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
-        responsible_user_id, source_id, amount,
-        preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
-        custom_fields, bot_active, bot_state,
-        stage_entered_at, created_at, updated_at
-      `).eq('clinic_id', clinicId).is('deleted_at', null)
-    if (ownerFilter === 'mine' && profile?.id) {
-      dealsQuery = dealsQuery.eq('responsible_user_id', profile.id)
+    // /api/crm/deals сам валидирует Bearer-токен, резолвит clinic_id из
+    // user_profiles и тянет сделки + пациентов service-role клиентом.
+    // Безопасно: клиника берётся из БД, тело запроса не влияет на
+    // фильтрацию.
+    const { data: { session } } = await supabase.auth.getSession()
+    const accessToken = session?.access_token ?? ''
+    const ownerParam = ownerFilter === 'mine' ? 'mine' : 'all'
+    const dealsResp = await fetch(`/api/crm/deals?owner=${ownerParam}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: 'no-store',
+    })
+    type DealsApiPayload = {
+      clinic_id?: string
+      deals?: DealRow[]
+      patients?: { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }[]
+      error?: string
     }
-    dealsQuery = dealsQuery.order('stage_entered_at', { ascending: false }).limit(10000)
-    const [p, d, r, ls, up, doc, cl] = await Promise.all([
+    const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
+    if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
+
+    const [p, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
-      dealsQuery,
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
-    if (d.error) console.error('[crm] deals fetch error:', d.error)
     const ps = (p.data ?? []) as Pipeline[]
     const usersList = (up.data ?? []) as UserLite[]
     const doctorsList = (doc.data ?? []) as DoctorLite[]
@@ -468,19 +469,12 @@ export default function CRMKanbanPage() {
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
 
-    // Подгружаем пациентов отдельно по списку patient_id из сделок.
+    // Сшиваем deals с patients/users/doctors в памяти.
     type PatientLite = { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }
-    const dealRows = (d.data ?? []) as DealRow[]
-    const patientIds = Array.from(new Set(dealRows.map(x => x.patient_id).filter((x): x is string => !!x)))
-    const patientsById = new Map<string, PatientLite>()
-    for (let i = 0; i < patientIds.length; i += 200) {
-      const slice = patientIds.slice(i, i + 200)
-      const { data: pp } = await supabase
-        .from('patients')
-        .select('id, full_name, phones, birth_date, city')
-        .in('id', slice)
-      for (const row of (pp ?? []) as PatientLite[]) patientsById.set(row.id, row)
-    }
+    const dealRows = (dealsJson?.deals ?? []) as DealRow[]
+    const patientsById = new Map<string, PatientLite>(
+      ((dealsJson?.patients ?? []) as PatientLite[]).map(p0 => [p0.id, p0])
+    )
     const usersById = new Map(usersList.map(u => [u.id, u]))
     const doctorsById = new Map(doctorsList.map(x => [x.id, x]))
     const enriched: DealRow[] = dealRows.map(d0 => ({
