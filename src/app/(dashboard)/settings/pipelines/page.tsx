@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import PipelineCanvas, {
@@ -27,6 +28,16 @@ export default function PipelinesSettingsPage() {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id
+  const router = useRouter()
+
+  // Esc — закрыть оверлей и вернуться на канбан.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') router.push('/crm')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [router])
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
@@ -179,7 +190,10 @@ export default function PipelinesSettingsPage() {
   if (loading) return <div className="p-6 text-sm text-gray-500">Загрузка…</div>
 
   return (
-    <div className="space-y-3">
+    /* Fullscreen overlay поверх всего дашборда — как в amoCRM «Настроить воронку».
+       fixed inset-0 + z-50, чтобы перекрыть и сайдбар, и хедер. */
+    <div className="fixed inset-0 z-50 bg-gray-50 overflow-auto">
+      <div className="p-4 space-y-3">
       {/* Top bar */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
@@ -204,6 +218,12 @@ export default function PipelinesSettingsPage() {
              : 'Автосохранение этапов'}
           </span>
           <Link href="/crm" className="text-sm text-blue-600 hover:underline">← К канбану</Link>
+          <Link
+            href="/crm"
+            className="ml-1 inline-flex items-center justify-center w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+            title="Закрыть (Esc)"
+            aria-label="Закрыть"
+          >✕</Link>
         </div>
       </div>
 
@@ -306,6 +326,7 @@ export default function PipelinesSettingsPage() {
             <div className="text-sm text-gray-400 italic p-6">Выберите воронку</div>
           )}
         </div>
+      </div>
       </div>
     </div>
   )
