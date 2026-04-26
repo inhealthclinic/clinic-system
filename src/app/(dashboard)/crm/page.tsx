@@ -486,24 +486,19 @@ export default function CRMKanbanPage() {
       setConversions((cv.data ?? []) as Conversion[])
     }
 
-    // Какая воронка сейчас активна для пользователя.
-    const effectivePipelineId = activePipelineId || ps[0]?.id || null
-    const effectiveStageIds = effectivePipelineId
-      ? allStages.filter(s => s.pipeline_id === effectivePipelineId && s.is_active).map(s => s.id)
-      : []
-
-    // Phase 3: сделки активной воронки — фильтр по stage_id, а не по
-    // deal.pipeline_id. .in() по UUID-ам безопасен — этапов в воронке
-    // обычно <30, длина URL мизерная.
-    if (effectiveStageIds.length > 0) {
-      dealsQuery = dealsQuery.in('stage_id', effectiveStageIds)
-        .order('stage_entered_at', { ascending: false })
-        .limit(5000)
-      const d = await dealsQuery
-      setDeals((d.data ?? []) as unknown as DealRow[])
-    } else {
-      setDeals([])
+    // Phase 3: сделки клиники. Тянем ВСЕ сделки одним запросом (limit 5000),
+    // фильтрацию по этапу/воронке делаем уже в памяти через dealsByStage —
+    // это надёжнее, чем .in('stage_id', …): не зависит от того, что
+    // pipeline_stages.is_active=true в БД, и не ломается при импорте,
+    // когда у сделки stage_id указывает на стейдж другой/удалённой воронки.
+    dealsQuery = dealsQuery
+      .order('stage_entered_at', { ascending: false, nullsFirst: false })
+      .limit(5000)
+    const d = await dealsQuery
+    if (d.error) {
+      console.error('[crm] deals fetch error:', d.error)
     }
+    setDeals((d.data ?? []) as unknown as DealRow[])
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
@@ -600,15 +595,17 @@ export default function CRMKanbanPage() {
     return map
   }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
-  // Плоский список для табличного вида.
+  // Плоский список для табличного вида. В отличие от канбана здесь показываем
+  // ВСЕ этапы активной воронки, включая терминальные (won/closed) — иначе
+  // закрытые сделки не было бы видно даже в таблице.
   const tableDeals = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase()
-    const activeStageIds = new Set(activeStages.map(s => s.id))
+    const allActiveStageIds = new Set(allActiveStages.map(s => s.id))
     return deals
-      .filter(d => d.stage_id != null && activeStageIds.has(d.stage_id))
+      .filter(d => d.stage_id != null && allActiveStageIds.has(d.stage_id))
       .filter(d => matchesSearch(d, q))
       .sort(compareDeals)
-  }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
+  }, [deals, allActiveStages, debouncedSearch, matchesSearch, compareDeals])
 
   // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
   useEffect(() => {
