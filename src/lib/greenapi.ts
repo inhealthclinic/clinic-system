@@ -141,6 +141,15 @@ export interface IncomingMessageWebhook {
     typeMessage: string
     textMessageData?: { textMessage: string }
     extendedTextMessageData?: { text: string }
+    /** Для audio/voice/image/video/document — Green-API отдаёт CDN-ссылку. */
+    fileMessageData?: {
+      downloadUrl: string
+      caption?: string
+      fileName?: string
+      mimeType?: string
+      isAnimated?: boolean
+      jpegThumbnail?: string
+    }
   }
 }
 

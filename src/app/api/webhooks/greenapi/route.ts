@@ -289,6 +289,53 @@ async function tryAutoConfirmAppointment(
   return a.id
 }
 
+/**
+ * Скачать медиа-файл по downloadUrl из Green-API и переложить в наш Storage,
+ * чтобы плеер в чате не зависел от CDN Green-API (там короткий TTL, бывает 403).
+ * Возвращает { url, mime, size, name } или null если облом.
+ */
+async function ingestIncomingFile(
+  clinicId: string,
+  dealId: string,
+  downloadUrl: string,
+  mime: string | undefined,
+  suggestedName: string | undefined,
+): Promise<{ url: string; mime: string; size: number; name: string } | null> {
+  try {
+    const r = await fetch(downloadUrl)
+    if (!r.ok) {
+      console.warn('[greenapi] file fetch failed', r.status, downloadUrl)
+      return null
+    }
+    const buf = Buffer.from(await r.arrayBuffer())
+    const ct = mime || r.headers.get('content-type') || 'application/octet-stream'
+    const ext = ct.includes('ogg')   ? 'ogg'
+              : ct.includes('webm')  ? 'ogg'
+              : ct.includes('mp4')   ? 'm4a'
+              : ct.includes('mpeg')  ? 'mp3'
+              : ct.includes('jpeg')  ? 'jpg'
+              : ct.includes('png')   ? 'png'
+              : ct.includes('pdf')   ? 'pdf'
+              : 'bin'
+    const fname = suggestedName || `in-${Date.now()}.${ext}`
+    const path = `deals/${clinicId}/${dealId}/in-${Date.now()}.${ext}`
+    const db = admin()
+    const { error } = await db.storage.from('crm-attachments').upload(path, buf, {
+      contentType: ct,
+      upsert: false,
+    })
+    if (error) {
+      console.warn('[greenapi] storage upload failed:', error.message)
+      return null
+    }
+    const { data: pub } = db.storage.from('crm-attachments').getPublicUrl(path)
+    return { url: pub.publicUrl, mime: ct, size: buf.length, name: fname }
+  } catch (e) {
+    console.warn('[greenapi] ingestIncomingFile error:', e)
+    return null
+  }
+}
+
 async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   const db = admin()
   const phone = chatIdToPhone(wh.senderData.chatId)
@@ -316,6 +363,26 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
     await maybeBackfillDealName(deal.id, deal.name, phone, waName)
   }
 
+  // Если это медиа (аудио/картинка/видео/документ) — скачиваем и сохраняем
+  // в Storage, чтобы плеер/превью работали в чате CRM.
+  type Attachment = { kind: 'voice' | 'image' | 'video' | 'file'; url: string; mime: string; size: number; name: string }
+  const md = wh.messageData
+  const fmd = md.fileMessageData
+  let attachment: Attachment | null = null
+  if (fmd?.downloadUrl) {
+    const kind: Attachment['kind'] =
+      md.typeMessage === 'audioMessage'    ? 'voice' :
+      md.typeMessage === 'imageMessage'    ? 'image' :
+      md.typeMessage === 'videoMessage'    ? 'video' :
+                                              'file'
+    const ingested = await ingestIncomingFile(
+      deal.clinic_id, deal.id, fmd.downloadUrl, fmd.mimeType, fmd.fileName,
+    )
+    if (ingested) {
+      attachment = { kind, ...ingested }
+    }
+  }
+
   // Пробуем полную вставку со статусом, если колонки ещё нет (миграция 040 не
   // применена) — откатываемся на минимальный набор полей.
   const basePayload = {
@@ -327,6 +394,7 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
     external_id: wh.idMessage,
     external_sender: waName ?? phone,
     created_at: new Date(wh.timestamp * 1000).toISOString(),
+    ...(attachment ? { attachments: [attachment] } : {}),
   }
 
   let { error } = await db.from('deal_messages').insert({ ...basePayload, status: 'delivered' })
