@@ -87,6 +87,42 @@ export default function NewSalesbotPage() {
     return m
   }, [steps])
 
+  // BFS-разбивка шагов по колонкам глубины — для канвы amoCRM-стиля.
+  const columns = useMemo<string[][]>(() => {
+    if (steps.length === 0) return []
+    const depth = new Map<string, number>()
+    const queue: string[] = [steps[0].id]
+    depth.set(steps[0].id, 0)
+    while (queue.length) {
+      const id = queue.shift()!
+      const s = steps.find(x => x.id === id)
+      if (!s) continue
+      const d = depth.get(id) ?? 0
+      const next: (string | null)[] = [
+        ...s.answers.map(a => a.next_step_id),
+        s.else_next_id,
+      ]
+      for (const n of next) {
+        if (n && !depth.has(n)) {
+          depth.set(n, d + 1)
+          queue.push(n)
+        }
+      }
+    }
+    // Шаги, не достижимые из стартового — кладём в свою колонку «orphans» в конец.
+    let maxD = 0
+    for (const v of depth.values()) if (v > maxD) maxD = v
+    const cols: string[][] = Array.from({ length: maxD + 1 }, () => [])
+    const orphans: string[] = []
+    for (const s of steps) {
+      const d = depth.get(s.id)
+      if (d == null) orphans.push(s.id)
+      else cols[d].push(s.id)
+    }
+    if (orphans.length) cols.push(orphans)
+    return cols
+  }, [steps])
+
   function addFirstStep() {
     setSteps([makeStep()])
   }
@@ -276,7 +312,7 @@ export default function NewSalesbotPage() {
           {/* Стрелка */}
           <div className="flex-shrink-0 mt-9 text-gray-300 text-2xl select-none">→</div>
 
-          {/* Следующий шаг — выбор действия */}
+          {/* Следующий шаг — выбор первого действия (стартовый пикер) */}
           {steps.length === 0 && (
             <div className="w-72 flex-shrink-0 bg-white border border-gray-200 rounded-lg shadow-sm">
               <div className="px-4 py-3 border-b border-gray-100 text-sm font-semibold text-gray-900">
@@ -308,142 +344,23 @@ export default function NewSalesbotPage() {
             </div>
           )}
 
-          {/* Если первый шаг уже создан — показываем сводку */}
-          {steps.length > 0 && (
-            <div className="w-72 flex-shrink-0 bg-white border border-emerald-300 rounded-lg shadow-sm">
-              <div className="px-4 py-3 border-b border-gray-100 text-sm font-semibold text-emerald-700 flex items-center gap-2">
-                💬 Отправить сообщение
-              </div>
-              <div className="p-3 text-xs text-gray-600">
-                Шаг 1 из {steps.length}. Редактирование внизу страницы.
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Редактор шагов */}
-      {steps.length > 0 && (
-        <div className="space-y-4">
-          <h2 className="text-lg font-semibold text-gray-900">Шаги диалога</h2>
-          {steps.map((step, idx) => (
-            <div key={step.id} className="bg-white border border-gray-200 rounded-xl p-5 space-y-3">
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 text-xs rounded bg-emerald-50 text-emerald-700 font-medium">
-                  Шаг {idx + 1}{idx === 0 ? ' · стартовый' : ''}
-                </span>
-                <span className="text-xs text-gray-500">id: {idx}</span>
-                <div className="flex-1" />
-                <button
-                  type="button"
-                  onClick={() => removeStep(step.id)}
-                  className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded"
-                >
-                  Удалить шаг
-                </button>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Текст сообщения</label>
-                <textarea
-                  value={step.text}
-                  onChange={e => updateStep(step.id, { text: e.target.value })}
-                  rows={3}
-                  placeholder="Здравствуйте! Откуда вы?"
-                  className="w-full border border-gray-200 rounded px-3 py-2 text-sm hover:border-gray-300 focus:border-blue-400 outline-none resize-y"
-                />
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Будет отправлено клиенту в WhatsApp. Если ниже добавлены варианты —
-                  они допишутся нумерованным списком (Green-API не поддерживает inline-кнопки).
-                </p>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-medium text-gray-600">Варианты ответа клиента</label>
-                  <button
-                    type="button"
-                    onClick={() => addAnswer(step.id)}
-                    className="text-xs text-blue-600 hover:underline"
-                  >
-                    + Вариант
-                  </button>
-                </div>
-                {step.answers.length === 0 && (
-                  <p className="text-xs text-gray-400 italic">Без вариантов — шаг считается финальным.</p>
-                )}
-                <ul className="space-y-2">
-                  {step.answers.map((a, i) => (
-                    <li key={i} className="flex flex-wrap items-center gap-2 bg-gray-50 border border-gray-200 rounded-md p-2">
-                      <input
-                        type="text"
-                        value={a.value}
-                        onChange={e => updateAnswer(step.id, i, { value: e.target.value })}
-                        placeholder="Кнопка / ключевое слово"
-                        className="border border-gray-200 rounded px-2 py-1 text-sm bg-white w-44 hover:border-gray-300 focus:border-blue-400 outline-none"
-                      />
-                      <input
-                        type="text"
-                        value={a.synonyms}
-                        onChange={e => updateAnswer(step.id, i, { synonyms: e.target.value })}
-                        placeholder="Синонимы через запятую"
-                        className="border border-gray-200 rounded px-2 py-1 text-sm bg-white flex-1 min-w-[160px] hover:border-gray-300 focus:border-blue-400 outline-none"
-                      />
-                      <select
-                        value={a.next_step_id ?? ''}
-                        onChange={e => updateAnswer(step.id, i, { next_step_id: e.target.value || null })}
-                        className="border border-gray-200 rounded px-2 py-1 text-sm bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
-                      >
-                        <option value="">→ выбрать шаг</option>
-                        {steps.map((s, j) => s.id === step.id ? null : (
-                          <option key={s.id} value={s.id}>Шаг {j + 1}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => addStepAfter(step.id, i)}
-                        className="text-xs text-blue-600 hover:underline"
-                      >
-                        + Новый шаг
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => removeAnswer(step.id, i)}
-                        className="text-xs text-red-600 hover:underline"
-                      >
-                        Удалить
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="pt-2 border-t border-gray-100">
-                <label className="text-xs font-medium text-gray-600 mr-2">
-                  Если ничего не подошло (else):
-                </label>
-                <select
-                  value={step.else_next_id ?? ''}
-                  onChange={e => updateStep(step.id, { else_next_id: e.target.value || null })}
-                  className="border border-gray-200 rounded px-2 py-1 text-sm bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
-                >
-                  <option value="">— остаться на этом шаге</option>
-                  {steps.map((s, j) => s.id === step.id ? null : (
-                    <option key={s.id} value={s.id}>Шаг {j + 1}</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => addStepAfter(step.id)}
-                  className="ml-2 text-xs text-blue-600 hover:underline"
-                >
-                  + Новый else-шаг
-                </button>
-              </div>
-            </div>
+          {/* Колонки шагов — каждая колонка стопкой карточек, между колонками стрелка */}
+          {columns.map((col, ci) => (
+            <FlowColumn
+              key={ci}
+              stepIds={col}
+              allSteps={steps}
+              stepIndexById={stepIndexById}
+              updateStep={updateStep}
+              updateAnswer={updateAnswer}
+              addAnswer={addAnswer}
+              removeAnswer={removeAnswer}
+              removeStep={removeStep}
+              addStepAfter={addStepAfter}
+            />
           ))}
         </div>
-      )}
+      </div>
 
       {triggerModalOpen && (
         <TriggerModal
@@ -454,6 +371,188 @@ export default function NewSalesbotPage() {
         />
       )}
     </div>
+  )
+}
+
+// ─── Карточка шага в стиле amoCRM-нода ───────────────────────────────────────
+
+interface StepCardProps {
+  step: BuilderStep
+  stepNo: number
+  allSteps: BuilderStep[]
+  stepIndexById: Map<string, number>
+  updateStep: (id: string, patch: Partial<BuilderStep>) => void
+  updateAnswer: (sid: string, idx: number, patch: Partial<BuilderAnswer>) => void
+  addAnswer: (sid: string) => void
+  removeAnswer: (sid: string, idx: number) => void
+  removeStep: (sid: string) => void
+  addStepAfter: (sid: string, answerIdx?: number) => void
+}
+
+function StepCard(p: StepCardProps) {
+  const { step, stepNo, allSteps, stepIndexById } = p
+  return (
+    <div className="w-80 flex-shrink-0 bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+      {/* Заголовок карточки */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-gray-50">
+        <span className="w-6 h-6 rounded bg-white border border-gray-200 text-xs font-mono flex items-center justify-center text-gray-700">
+          {stepNo}
+        </span>
+        <span className="text-sm font-medium text-gray-800 flex-1 truncate">💬 Отправить сообщение</span>
+        <button type="button" onClick={() => p.removeStep(step.id)}
+          className="text-gray-400 hover:text-red-500 text-base leading-none" title="Удалить шаг">×</button>
+      </div>
+
+      {/* Тело — синяя «капсула» с textarea (как у amoCRM композер) */}
+      <div className="p-3 space-y-2">
+        <div className="bg-blue-500 rounded-lg p-2.5">
+          <textarea
+            value={step.text}
+            onChange={e => p.updateStep(step.id, { text: e.target.value })}
+            rows={3}
+            placeholder="Напишите текст сообщения…"
+            className="w-full bg-transparent text-white placeholder-blue-200 text-sm outline-none resize-none"
+          />
+          {/* Кнопки внутри композера */}
+          <div className="flex flex-wrap gap-1.5 mt-1.5 pt-1.5 border-t border-blue-400/40">
+            {step.answers.map((a, i) => (
+              <span key={i} className="inline-flex items-center gap-1 bg-white/95 text-blue-700 text-xs rounded px-2 py-0.5">
+                {a.value || `Кнопка ${i + 1}`}
+                <button type="button" onClick={() => p.removeAnswer(step.id, i)}
+                  className="text-blue-400 hover:text-red-500 leading-none">×</button>
+              </span>
+            ))}
+            <button
+              type="button"
+              onClick={() => p.addAnswer(step.id)}
+              className="text-xs text-white/90 hover:text-white border border-white/30 hover:border-white/60 rounded px-2 py-0.5"
+            >
+              + Добавить кнопку
+            </button>
+          </div>
+        </div>
+
+        {/* Редактор кнопок (раскрытый — value/synonyms/next) */}
+        {step.answers.length > 0 && (
+          <div className="space-y-1.5 pt-1">
+            {step.answers.map((a, i) => (
+              <div key={i} className="border border-gray-100 rounded p-2 bg-gray-50/60 space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text" value={a.value}
+                    onChange={e => p.updateAnswer(step.id, i, { value: e.target.value })}
+                    placeholder={`Кнопка ${i + 1}`}
+                    className="flex-1 bg-white border border-gray-200 rounded px-2 py-1 text-xs hover:border-gray-300 focus:border-blue-400 outline-none"
+                  />
+                  <NextStepPicker
+                    value={a.next_step_id}
+                    onChange={(v) => p.updateAnswer(step.id, i, { next_step_id: v })}
+                    allSteps={allSteps}
+                    stepIndexById={stepIndexById}
+                    excludeId={step.id}
+                    onAddNew={() => p.addStepAfter(step.id, i)}
+                  />
+                </div>
+                <input
+                  type="text" value={a.synonyms}
+                  onChange={e => p.updateAnswer(step.id, i, { synonyms: e.target.value })}
+                  placeholder="Синонимы через запятую"
+                  className="w-full bg-white border border-gray-200 rounded px-2 py-1 text-xs hover:border-gray-300 focus:border-blue-400 outline-none"
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Else-выход */}
+        <div className="flex items-center gap-1.5 pt-1.5 border-t border-gray-100 text-[11px] text-gray-500">
+          <span>Если не подошло:</span>
+          <NextStepPicker
+            value={step.else_next_id}
+            onChange={(v) => p.updateStep(step.id, { else_next_id: v })}
+            allSteps={allSteps}
+            stepIndexById={stepIndexById}
+            excludeId={step.id}
+            onAddNew={() => p.addStepAfter(step.id)}
+            placeholder="— остаться"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NextStepPicker(props: {
+  value: string | null
+  onChange: (v: string | null) => void
+  allSteps: BuilderStep[]
+  stepIndexById: Map<string, number>
+  excludeId: string
+  onAddNew: () => void
+  placeholder?: string
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <select
+        value={props.value ?? ''}
+        onChange={e => props.onChange(e.target.value || null)}
+        className="bg-white border border-gray-200 rounded px-1.5 py-1 text-xs hover:border-gray-300 focus:border-blue-400 outline-none"
+      >
+        <option value="">{props.placeholder ?? '→ Следующий шаг'}</option>
+        {props.allSteps.map(s => s.id === props.excludeId ? null : (
+          <option key={s.id} value={s.id}>→ Шаг {(props.stepIndexById.get(s.id) ?? 0) + 1}</option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={props.onAddNew}
+        title="Создать новый шаг"
+        className="text-xs text-blue-600 hover:bg-blue-50 rounded px-1.5 py-0.5 border border-blue-200"
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
+// Колонка карточек одной BFS-глубины + стрелка на следующий уровень.
+function FlowColumn(props: {
+  stepIds: string[]
+  allSteps: BuilderStep[]
+  stepIndexById: Map<string, number>
+  updateStep: (id: string, patch: Partial<BuilderStep>) => void
+  updateAnswer: (sid: string, idx: number, patch: Partial<BuilderAnswer>) => void
+  addAnswer: (sid: string) => void
+  removeAnswer: (sid: string, idx: number) => void
+  removeStep: (sid: string) => void
+  addStepAfter: (sid: string, answerIdx?: number) => void
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-4 flex-shrink-0">
+        {props.stepIds.map(sid => {
+          const step = props.allSteps.find(s => s.id === sid)
+          if (!step) return null
+          const stepNo = (props.stepIndexById.get(sid) ?? 0) + 1
+          return (
+            <StepCard
+              key={sid}
+              step={step}
+              stepNo={stepNo}
+              allSteps={props.allSteps}
+              stepIndexById={props.stepIndexById}
+              updateStep={props.updateStep}
+              updateAnswer={props.updateAnswer}
+              addAnswer={props.addAnswer}
+              removeAnswer={props.removeAnswer}
+              removeStep={props.removeStep}
+              addStepAfter={props.addStepAfter}
+            />
+          )
+        })}
+      </div>
+      <div className="flex-shrink-0 mt-9 text-gray-300 text-2xl select-none">→</div>
+    </>
   )
 }
 
