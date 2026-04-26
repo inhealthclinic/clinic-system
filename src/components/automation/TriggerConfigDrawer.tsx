@@ -18,7 +18,7 @@
  *   webhook            → url + method + delay_minutes
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
 import type { TriggerType } from './TriggerPicker'
@@ -282,25 +282,39 @@ function DelayField({
  * но обработчик на бэке появится позже.
  */
 type SalesbotMode =
-  | 'immediate'        // Сразу после создания в этапе
-  | 'delay'            // Через X часов после входа в этап
-  | 'daily_at'         // Ежедневно в HH:MM (для всех сделок в этапе)
-  | 'no_reply_hours'   // Если клиент не ответил X часов
-  | 'on_first_inbound' // Первое входящее в стадии (не реализовано)
-  | 'on_chat_close'    // После закрытия беседы (не реализовано)
+  | 'immediate'           // Сразу после создания в этапе
+  | 'delay'               // Через N часов после входа в этап
+  | 'before_datetime'     // За N часов до выбранного момента
+  | 'at_datetime'         // В точное время YYYY-MM-DD HH:MM
+  | 'daily_at'            // Ежедневно в HH:MM
+  | 'on_chat_created_in'  // При создании беседы входящим (Скоро)
+  | 'on_chat_created_out' // При создании беседы исходящим (Скоро)
+  | 'no_reply_hours'      // X часов с последнего входящего
+  | 'on_first_inbound'    // Первое входящее за день (Скоро)
+  | 'on_read'             // При прочтении сообщения клиентом (Скоро)
+  | 'on_chat_close'       // Сразу после закрытия беседы (Скоро)
 
 const MODE_LABELS: Record<SalesbotMode, string> = {
-  immediate:        'Сразу после создания в этапе',
-  delay:            'Через N часов после входа в этап',
-  daily_at:         'Ежедневно в HH:MM',
-  no_reply_hours:   'Если клиент не ответил N часов',
-  on_first_inbound: 'При первом входящем сообщении',
-  on_chat_close:    'Сразу после закрытия беседы',
+  immediate:           'Сразу после создания в этапе',
+  delay:               'Через N часов после входа в этап',
+  before_datetime:     'За N часов до выбранного времени',
+  at_datetime:         'В точное время',
+  daily_at:            'Ежедневно в HH:MM',
+  on_chat_created_in:  'При создании беседы входящим сообщением',
+  on_chat_created_out: 'При создании беседы исходящим сообщением',
+  no_reply_hours:      'N часов с последнего входящего сообщения',
+  on_first_inbound:    'При первом входящем сообщении за день',
+  on_read:             'При прочтении сообщения клиентом',
+  on_chat_close:       'Сразу после закрытия беседы',
 }
 
 const IMPLEMENTED: Record<SalesbotMode, boolean> = {
-  immediate: true, delay: true, daily_at: true,
-  no_reply_hours: true, on_first_inbound: false, on_chat_close: false,
+  immediate: true, delay: true,
+  before_datetime: false, at_datetime: false,
+  daily_at: true,
+  on_chat_created_in: false, on_chat_created_out: false,
+  no_reply_hours: true,
+  on_first_inbound: false, on_read: false, on_chat_close: false,
 }
 
 function SalesbotTriggerForm({
@@ -311,14 +325,30 @@ function SalesbotTriggerForm({
   tmpls: TmplRef[]
 }) {
   const mode = (config.mode as SalesbotMode | undefined) ?? 'immediate'
-  const delayHours = config.delay_minutes ? Math.round(Number(config.delay_minutes) / 60) : 0
+  const [open, setOpen] = useState(false)
+  const ddRef = useRef<HTMLDivElement | null>(null)
 
-  // Мост между UI-mode и старым форматом config: при выборе mode сразу
-  // подгоняем delay_minutes/event-related поля, чтобы cron работал.
+  // Закрытие дропдауна по клику снаружи.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (ddRef.current && !ddRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  // Выбрать режим и сразу подогнать сопутствующие поля под cron-формат.
   const setMode = (m: SalesbotMode) => {
     set('mode', m)
     if (m === 'immediate') set('delay_minutes', 0)
+    if (m === 'daily_at' && !config.daily_at) set('daily_at', '10:00')
+    if (m === 'no_reply_hours' && !config.no_reply_hours) set('no_reply_hours', 24)
+    setOpen(false)
   }
+
+  // Короткая подпись текущего режима для кнопки.
+  const currentLabel = MODE_LABELS[mode]
 
   return (
     <div className="space-y-4">
@@ -332,77 +362,106 @@ function SalesbotTriggerForm({
         </select>
       </Field>
 
-      {/* Группа: триггеры воронки */}
-      <TriggerSection title="Триггеры воронки">
-        <ModeRadio
-          checked={mode === 'immediate'}
-          onSelect={() => setMode('immediate')}
-          label={MODE_LABELS.immediate}
-          available
-        />
-      </TriggerSection>
+      {/* Выполнить: <текущий режим> ▾ */}
+      <div className="relative" ref={ddRef}>
+        <button type="button"
+          onClick={() => setOpen(o => !o)}
+          className="w-full flex items-center justify-between border border-gray-300 rounded-md px-3 py-2 text-sm bg-white hover:bg-gray-50">
+          <span className="text-gray-800">
+            <span className="text-gray-500">Выполнить:&nbsp;</span>
+            {currentLabel}
+          </span>
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" className="text-gray-400">
+            <path d="M5.5 7.5l4.5 4.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
 
-      {/* Группа: триггеры по времени */}
-      <TriggerSection title="Триггеры по времени">
-        <ModeRadio
-          checked={mode === 'delay'}
-          onSelect={() => setMode('delay')}
-          label="Через"
-          available
-        >
-          <input type="number" min={0} max={720}
-            className={`${inputCls} w-20 inline-block`}
-            value={delayHours}
-            onChange={e => set('delay_minutes', (parseInt(e.target.value, 10) || 0) * 60)}
-            disabled={mode !== 'delay'}
-          />
-          <span className="text-sm text-gray-600 ml-1">часов после входа в этап</span>
-        </ModeRadio>
+        {open && (
+          <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-[420px] overflow-auto">
+            <DropdownGroup title="Триггеры воронки">
+              <DropdownItem
+                label={MODE_LABELS.immediate}
+                checked={mode === 'immediate'}
+                onSelect={() => setMode('immediate')}
+                available
+              />
+            </DropdownGroup>
 
-        <ModeRadio
-          checked={mode === 'daily_at'}
-          onSelect={() => setMode('daily_at')}
-          label="Ежедневно в"
-          available={IMPLEMENTED.daily_at}
-        >
-          <input type="time"
-            className={`${inputCls} w-28 inline-block`}
-            value={String(config.daily_at ?? '10:00')}
-            onChange={e => set('daily_at', e.target.value)}
-            disabled={mode !== 'daily_at'}
-          />
-        </ModeRadio>
-      </TriggerSection>
+            <DropdownGroup title="Триггеры по времени">
+              <DropdownItem
+                label="Через N часов после входа в этап"
+                checked={mode === 'delay'}
+                onSelect={() => setMode('delay')}
+                available
+              />
+              <DropdownItem
+                label="За N часов до выбранного времени"
+                checked={mode === 'before_datetime'}
+                onSelect={() => setMode('before_datetime')}
+                available={IMPLEMENTED.before_datetime}
+              />
+              <DropdownItem
+                label="В точное время"
+                checked={mode === 'at_datetime'}
+                onSelect={() => setMode('at_datetime')}
+                available={IMPLEMENTED.at_datetime}
+              />
+              <DropdownItem
+                label="Ежедневно в HH:MM"
+                checked={mode === 'daily_at'}
+                onSelect={() => setMode('daily_at')}
+                available={IMPLEMENTED.daily_at}
+              />
+            </DropdownGroup>
 
-      {/* Группа: триггеры по беседам */}
-      <TriggerSection title="Триггеры по беседам">
-        <ModeRadio
-          checked={mode === 'no_reply_hours'}
-          onSelect={() => setMode('no_reply_hours')}
-          label="Клиент не ответил"
-          available={IMPLEMENTED.no_reply_hours}
-        >
-          <input type="number" min={1} max={720}
-            className={`${inputCls} w-20 inline-block`}
-            value={Number(config.no_reply_hours ?? 24)}
-            onChange={e => set('no_reply_hours', parseInt(e.target.value, 10) || 24)}
-            disabled={mode !== 'no_reply_hours'}
-          />
-          <span className="text-sm text-gray-600 ml-1">часов</span>
-        </ModeRadio>
-        <ModeRadio
-          checked={mode === 'on_first_inbound'}
-          onSelect={() => setMode('on_first_inbound')}
-          label={MODE_LABELS.on_first_inbound}
-          available={IMPLEMENTED.on_first_inbound}
-        />
-        <ModeRadio
-          checked={mode === 'on_chat_close'}
-          onSelect={() => setMode('on_chat_close')}
-          label={MODE_LABELS.on_chat_close}
-          available={IMPLEMENTED.on_chat_close}
-        />
-      </TriggerSection>
+            <DropdownGroup title="Триггеры по беседам">
+              <DropdownItem
+                label={MODE_LABELS.on_chat_created_in}
+                checked={mode === 'on_chat_created_in'}
+                onSelect={() => setMode('on_chat_created_in')}
+                available={IMPLEMENTED.on_chat_created_in}
+              />
+              <DropdownItem
+                label={MODE_LABELS.on_chat_created_out}
+                checked={mode === 'on_chat_created_out'}
+                onSelect={() => setMode('on_chat_created_out')}
+                available={IMPLEMENTED.on_chat_created_out}
+              />
+              <DropdownItem
+                label={MODE_LABELS.no_reply_hours}
+                checked={mode === 'no_reply_hours'}
+                onSelect={() => setMode('no_reply_hours')}
+                available={IMPLEMENTED.no_reply_hours}
+              />
+              <DropdownItem
+                label={MODE_LABELS.on_first_inbound}
+                checked={mode === 'on_first_inbound'}
+                onSelect={() => setMode('on_first_inbound')}
+                available={IMPLEMENTED.on_first_inbound}
+              />
+              <DropdownItem
+                label={MODE_LABELS.on_read}
+                checked={mode === 'on_read'}
+                onSelect={() => setMode('on_read')}
+                available={IMPLEMENTED.on_read}
+              />
+              <DropdownItem
+                label={MODE_LABELS.on_chat_close}
+                checked={mode === 'on_chat_close'}
+                onSelect={() => setMode('on_chat_close')}
+                available={IMPLEMENTED.on_chat_close}
+              />
+            </DropdownGroup>
+          </div>
+        )}
+      </div>
+
+      {/* Параметры выбранного режима */}
+      <ModeParams mode={mode} config={config} set={set} />
+
+      <p className="text-xs text-gray-500 leading-snug">
+        Сообщение будет отправлено контакту, если у него есть открытая беседа в WhatsApp.
+      </p>
 
       {/* Применить к существующим */}
       <label className="flex items-center gap-2 text-sm text-gray-700">
@@ -420,42 +479,90 @@ function SalesbotTriggerForm({
   )
 }
 
-function TriggerSection({ title, children }: { title: string; children: React.ReactNode }) {
+/** Блок параметров под выбранный режим. Реализованные — с инпутами,
+ *  «Скоро» — с заглушкой и пометкой. */
+function ModeParams({
+  mode, config, set,
+}: {
+  mode: SalesbotMode
+  config: Record<string, unknown>
+  set: (k: string, v: unknown) => void
+}) {
+  if (mode === 'immediate') return null
+
+  if (mode === 'delay') {
+    const hours = config.delay_minutes ? Math.round(Number(config.delay_minutes) / 60) : 0
+    return (
+      <Field label="Через сколько часов после входа в этап">
+        <input type="number" min={0} max={720} className={inputCls}
+          value={hours}
+          onChange={e => set('delay_minutes', (parseInt(e.target.value, 10) || 0) * 60)} />
+      </Field>
+    )
+  }
+
+  if (mode === 'daily_at') {
+    return (
+      <Field label="Время запуска (ежедневно)">
+        <input type="time" className={inputCls}
+          value={String(config.daily_at ?? '10:00')}
+          onChange={e => set('daily_at', e.target.value)} />
+      </Field>
+    )
+  }
+
+  if (mode === 'no_reply_hours') {
+    return (
+      <Field label="Часов с последнего входящего сообщения">
+        <input type="number" min={1} max={720} className={inputCls}
+          value={Number(config.no_reply_hours ?? 24)}
+          onChange={e => set('no_reply_hours', parseInt(e.target.value, 10) || 24)} />
+      </Field>
+    )
+  }
+
+  // Не реализованные режимы — заглушка.
   return (
-    <div className="border border-gray-200 rounded-md overflow-hidden">
-      <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-200 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-        {title}
-      </div>
-      <div className="p-3 space-y-2">{children}</div>
+    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      Этот режим пока в разработке — UI сохранит выбор, но cron его не обрабатывает.
     </div>
   )
 }
 
-function ModeRadio({
-  checked, onSelect, label, available, children,
+function DropdownGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border-b border-gray-100 last:border-b-0">
+      <div className="px-3 py-1.5 bg-gray-50 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+        {title}
+      </div>
+      <div className="py-1">{children}</div>
+    </div>
+  )
+}
+
+function DropdownItem({
+  label, checked, onSelect, available,
 }: {
-  checked: boolean
-  onSelect: () => void
-  label: string
-  available: boolean
-  children?: React.ReactNode
+  label: string; checked: boolean; onSelect: () => void; available: boolean
 }) {
   return (
-    <label className={`flex items-center gap-2 text-sm ${available ? 'text-gray-800' : 'text-gray-400'}`}>
-      <input
-        type="radio"
-        checked={checked}
-        onChange={onSelect}
-        disabled={!available}
-        className="shrink-0"
-      />
-      <span>{label}</span>
-      {children}
+    <button
+      type="button"
+      onClick={available ? onSelect : undefined}
+      disabled={!available}
+      className={`w-full flex items-center gap-2 text-left text-sm px-3 py-1.5 ${
+        available ? 'hover:bg-blue-50 text-gray-800 cursor-pointer' : 'text-gray-400 cursor-not-allowed'
+      } ${checked ? 'bg-blue-50/70' : ''}`}
+    >
+      <span className={`w-3 inline-flex items-center justify-center text-blue-600`}>
+        {checked ? '✓' : ''}
+      </span>
+      <span className="flex-1">{label}</span>
       {!available && (
-        <span className="ml-auto text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
           Скоро
         </span>
       )}
-    </label>
+    </button>
   )
 }
