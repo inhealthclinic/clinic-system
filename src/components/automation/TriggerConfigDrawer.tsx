@@ -347,8 +347,23 @@ function SalesbotTriggerForm({
     setOpen(false)
   }
 
-  // Короткая подпись текущего режима для кнопки.
-  const currentLabel = MODE_LABELS[mode]
+  // Установить тайминг inline в строке «триггеров воронки» — под капотом
+  // это либо immediate (delay=0), либо delay (delay_minutes>0). Оставляет
+  // основной дропдаун открытым, чтобы пользователь видел результат.
+  const setStageTiming = (delayMin: number) => {
+    if (delayMin <= 0) {
+      set('mode', 'immediate'); set('delay_minutes', 0)
+    } else {
+      set('mode', 'delay'); set('delay_minutes', delayMin)
+    }
+  }
+
+  // Подпись текущего режима для кнопки «Выполнить:» — для immediate/delay
+  // совмещаем в одно: «<тайминг> после создания в этапе».
+  const currentLabel =
+    mode === 'immediate' || mode === 'delay'
+      ? `${formatStageTiming(Number(config.delay_minutes ?? 0))} после создания в этапе`
+      : MODE_LABELS[mode]
 
   return (
     <div className="space-y-4">
@@ -379,21 +394,14 @@ function SalesbotTriggerForm({
         {open && (
           <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-[420px] overflow-auto">
             <DropdownGroup title="Триггеры воронки">
-              <DropdownItem
-                label={MODE_LABELS.immediate}
-                checked={mode === 'immediate'}
-                onSelect={() => setMode('immediate')}
-                available
+              <StageTimingRow
+                checked={mode === 'immediate' || mode === 'delay'}
+                delayMinutes={Number(config.delay_minutes ?? 0)}
+                onChange={setStageTiming}
               />
             </DropdownGroup>
 
             <DropdownGroup title="Триггеры по времени">
-              <DropdownItem
-                label="Через N часов после входа в этап"
-                checked={mode === 'delay'}
-                onSelect={() => setMode('delay')}
-                available
-              />
               <DropdownItem
                 label="За N часов до выбранного времени"
                 checked={mode === 'before_datetime'}
@@ -488,18 +496,9 @@ function ModeParams({
   config: Record<string, unknown>
   set: (k: string, v: unknown) => void
 }) {
-  if (mode === 'immediate') return null
-
-  if (mode === 'delay') {
-    const hours = config.delay_minutes ? Math.round(Number(config.delay_minutes) / 60) : 0
-    return (
-      <Field label="Через сколько часов после входа в этап">
-        <input type="number" min={0} max={720} className={inputCls}
-          value={hours}
-          onChange={e => set('delay_minutes', (parseInt(e.target.value, 10) || 0) * 60)} />
-      </Field>
-    )
-  }
+  // immediate/delay настраиваются inline в строке «Триггеры воронки» —
+  // здесь дополнительные поля не нужны.
+  if (mode === 'immediate' || mode === 'delay') return null
 
   if (mode === 'daily_at') {
     return (
@@ -536,6 +535,109 @@ function DropdownGroup({ title, children }: { title: string; children: React.Rea
         {title}
       </div>
       <div className="py-1">{children}</div>
+    </div>
+  )
+}
+
+/** Формат тайминга для immediate/delay: «Сразу», «Через 5 минут»,
+ *  «Один день», «1 ч 30 м» и т.п. */
+function formatStageTiming(min: number): string {
+  if (!min || min <= 0) return 'Сразу'
+  if (min === 1440) return 'Один день'
+  if (min < 60) return `Через ${min} ${min === 1 ? 'минуту' : (min < 5 ? 'минуты' : 'минут')}`
+  const h = Math.floor(min / 60), m = min % 60
+  if (m === 0) return `Через ${h} ${h === 1 ? 'час' : (h < 5 ? 'часа' : 'часов')}`
+  return `Через ${h} ч ${m} м`
+}
+
+const STAGE_PRESETS: { label: string; minutes: number }[] = [
+  { label: 'Сразу',          minutes: 0 },
+  { label: 'Через 5 минут',  minutes: 5 },
+  { label: 'Через 10 минут', minutes: 10 },
+  { label: 'Один день',      minutes: 1440 },
+]
+
+/** Строка «<тайминг> после создания в этапе» с поповером пресетов
+ *  и кастомным интервалом «N ч M м». Не закрывает основной дропдаун. */
+function StageTimingRow({
+  checked, delayMinutes, onChange,
+}: {
+  checked: boolean
+  delayMinutes: number
+  onChange: (min: number) => void
+}) {
+  const [popOpen, setPopOpen] = useState(false)
+  const [customH, setCustomH] = useState<number>(Math.floor(delayMinutes / 60))
+  const [customM, setCustomM] = useState<number>(delayMinutes % 60)
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!popOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setPopOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [popOpen])
+
+  const apply = (min: number) => { onChange(min); setPopOpen(false) }
+  const applyCustom = () => apply(Math.max(0, customH * 60 + customM))
+
+  return (
+    <div className="flex items-center gap-2 text-sm px-3 py-1.5 hover:bg-blue-50/40 relative" ref={ref}>
+      <span className={`w-3 inline-flex items-center justify-center text-blue-600`}>
+        {checked ? '✓' : ''}
+      </span>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setPopOpen(o => !o) }}
+        className="text-blue-600 hover:underline font-medium"
+      >
+        {formatStageTiming(delayMinutes)}
+      </button>
+      <span className="text-gray-700">после создания в этапе</span>
+
+      {popOpen && (
+        <div className="absolute z-30 left-3 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg w-[260px] py-1"
+             onClick={(e) => e.stopPropagation()}>
+          {STAGE_PRESETS.map(p => (
+            <button key={p.minutes}
+              type="button"
+              onClick={() => apply(p.minutes)}
+              className={`w-full flex items-center gap-2 text-left text-sm px-3 py-1.5 hover:bg-blue-50 ${
+                p.minutes === delayMinutes ? 'bg-blue-50/70' : ''
+              }`}
+            >
+              <span className="w-3 text-blue-600">
+                {p.minutes === delayMinutes ? '✓' : ''}
+              </span>
+              <span>{p.label}</span>
+            </button>
+          ))}
+          <div className="px-3 py-2 border-t border-gray-100 flex items-center gap-1.5">
+            <span className="text-sm text-gray-700 mr-1">Задать интервал</span>
+            <input
+              type="number" min={0} max={999}
+              value={customH}
+              onChange={e => setCustomH(Math.max(0, parseInt(e.target.value, 10) || 0))}
+              className="w-12 rounded border border-gray-300 px-1.5 py-1 text-sm text-center"
+            />
+            <span className="text-xs text-gray-500">ч</span>
+            <input
+              type="number" min={0} max={59}
+              value={customM}
+              onChange={e => setCustomM(Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)))}
+              className="w-12 rounded border border-gray-300 px-1.5 py-1 text-sm text-center"
+            />
+            <span className="text-xs text-gray-500">м</span>
+            <button
+              type="button"
+              onClick={applyCustom}
+              className="ml-auto px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs"
+            >ОК</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
