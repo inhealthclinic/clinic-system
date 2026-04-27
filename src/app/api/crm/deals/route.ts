@@ -70,14 +70,10 @@ export async function GET(req: NextRequest) {
 
   // 3) Тянем сделки клиники + связанные справочники.
   const owner = req.nextUrl.searchParams.get('owner') ?? 'all'
+  const showClosed = req.nextUrl.searchParams.get('closed') === '1'
 
-  // Пагинируем через .range(), потому что PostgREST имеет жёсткий
-  // server-side cap (по умолчанию 1000 строк): даже с .limit(10000)
-  // одним запросом приходит не больше 1000. У нас 1565+ сделок —
-  // без пагинации ранние 1000 это самые свежие по stage_entered_at,
-  // а это в основном «Закрыто»/«Успешно»; колонки активных этапов
-  // оказываются пустыми. Тянем чанками по 1000, пока приходит ровно
-  // PAGE_SIZE — значит, есть следующая страница.
+  // По умолчанию — только открытые сделки (status = 'open').
+  // Закрытые грузим только если явно запрошено closed=1.
   type DealRowSrv = { id: string; patient_id: string | null }
   const PAGE_SIZE = 1000
   const all: DealRowSrv[] = []
@@ -88,6 +84,7 @@ export async function GET(req: NextRequest) {
       .select(DEAL_COLUMNS)
       .eq('clinic_id', profile.clinic_id)
       .is('deleted_at', null)
+    if (!showClosed) q = q.eq('status', 'open')
     if (owner === 'mine') q = q.eq('responsible_user_id', profile.id)
     q = q.order('stage_entered_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
     const { data, error } = await q

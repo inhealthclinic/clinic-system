@@ -510,7 +510,7 @@ export default function CRMKanbanPage() {
       global_deals_count?: number | null
     }
     const [dealsResp, p, r, ls, up, doc, cl] = await Promise.all([
-      fetch(`/api/crm/deals?owner=${ownerParam}`, {
+      fetch(`/api/crm/deals?owner=${ownerParam}${showTerminal ? '&closed=1' : ''}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
         cache: 'no-store',
       }),
@@ -566,7 +566,7 @@ export default function CRMKanbanPage() {
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
-  }, [clinicId, supabase, activePipelineId, ownerFilter, profile?.id])
+  }, [clinicId, supabase, activePipelineId, ownerFilter, showTerminal, profile?.id])
 
   useEffect(() => { load() }, [load])
 
