@@ -320,9 +320,17 @@ export default function CRMKanbanPage() {
   // Время последнего сообщения по сделке (включая исходящие/бот) — показываем
   // на карточке канбана рядом с возрастом этапа.
   const [lastMsgByDeal, setLastMsgByDeal] = useState<Record<string, string>>({})
+  // Троттл fetchUnread: запрос вытягивает до 5000 строк, поэтому Realtime-burst
+  // (приехала пачка сообщений → 5+ событий → 5+ полных перезагрузок) убивал API.
+  // Не чаще 1 раза в 3 сек; если в это окно прилетит ещё событие — допросим
+  // через trailing-таймер, чтобы не пропустить финальное состояние.
+  const fetchUnreadInflightRef = useRef(false)
+  const fetchUnreadLastAtRef = useRef(0)
+  const fetchUnreadPendingRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (!clinicId) return
     let cancelled = false
+    const MIN_INTERVAL_MS = 3000
     const fetchUnread = async () => {
       // Загружаем входящие и исходящие-человека (author_id != null = не бот).
       // Значок стоит пока нет ответа живого менеджера после последнего входящего.
@@ -365,16 +373,53 @@ export default function CRMKanbanPage() {
       setUnreadByDeal(map)
       setLastMsgByDeal(lastMsg)
     }
-    fetchUnread()
-    const interval = setInterval(fetchUnread, 8000)
+
+    // Обёртка с троттлом + leading/trailing.
+    const requestFetch = () => {
+      const now = Date.now()
+      const sinceLast = now - fetchUnreadLastAtRef.current
+      if (fetchUnreadInflightRef.current) {
+        // Уже в полёте — отложим один trailing-вызов после завершения.
+        if (!fetchUnreadPendingRef.current) {
+          fetchUnreadPendingRef.current = setTimeout(() => {
+            fetchUnreadPendingRef.current = null
+            requestFetch()
+          }, MIN_INTERVAL_MS)
+        }
+        return
+      }
+      if (sinceLast < MIN_INTERVAL_MS) {
+        if (!fetchUnreadPendingRef.current) {
+          fetchUnreadPendingRef.current = setTimeout(() => {
+            fetchUnreadPendingRef.current = null
+            requestFetch()
+          }, MIN_INTERVAL_MS - sinceLast)
+        }
+        return
+      }
+      fetchUnreadInflightRef.current = true
+      fetchUnreadLastAtRef.current = now
+      fetchUnread().finally(() => {
+        fetchUnreadInflightRef.current = false
+      })
+    }
+
+    requestFetch()
+    // Polling-fallback на случай, когда wss-Realtime режется VPN/прокси.
+    // 15 сек: при живом Realtime бэкап-тик почти всегда схлопнется троттлом.
+    const interval = setInterval(requestFetch, 15000)
     const ch = supabase.channel(`crm-unread:${clinicId}`)
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'deal_messages', filter: `clinic_id=eq.${clinicId}` },
-        () => { fetchUnread() })
+        () => { requestFetch() })
       .subscribe()
     return () => {
       cancelled = true
       clearInterval(interval)
+      if (fetchUnreadPendingRef.current) {
+        clearTimeout(fetchUnreadPendingRef.current)
+        fetchUnreadPendingRef.current = null
+      }
       supabase.removeChannel(ch)
     }
   }, [clinicId, supabase])
