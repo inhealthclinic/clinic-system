@@ -17,7 +17,7 @@ export interface CrmCacheEntry {
 
 export const crmCache: Record<string, CrmCacheEntry> = {}
 
-const inflight: Record<string, Promise<void>> = {}
+const inflight: Record<string, Promise<void> | undefined> = {}
 
 export async function prefetchCrm(
   clinicId: string,
