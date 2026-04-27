@@ -223,12 +223,10 @@ export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname()
   const { profile, reset } = useAuthStore()
   const router = useRouter()
-  // Бейджик «непрочитанные входящие». Для admin/owner — все по клинике
-  // (у них обычно нет «своих» сделок, но им важен общий поток).
-  // Для остальных — только сделки, где они responsible_user_id.
-  const _roleSlug = profile?.role?.slug
-  const _scope: 'mine' | 'all' =
-    _roleSlug === 'owner' || _roleSlug === 'admin' ? 'all' : 'mine'
+  // Бейджик «непрочитанные входящие». Временно показываем всем
+  // ВСЕ непрочитанные по клинике (scope='all'), пока не разобрались
+  // как менеджеры распределяют сделки между собой.
+  const _scope: 'mine' | 'all' = 'all'
   const { count: crmUnread } = useUnreadDealMessages({ scope: _scope })
   // Бейджик «новые заказы в лабораторию» на пункте Лаборатория.
   const { count: labPending } = useLabPendingOrders()
