@@ -297,6 +297,13 @@ export function extractIncomingText(wh: IncomingMessageWebhook): string | null {
 
   if (md.typeMessage === 'textMessage') return md.textMessageData?.textMessage ?? null
   if (md.typeMessage === 'extendedTextMessage') return md.extendedTextMessageData?.text ?? null
+  // quotedMessage — пациент сделал свайп-ответ на сообщение. Сам ответ лежит
+  // в extendedTextMessageData.text, оригинал цитаты — в отдельном поле, его
+  // мы не показываем (UI и так покажет соседнее сообщение из истории).
+  if (md.typeMessage === 'quotedMessage') {
+    const t = md.extendedTextMessageData?.text?.trim() || md.textMessageData?.textMessage?.trim()
+    return t || '↩️ ответ'
+  }
   if (md.typeMessage === 'imageMessage')    return `🖼 изображение${captionLine}`
   if (md.typeMessage === 'audioMessage')    return `🎙 аудио${captionLine}`
   if (md.typeMessage === 'videoMessage')    return `🎬 видео${captionLine}`
