@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useIsMobile } from '@/lib/hooks/useIsMobile'
 import { useKeyboardHeight } from '@/lib/hooks/useKeyboardHeight'
 import { useBackHandler } from '@/lib/hooks/useBackHandler'
+import { haptic } from '@/lib/haptics'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -2482,6 +2483,7 @@ function DealModal({
   async function sendMessage() {
     const body = msgDraft.trim()
     if (!body || isNew || sending) return
+    haptic(20)
     // Оптимистично очищаем черновик сразу — не ждём ответа API
     setMsgDraft('')
     setSending(true)
