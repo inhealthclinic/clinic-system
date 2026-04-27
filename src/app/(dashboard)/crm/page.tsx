@@ -482,8 +482,29 @@ export default function CRMKanbanPage() {
     return null
   }, [supabase])
 
+  const CACHE_KEY = `crm.cache.${clinicId}`
   const load = useCallback(async () => {
     if (!clinicId) return
+
+    // Показываем кэш мгновенно, пока грузятся свежие данные
+    try {
+      const cached = localStorage.getItem(CACHE_KEY)
+      if (cached) {
+        const { deals: cd, pipelines: cp, stages: cs, counts: cc, conversions: ccv,
+                reasons: cr, sources: cls, users: cu, doctors: cdc } = JSON.parse(cached)
+        if (cd) setDeals(cd)
+        if (cp) setPipelines(cp)
+        if (cs) setStages(cs)
+        if (cc) setCounts(cc)
+        if (ccv) setConversions(ccv)
+        if (cr) setReasons(cr)
+        if (cls) setSources(cls)
+        if (cu) setUsers(cu)
+        if (cdc) setDoctors(cdc)
+        setLoading(false) // показываем кэш сразу
+      }
+    } catch { /* ignore */ }
+
     setLoading(true)
     // ── Сделки тянем через server-side роут (service role, обход RLS) ────
     // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
@@ -559,14 +580,27 @@ export default function CRMKanbanPage() {
         supabase.from('v_pipeline_stage_counts').select('pipeline_id,stage_id,deals_count,open_count'),
         supabase.from('v_pipeline_conversion').select('pipeline_id,total,won,lost,open_count,conversion_pct').eq('clinic_id', clinicId),
       ])
-      setStages((st.data ?? []) as Stage[])
-      setCounts((c.data ?? []) as StageCount[])
-      setConversions((cv.data ?? []) as Conversion[])
+      const stagesData = (st.data ?? []) as Stage[]
+      const countsData = (c.data ?? []) as StageCount[]
+      const conversionsData = (cv.data ?? []) as Conversion[]
+      setStages(stagesData)
+      setCounts(countsData)
+      setConversions(conversionsData)
+
+      // Сохраняем в кэш для мгновенного показа при следующем открытии
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          deals: enriched, pipelines: ps, stages: stagesData,
+          counts: countsData, conversions: conversionsData,
+          reasons: r.data ?? [], sources: ls.data ?? [],
+          users: usersList, doctors: doctorsList,
+        }))
+      } catch { /* ignore quota errors */ }
     }
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
-  }, [clinicId, supabase, activePipelineId, ownerFilter, showTerminal, profile?.id])
+  }, [clinicId, supabase, activePipelineId, ownerFilter, showTerminal, profile?.id, CACHE_KEY])
 
   useEffect(() => { load() }, [load])
 
