@@ -6,9 +6,6 @@ const config: NextConfig = {
       { protocol: 'https', hostname: '*.supabase.co' },
     ],
   },
-  experimental: {
-    serverActions: { allowedOrigins: ['localhost:3000'] },
-  },
 }
 
 export default config
