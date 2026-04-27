@@ -3198,9 +3198,16 @@ function DealModal({
                   <button
                     disabled={unreadSelected.size === 0}
                     onClick={async () => {
-                      await supabase.from('deal_messages')
+                      const { error } = await supabase.from('deal_messages')
                         .update({ read_at: new Date().toISOString() })
                         .in('id', Array.from(unreadSelected))
+                      if (error) {
+                        // Раньше fire-and-forget: панель закрывалась даже если RLS
+                        // отклонил update — пользователь думал что прочитано, а на
+                        // следующем рефреше сообщения снова непрочитанные.
+                        notify.error('Не удалось пометить прочитанными: ' + error.message)
+                        return
+                      }
                       setUnreadSelected(new Set())
                       setUnreadBulkMode(false)
                     }}
@@ -3218,9 +3225,13 @@ function DealModal({
                         confirmText: 'Удалить',
                         danger: true,
                       }))) return
-                      await supabase.from('deal_messages')
+                      const { error } = await supabase.from('deal_messages')
                         .delete()
                         .in('id', Array.from(unreadSelected))
+                      if (error) {
+                        notify.error('Не удалось удалить: ' + error.message)
+                        return
+                      }
                       setUnreadSelected(new Set())
                       setUnreadBulkMode(false)
                     }}
