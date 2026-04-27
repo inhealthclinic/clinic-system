@@ -1894,6 +1894,20 @@ function DealModal({
   // Параметры режима «Звонок»: входящий/исходящий + длительность (мм:сс).
   const [callDirection, setCallDirection] = useState<'inbound' | 'outbound'>('outbound')
   const [callDurationMin, setCallDurationMin] = useState<string>('')
+  // Inline-редактирование имени пациента прямо из карточки сделки
+  const [editingPatientName, setEditingPatientName] = useState(false)
+  const [patientNameInput, setPatientNameInput] = useState('')
+  const savePatientName = async () => {
+    if (!form.patient?.id || !patientNameInput.trim()) { setEditingPatientName(false); return }
+    const parts = patientNameInput.trim().split(' ')
+    const first_name = parts[0] ?? ''
+    const last_name = parts.slice(1).join(' ') || ''
+    await supabase.from('patients').update({ first_name, last_name }).eq('id', form.patient.id)
+    const newName = [first_name, last_name].filter(Boolean).join(' ')
+    setForm(f => ({ ...f, patient: f.patient ? { ...f.patient, full_name: newName } : f.patient }))
+    setEditingPatientName(false)
+  }
+
   // «Записать на приём» — модалка из /schedule, переиспользованная.
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
@@ -3089,7 +3103,29 @@ function DealModal({
                       </label>
                       {form.patient ? (
                         <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50">
-                          <div className="font-medium text-gray-900">{form.patient.full_name}</div>
+                          {editingPatientName ? (
+                            <div className="flex gap-1 mb-1">
+                              <input
+                                autoFocus
+                                value={patientNameInput}
+                                onChange={e => setPatientNameInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') savePatientName(); if (e.key === 'Escape') setEditingPatientName(false) }}
+                                placeholder="Имя Фамилия"
+                                className="flex-1 border border-blue-400 rounded px-2 py-1 text-sm outline-none"
+                              />
+                              <button onClick={savePatientName} className="text-xs bg-blue-600 text-white px-2 rounded hover:bg-blue-700">✓</button>
+                              <button onClick={() => setEditingPatientName(false)} className="text-xs text-gray-500 px-1 hover:text-gray-700">✕</button>
+                            </div>
+                          ) : (
+                            <div
+                              className="font-medium text-gray-900 cursor-pointer hover:text-blue-600 group flex items-center gap-1"
+                              onClick={() => { setPatientNameInput(form.patient?.full_name?.startsWith('Без имени') ? '' : (form.patient?.full_name ?? '')); setEditingPatientName(true) }}
+                              title="Нажмите чтобы изменить имя"
+                            >
+                              {form.patient.full_name}
+                              <span className="text-gray-300 group-hover:text-blue-400 text-xs">✎</span>
+                            </div>
+                          )}
                           <div className="text-xs text-gray-500 mt-0.5">{form.patient.phones?.[0] || form.contact_phone || '— нет телефона —'}</div>
                           {(form.patient.birth_date || form.patient.city) && (
                             <div className="text-xs text-gray-500 mt-0.5">
