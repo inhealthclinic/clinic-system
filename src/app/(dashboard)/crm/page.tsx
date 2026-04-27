@@ -1870,6 +1870,7 @@ function DealModal({
   // Доступ к «Хронологии» (аудит-лог событий по сделке) — только у админа.
   const isAdmin = profile?.role?.slug === 'admin'
   const [activeTab, setActiveTab] = useState<'chat' | 'timeline' | 'tasks'>('chat')
+  const [mobilePanelTab, setMobilePanelTab] = useState<'info' | 'feed'>('feed')
 
   // Конфигурация полей левой колонки (мигр. 057). До загрузки — дефолт,
   // чтобы карточка не «прыгала» при открытии.
@@ -2900,10 +2901,22 @@ function DealModal({
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
-        {/* Body: 2 columns */}
+        {/* Mobile panel switcher */}
+        <div className="sm:hidden flex border-b border-gray-200 bg-white shrink-0">
+          <button
+            onClick={() => setMobilePanelTab('feed')}
+            className={`flex-1 py-2 text-sm font-medium ${mobilePanelTab === 'feed' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500'}`}
+          >Чат / История</button>
+          <button
+            onClick={() => setMobilePanelTab('info')}
+            className={`flex-1 py-2 text-sm font-medium ${mobilePanelTab === 'info' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500'}`}
+          >Данные</button>
+        </div>
+
+        {/* Body: 2 columns on desktop, tabbed on mobile */}
         <div className="flex-1 flex overflow-hidden">
           {/* LEFT: properties */}
-          <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto">
+          <div className={`${mobilePanelTab === 'info' ? 'flex' : 'hidden'} sm:flex w-full sm:w-80 bg-white border-r border-gray-200 overflow-y-auto flex-col`}>
             <div className="p-5 space-y-4 text-sm">
               {(() => {
                 // Карта рендереров встроенных полей (ключи совпадают с DEFAULT_FIELD_CONFIGS).
@@ -3313,7 +3326,7 @@ function DealModal({
              * flex-col layout: верхний блок (KPI / приёмы / лабы) — shrink-0 и
              * скроллится сам, если разрастётся; tabs-карточка занимает всё
              * оставшееся место по высоте, чтобы композер всегда был у футера. */}
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className={`${mobilePanelTab === 'feed' ? 'flex' : 'hidden'} sm:flex flex-1 flex-col overflow-hidden`}>
             {/* Tabs + чат: растягиваемся на оставшуюся высоту, композер прилипает к низу */}
             <div className="flex-1 min-h-0 p-5 pt-4 flex flex-col overflow-hidden">
               {/* Tabs: chat / timeline / tasks */}
