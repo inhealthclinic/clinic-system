@@ -224,8 +224,12 @@ export default function CRMKanbanPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearch(listSearch), 300)
+    const t = window.setTimeout(() => setDebouncedSearch(listSearch), 150)
     return () => window.clearTimeout(t)
+  }, [listSearch])
+  // Любой ввод должен открывать список — оператор не должен думать про фокус.
+  useEffect(() => {
+    if (listSearch.length > 0) setSearchOpen(true)
   }, [listSearch])
 
   // Фильтр «Только мои / Все сделки». По умолчанию все сотрудники видят все сделки.
