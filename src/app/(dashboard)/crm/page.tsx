@@ -487,6 +487,7 @@ export default function CRMKanbanPage() {
     if (!clinicId) return
 
     // Показываем кэш мгновенно, пока грузятся свежие данные
+    let hasCache = false
     try {
       const cached = localStorage.getItem(CACHE_KEY)
       if (cached) {
@@ -501,11 +502,12 @@ export default function CRMKanbanPage() {
         if (cls) setSources(cls)
         if (cu) setUsers(cu)
         if (cdc) setDoctors(cdc)
-        setLoading(false) // показываем кэш сразу
+        hasCache = true
       }
     } catch { /* ignore */ }
 
-    setLoading(true)
+    // Если есть кэш — не показываем экран загрузки, обновляем тихо в фоне
+    if (!hasCache) setLoading(true)
     // ── Сделки тянем через server-side роут (service role, обход RLS) ────
     // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
     // например при просроченном refresh-токене или когда auth.uid() не
