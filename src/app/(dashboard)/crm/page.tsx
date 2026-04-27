@@ -870,6 +870,15 @@ export default function CRMKanbanPage() {
     const targetStage = activeStages.find(s => s.id === stageId)
     if (!targetStage) return
 
+    // Race-guard: пока висит модалка «причина провала» по другой сделке —
+    // запрещаем новый дроп. Иначе setLossPending перетирает первую сделку,
+    // оптимистический перенос для неё остаётся в UI без записи в БД и
+    // без deal_loss_logs — сделка «зависает» на lost-стадии.
+    if (lossPending) {
+      notify.warning('Сначала укажите причину провала по предыдущей сделке')
+      return
+    }
+
     // Optimistic update
     setDeals(prev => prev.map(x => x.id === d.id
       ? { ...x, stage_id: stageId, stage: targetStage.code, stage_entered_at: new Date().toISOString() }
