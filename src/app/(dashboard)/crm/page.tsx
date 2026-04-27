@@ -198,20 +198,14 @@ export default function CRMKanbanPage() {
     return () => window.clearTimeout(t)
   }, [listSearch])
 
-  // Фильтр «Только мои / Все сделки» — разделение видимости между
-  // менеджерами. По умолчанию manager видит только свои сделки
-  // (responsible_user_id = profile.id); admin/owner — все.
-  // Выбор запоминается в localStorage.
+  // Фильтр «Только мои / Все сделки». По умолчанию все сотрудники видят все сделки.
   const roleSlug = profile?.role?.slug ?? ''
-  const isManagerOnly = roleSlug === 'manager'
-  const [ownerFilter, setOwnerFilter] = useState<'mine' | 'all'>(
-    isManagerOnly ? 'mine' : 'all'
-  )
+  const [ownerFilter, setOwnerFilter] = useState<'mine' | 'all'>('all')
   useEffect(() => {
     if (typeof window === 'undefined') return
     const v = window.localStorage.getItem('crm.ownerFilter')
     if (v === 'mine' || v === 'all') setOwnerFilter(v)
-    else setOwnerFilter(isManagerOnly ? 'mine' : 'all')
+    else setOwnerFilter('all')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roleSlug])
   useEffect(() => {
