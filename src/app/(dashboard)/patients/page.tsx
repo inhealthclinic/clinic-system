@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { Patient } from '@/types'
 import { exportCsv, todayStamp } from '@/lib/export/csv'
+import { useIsMobile } from '@/lib/hooks/useIsMobile'
 
 /* ─── MedElement: Print patient card ─────────────────────── */
 function printPatientCard(p: Patient) {
@@ -95,6 +96,7 @@ function calcAge(birthDate: string | null | undefined): string {
 }
 
 export default function PatientsPage() {
+  const isMobile = useIsMobile(768)
   const [patients, setPatients] = useState<Patient[]>([])
   const [loading, setLoading]   = useState(true)
   const [search, setSearch]     = useState('')
@@ -233,7 +235,45 @@ export default function PatientsPage() {
           <div className="p-8 text-center text-sm text-gray-400">
             {search || statusFilter !== 'all' ? 'Ничего не найдено' : 'Пациентов пока нет'}
           </div>
+        ) : isMobile ? (
+          /* ── МОБИЛЬНЫЕ карточки (< 768px) ── */
+          <div className="divide-y divide-gray-50">
+            {patients.map(p => (
+              <Link
+                key={p.id}
+                href={`/patients/${p.id}`}
+                className="flex items-start gap-3 px-4 py-3 hover:bg-gray-50 transition-colors min-h-[72px]"
+              >
+                <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-sm flex-shrink-0 mt-0.5">
+                  {p.full_name[0]}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-base font-medium text-gray-900 truncate">{p.full_name}</p>
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${STATUS_COLOR[p.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                      {STATUS_LABEL[p.status] ?? p.status}
+                    </span>
+                  </div>
+                  {p.phones[0] && (
+                    <p className="text-sm text-gray-500 mt-0.5">{p.phones[0]}</p>
+                  )}
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {p.birth_date && (
+                      <span className="text-xs text-gray-400">{calcAge(p.birth_date)}</span>
+                    )}
+                    {p.balance_amount > 0 && (
+                      <span className="text-xs text-green-600 font-medium">+{p.balance_amount.toLocaleString('ru-RU')} ₸</span>
+                    )}
+                    {p.debt_amount > 0 && (
+                      <span className="text-xs text-red-500 font-medium">−{p.debt_amount.toLocaleString('ru-RU')} ₸</span>
+                    )}
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
         ) : (
+          /* ── ДЕСКТОП таблица (>= 768px) — не трогать ── */
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">

@@ -7,6 +7,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useIsMobile } from '@/lib/hooks/useIsMobile'
+import { useKeyboardHeight } from '@/lib/hooks/useKeyboardHeight'
+import { useBackHandler } from '@/lib/hooks/useBackHandler'
+import { haptic } from '@/lib/haptics'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -141,6 +145,8 @@ export default function CRMKanbanPage() {
   const clinicId = profile?.clinic_id
   const router = useRouter()
   const searchParams = useSearchParams()
+  const isMobileKanban = useIsMobile(768)
+  const [activeMobileStageId, setActiveMobileStageId] = useState<string>('')
 
   // ── Online presence (heartbeat via last_seen_at) ──────────────────────────
   interface OnlineUser { id: string; name: string; role: string }
@@ -592,6 +598,13 @@ export default function CRMKanbanPage() {
   )
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
   const conversion = conversions.find(c => c.pipeline_id === activePipelineId)
+
+  // Синхронизируем activeMobileStageId с первым этапом воронки при изменении
+  useEffect(() => {
+    if (activeStages.length > 0 && !activeStages.find(s => s.id === activeMobileStageId)) {
+      setActiveMobileStageId(activeStages[0].id)
+    }
+  }, [activeStages, activeMobileStageId])
 
   const sourceById = useMemo(
     () => new Map(sources.map(s => [s.id, s.name])),
@@ -1312,37 +1325,97 @@ export default function CRMKanbanPage() {
           горизонтальная полоса прокрутки прижималась к низу экрана и
           не перекрывала карточки в верхней части рабочей зоны. */}
       {viewMode === 'kanban' && (
-        <div className="overflow-auto h-[calc(100vh-200px)] sm:h-[calc(100vh-220px)] pb-2 [-webkit-overflow-scrolling:touch]">
-          <div className="flex gap-2 sm:gap-3 items-start min-w-max px-0.5">
-            {activeStages.map(stage => {
-              const cards = dealsByStage.get(stage.id) ?? []
-              const count = counts.find(c => c.stage_id === stage.id)
-              const isOver = overStage === stage.id
-              return (
-                <KanbanColumn
-                  key={stage.id}
-                  stage={stage}
-                  cards={cards}
-                  count={count}
-                  isOver={isOver}
-                  unreadByDeal={unreadByDeal}
-                  lastMsgByDeal={lastMsgByDeal}
-                  onDragStart={onDragStart}
-                  openDeal={openDeal}
-                  onDragOver={onDragOver}
-                  onDragLeave={onDragLeave}
-                  onDrop={onDrop}
-                  debouncedSearch={debouncedSearch}
-                />
-              )
-            })}
-            {activeStages.length === 0 && (
-              <div className="text-sm text-gray-500 p-6">
-                В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
+        <>
+          {/* ── МОБИЛЬНЫЙ вид: табы этапов + вертикальный список (< 768px) ── */}
+          {isMobileKanban && (
+            <div className="flex flex-col flex-1 overflow-hidden">
+              {/* Горизонтально-скроллируемая полоса чипов */}
+              <div className="flex gap-2 overflow-x-auto pb-2 flex-shrink-0 px-1 py-1 scrollbar-none">
+                {activeStages.map(stage => {
+                  const count = counts.find(c => c.stage_id === stage.id)
+                  const stageUnread = (dealsByStage.get(stage.id) ?? []).filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+                  return (
+                    <button
+                      key={stage.id}
+                      onClick={() => setActiveMobileStageId(stage.id)}
+                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-full text-sm font-medium whitespace-nowrap min-h-[40px] transition-colors ${
+                        stage.id === activeMobileStageId
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 text-gray-700'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: stage.color }} />
+                      {stage.name}
+                      <span className="ml-0.5 text-xs opacity-80">
+                        {debouncedSearch
+                          ? (dealsByStage.get(stage.id) ?? []).length
+                          : (count?.open_count ?? (dealsByStage.get(stage.id) ?? []).length)}
+                      </span>
+                      {stageUnread > 0 && (
+                        <span className="w-4 h-4 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none flex-shrink-0">
+                          {stageUnread}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
               </div>
-            )}
-          </div>
-        </div>
+              {/* Вертикальный список карточек активного этапа */}
+              <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                {(() => {
+                  const activeStage = activeStages.find(s => s.id === activeMobileStageId)
+                  if (!activeStage) return null
+                  const cards = dealsByStage.get(activeStage.id) ?? []
+                  return (
+                    <>
+                      {cards.map(d => (
+                        <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={() => {}} onClick={() => openDeal(d)} />
+                      ))}
+                      {cards.length === 0 && (
+                        <div className="text-sm text-gray-400 text-center py-8">Нет сделок в этом этапе</div>
+                      )}
+                    </>
+                  )
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* ── DESKTOP вид: виртуализированный канбан с drag&drop (>= 768px) ── */}
+          {!isMobileKanban && (
+            <div className="overflow-auto h-[calc(100vh-200px)] sm:h-[calc(100vh-220px)] pb-2 [-webkit-overflow-scrolling:touch]">
+              <div className="flex gap-2 sm:gap-3 items-start min-w-max px-0.5">
+                {activeStages.map(stage => {
+                  const cards = dealsByStage.get(stage.id) ?? []
+                  const count = counts.find(c => c.stage_id === stage.id)
+                  const isOver = overStage === stage.id
+                  return (
+                    <KanbanColumn
+                      key={stage.id}
+                      stage={stage}
+                      cards={cards}
+                      count={count}
+                      isOver={isOver}
+                      unreadByDeal={unreadByDeal}
+                      lastMsgByDeal={lastMsgByDeal}
+                      onDragStart={onDragStart}
+                      openDeal={openDeal}
+                      onDragOver={onDragOver}
+                      onDragLeave={onDragLeave}
+                      onDrop={onDrop}
+                      debouncedSearch={debouncedSearch}
+                    />
+                  )
+                })}
+                {activeStages.length === 0 && (
+                  <div className="text-sm text-gray-500 p-6">
+                    В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Таблица — плоский список сделок активной воронки */}
@@ -2056,6 +2129,11 @@ function DealModal({
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
+  const isMobileModal = useIsMobile(1024)
+  const keyboardHeight = useKeyboardHeight()
+  const [mobileTab, setMobileTab] = useState<'chat' | 'details'>('chat')
+  useBackHandler(isMobileModal, onClose)
+
   // Счётчик + список непрочитанных по ВСЕМ сделкам клиники
   interface UnreadItem {
     id: string
@@ -2122,7 +2200,6 @@ function DealModal({
   // Доступ к «Хронологии» (аудит-лог событий по сделке) — только у админа.
   const isAdmin = profile?.role?.slug === 'admin'
   const [activeTab, setActiveTab] = useState<'chat' | 'timeline' | 'tasks'>('chat')
-  const [mobilePanelTab, setMobilePanelTab] = useState<'info' | 'feed'>('feed')
 
   // Конфигурация полей левой колонки (мигр. 057). До загрузки — дефолт,
   // чтобы карточка не «прыгала» при открытии.
@@ -2553,6 +2630,7 @@ function DealModal({
   async function sendMessage() {
     const body = msgDraft.trim()
     if (!body || isNew || sending) return
+    haptic(20)
     // Оптимистично очищаем черновик сразу — не ждём ответа API
     setMsgDraft('')
     setSending(true)
@@ -3184,22 +3262,37 @@ function DealModal({
           <button onClick={onClose} className="hidden sm:block text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
-        {/* Mobile panel switcher */}
-        <div className="sm:hidden flex border-b border-gray-200 bg-white shrink-0">
-          <button
-            onClick={() => setMobilePanelTab('feed')}
-            className={`flex-1 py-2 text-sm font-medium ${mobilePanelTab === 'feed' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500'}`}
-          >Чат / История</button>
-          <button
-            onClick={() => setMobilePanelTab('info')}
-            className={`flex-1 py-2 text-sm font-medium ${mobilePanelTab === 'info' ? 'text-blue-700 border-b-2 border-blue-600' : 'text-gray-500'}`}
-          >Данные</button>
-        </div>
+        {/* Mobile tab switcher — только на < 1024px */}
+        {isMobileModal && !isNew && (
+          <div className="flex border-b border-gray-200 bg-white flex-shrink-0">
+            <button
+              onClick={() => setMobileTab('chat')}
+              className={`flex-1 py-3 text-base font-medium transition-colors ${
+                mobileTab === 'chat'
+                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  : 'text-gray-500'
+              }`}
+            >
+              💬 Чат
+            </button>
+            <button
+              onClick={() => setMobileTab('details')}
+              className={`flex-1 py-3 text-base font-medium transition-colors ${
+                mobileTab === 'details'
+                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  : 'text-gray-500'
+              }`}
+            >
+              📋 Детали
+            </button>
+          </div>
+        )}
 
-        {/* Body: 2 columns on desktop, tabbed on mobile */}
+        {/* Body: 2 columns */}
         <div className="flex-1 flex overflow-hidden">
           {/* LEFT: properties */}
-          <div className={`${mobilePanelTab === 'info' ? 'flex' : 'hidden'} sm:flex w-full sm:w-80 bg-white border-r border-gray-200 overflow-y-auto flex-col`}>
+          <div className={`bg-white border-r border-gray-200 overflow-y-auto ${isMobileModal ? (mobileTab === 'details' ? 'flex-1 w-full' : 'hidden') : 'w-80'}`}>
+
             <div className="p-5 space-y-4 text-sm">
               {(() => {
                 // Карта рендереров встроенных полей (ключи совпадают с DEFAULT_FIELD_CONFIGS).
@@ -3631,7 +3724,7 @@ function DealModal({
              * flex-col layout: верхний блок (KPI / приёмы / лабы) — shrink-0 и
              * скроллится сам, если разрастётся; tabs-карточка занимает всё
              * оставшееся место по высоте, чтобы композер всегда был у футера. */}
-          <div className={`${mobilePanelTab === 'feed' ? 'flex' : 'hidden'} sm:flex flex-1 flex-col overflow-hidden`}>
+          <div className={`flex-1 flex flex-col overflow-hidden ${isMobileModal && mobileTab !== 'chat' ? 'hidden' : ''}`}>
             {/* Tabs + чат: растягиваемся на оставшуюся высоту, композер прилипает к низу */}
             <div className="flex-1 min-h-0 p-5 pt-4 flex flex-col overflow-hidden">
               {/* Tabs: chat / timeline / tasks */}
@@ -4208,7 +4301,7 @@ function DealModal({
                         )}
 
                         {/* Input + send */}
-                        <div className="flex gap-2 p-3">
+                        <div className="flex gap-2 p-3" style={{ paddingBottom: `calc(0.75rem + var(--keyboard-h, 0px))` }}>
                           {recording ? (
                             // Сам бар — кнопка «стоп + превью». X — отмена.
                             // На мобильном нет места для двух кнопок справа, поэтому стоп = тап по бару.
@@ -4247,7 +4340,7 @@ function DealModal({
                                 'Название задачи…'
                               }
                               rows={composerMode === 'task' ? 1 : 2}
-                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
+                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-base resize-none focus:border-blue-400 outline-none"
                             />
                           )}
 

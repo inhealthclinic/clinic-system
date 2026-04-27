@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
+import { BottomNav } from '@/components/layout/BottomNav'
 import { CommandPalette } from '@/components/CommandPalette'
 import { UnreadNotifier } from '@/components/layout/UnreadNotifier'
 import { LabNotifier } from '@/components/layout/LabNotifier'
@@ -36,7 +37,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen-safe bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold mx-auto mb-3">
             iH
@@ -50,7 +51,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (!user) return null
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen-safe overflow-hidden bg-gray-50">
       {/* Global Cmd+K search */}
       <CommandPalette />
       {/* Тосты + звук + Notifications для входящих сообщений по «моим» сделкам */}
@@ -82,10 +83,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* Main content */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header onMenuClick={() => setSidebarOpen(true)} />
-        <main className={`flex-1 overflow-auto ${isCrm ? 'p-3' : 'p-6'}`}>
+        <main className={`flex-1 overflow-auto ${isCrm ? 'p-3 lg:pb-3' : 'p-6 lg:pb-6'} pb-20`}>
           {children}
         </main>
       </div>
+
+      {/* Mobile bottom navigation — только на < 1024px */}
+      <BottomNav onMenuOpen={() => setSidebarOpen(true)} />
     </div>
   )
 }
