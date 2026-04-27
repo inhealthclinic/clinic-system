@@ -494,6 +494,21 @@ export default function CRMKanbanPage() {
     return null
   }, [supabase])
 
+  // Инкрементальные апдейты state — чтобы после drag-n-drop / UPDATE сделки
+  // не тянуть весь список (`load()`). Используются вместо load() везде, где
+  // фронт точно знает, какие именно строки изменились.
+  const patchDeal = useCallback((id: string, patch: Partial<DealRow>) => {
+    setDeals(prev => prev.map(d => d.id === id ? { ...d, ...patch } : d))
+  }, [])
+  const patchDealsByIds = useCallback((ids: string[], patch: Partial<DealRow>) => {
+    const idSet = new Set(ids)
+    setDeals(prev => prev.map(d => idSet.has(d.id) ? { ...d, ...patch } : d))
+  }, [])
+  const removeDealsByIds = useCallback((ids: string[]) => {
+    const idSet = new Set(ids)
+    setDeals(prev => prev.filter(d => !idSet.has(d.id)))
+  }, [])
+
   const load = useCallback(async () => {
     if (!clinicId) return
 
@@ -819,13 +834,21 @@ export default function CRMKanbanPage() {
       setLossPending({ deal: d, stageId })
       return
     }
-    await moveDeal(d.id, stageId)
+    await moveDeal(d, stageId)
   }
 
-  async function moveDeal(dealId: string, stageId: string) {
-    const { error } = await supabase.from('deals').update({ stage_id: stageId }).eq('id', dealId)
-    if (error) { notify.error('Не удалось сохранить: ' + error.message); load(); return }
-    load()
+  async function moveDeal(prev: DealRow, stageId: string) {
+    const { error } = await supabase.from('deals').update({ stage_id: stageId }).eq('id', prev.id)
+    if (error) {
+      notify.error('Не удалось сохранить: ' + error.message)
+      // Откатываем оптимистичный апдейт обратно на исходную стадию.
+      patchDeal(prev.id, {
+        stage_id: prev.stage_id,
+        stage: prev.stage,
+        stage_entered_at: prev.stage_entered_at,
+      })
+    }
+    // На успех state уже обновлён оптимистично — load() не нужен.
   }
 
   // Переключаем сортировку: повторный клик по активному полю инвертирует
@@ -887,7 +910,17 @@ export default function CRMKanbanPage() {
     const { deal, stageId } = lossPending
     // Переводим стадию → триггер сам выставит status='lost'
     const { error: upErr } = await supabase.from('deals').update({ stage_id: stageId }).eq('id', deal.id)
-    if (upErr) { notify.error('Не удалось перевести: ' + upErr.message); setLossPending(null); load(); return }
+    if (upErr) {
+      notify.error('Не удалось перевести: ' + upErr.message)
+      // Откатываем оптимистичный апдейт стадии.
+      patchDeal(deal.id, {
+        stage_id: deal.stage_id,
+        stage: deal.stage,
+        stage_entered_at: deal.stage_entered_at,
+      })
+      setLossPending(null)
+      return
+    }
     // Пишем лог причины
     const { error: logErr } = await supabase.from('deal_loss_logs').insert({
       deal_id: deal.id,
@@ -897,8 +930,13 @@ export default function CRMKanbanPage() {
       created_by: profile?.id ?? null,
     })
     if (logErr) { notify.warning('Этап переведён, но причина не записана: ' + logErr.message) }
+    // Триггер на сервере выставит status='lost' и проставит loss_reason_id;
+    // патчим то же самое локально, чтобы не звать load().
+    patchDeal(deal.id, {
+      status: 'lost',
+      loss_reason_id: reasonId,
+    })
     setLossPending(null)
-    load()
   }
 
   // ── UI ─────────────────────────────────────────────────────────────────────
@@ -1545,8 +1583,11 @@ export default function CRMKanbanPage() {
             if (target?.code) patch.stage = target.code
             const err = await bulkUpdateDeals(ids, patch)
             if (err) { notify.error(err); return }
+            const localPatch: Partial<DealRow> = { stage_id: stageId }
+            if (target?.pipeline_id) localPatch.pipeline_id = target.pipeline_id
+            if (target?.code) localPatch.stage = target.code
+            patchDealsByIds(ids, localPatch)
             setBulkSelected(new Set())
-            load()
           }}
           onMovePipeline={async (pipelineId) => {
             // Перенос пачки в первый этап выбранной воронки.
@@ -1561,15 +1602,20 @@ export default function CRMKanbanPage() {
               stage: targetStage.code,
             })
             if (err) { notify.error(err); return }
+            patchDealsByIds(ids, {
+              pipeline_id: pipelineId,
+              stage_id: targetStage.id,
+              stage: targetStage.code,
+            })
             setBulkSelected(new Set())
-            load()
           }}
           onAssign={async (userId) => {
             const ids = Array.from(bulkSelected)
             const err = await bulkUpdateDeals(ids, { responsible_user_id: userId })
             if (err) { notify.error(err); return }
+            const respUser = userId ? users.find(u => u.id === userId) ?? null : null
+            patchDealsByIds(ids, { responsible_user_id: userId, responsible: respUser })
             setBulkSelected(new Set())
-            load()
           }}
           onDelete={() => {
             // Не удаляем сразу. Открываем модалку с typed-confirm —
@@ -1596,14 +1642,15 @@ export default function CRMKanbanPage() {
             }))
             const { error } = await supabase.from('tasks').insert(payload)
             if (error) { notify.error(error.message); return }
+            // Задачи не хранятся в state сделок, перерисовка списка не нужна.
             setBulkSelected(new Set())
-            load()
           }}
           onEditTags={async ({ addList, removeList, replaceList }) => {
             const ids = Array.from(bulkSelected)
             const selectedDeals = deals.filter(d => ids.includes(d.id))
             // Обновляем каждую сделку отдельно — у каждой свой текущий
             // набор tags, простого UPDATE массовым SQL не сделать.
+            const nextTagsById = new Map<string, string[]>()
             for (const d of selectedDeals) {
               let next: string[]
               if (replaceList) {
@@ -1616,28 +1663,33 @@ export default function CRMKanbanPage() {
               }
               const { error } = await supabase.from('deals').update({ tags: next }).eq('id', d.id)
               if (error) { notify.error(error.message); return }
+              nextTagsById.set(d.id, next)
             }
+            setDeals(prev => prev.map(d => nextTagsById.has(d.id) ? { ...d, tags: nextTagsById.get(d.id)! } : d))
             setBulkSelected(new Set())
-            load()
           }}
           onEditField={async ({ field, value }) => {
             const ids = Array.from(bulkSelected)
             const patch: Record<string, unknown> = {}
+            const localPatch: Partial<DealRow> = {}
             if (field === 'amount') {
               const num = value === '' || value == null ? null : Number(value)
               if (value !== '' && value != null && Number.isNaN(num)) { notify.error('Сумма должна быть числом'); return }
               patch.amount = num
+              localPatch.amount = num
             } else if (field === 'source_id') {
               patch.source_id = value || null
+              localPatch.source_id = (value || null) as string | null
             } else if (field === 'city') {
               patch.contact_city = value || null
+              localPatch.contact_city = (value || null) as string | null
             } else {
               notify.error('Неизвестное поле'); return
             }
             const err = await bulkUpdateDeals(ids, patch)
             if (err) { notify.error(err); return }
+            patchDealsByIds(ids, localPatch)
             setBulkSelected(new Set())
-            load()
           }}
           sources={sources}
         />
@@ -1675,9 +1727,10 @@ export default function CRMKanbanPage() {
             const ids = Array.from(bulkSelected)
             const err = await bulkUpdateDeals(ids, { deleted_at: new Date().toISOString() })
             if (err) { notify.error(err); return }
+            // Soft-delete — убираем из локального state, чтобы не звать load().
+            removeDealsByIds(ids)
             setBulkDeletePending(false)
             setBulkSelected(new Set())
-            load()
           }}
         />
       )}
@@ -1686,7 +1739,17 @@ export default function CRMKanbanPage() {
       {lossPending && (
         <LossReasonModal
           reasons={reasons}
-          onCancel={() => { setLossPending(null); load() }}
+          onCancel={() => {
+            // Откатываем оптимистичный перенос на «lost»-стадию,
+            // выполненный в onDrop, обратно на исходную стадию.
+            const { deal } = lossPending
+            patchDeal(deal.id, {
+              stage_id: deal.stage_id,
+              stage: deal.stage,
+              stage_entered_at: deal.stage_entered_at,
+            })
+            setLossPending(null)
+          }}
           onConfirm={(rid, rname, c) => confirmLoss(rid, rname, c)}
         />
       )}
