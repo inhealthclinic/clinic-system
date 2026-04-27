@@ -2858,7 +2858,10 @@ function DealModal({
           </div>
         )}
         {/* Header */}
-        <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-4">
+        <div className="px-3 sm:px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-2 sm:gap-4">
+          <button onClick={onClose} className="sm:hidden text-gray-500 hover:text-gray-800 flex items-center gap-1 text-sm shrink-0">
+            ← Назад
+          </button>
           <div className="min-w-0 flex-1">
             <div className="text-xs text-gray-400 uppercase tracking-wider">Сделка</div>
             <div className="flex items-center gap-3 mt-0.5 flex-wrap">
@@ -2924,7 +2927,7 @@ function DealModal({
             </div>
           )}
 
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
+          <button onClick={onClose} className="hidden sm:block text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
         {/* Mobile panel switcher */}
@@ -3488,7 +3491,7 @@ function DealModal({
                       )}
 
                       {/* Messages list */}
-                      <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
+                      <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50 overscroll-contain [-webkit-overflow-scrolling:touch]">
                         {(() => {
                           const q = search.toLowerCase()
                           // Системные события (кроме дублирующих message_in/out)
