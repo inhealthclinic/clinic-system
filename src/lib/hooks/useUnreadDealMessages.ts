@@ -43,6 +43,12 @@ interface Options {
   onIncoming?: (msg: IncomingDealMessage) => void
   /** Интервал polling-fallback (мс). По умолчанию 8000. Ставим 0 для отключения. */
   pollIntervalMs?: number
+  /**
+   * 'mine' — только сделки, где я responsible_user_id (по умолчанию).
+   * 'all'  — все непрочитанные по клинике (для admin/owner: им важно
+   * видеть общий поток, а не только свои сделки).
+   */
+  scope?: 'mine' | 'all'
 }
 
 export function useUnreadDealMessages(opts: Options = {}) {
@@ -67,7 +73,22 @@ export function useUnreadDealMessages(opts: Options = {}) {
     onIncomingRef.current = opts.onIncoming
   }, [opts.onIncoming])
 
+  const scope = opts.scope ?? 'mine'
   const refetch = useCallback(async () => {
+    if (scope === 'all') {
+      // Для admin/owner: считаем все непрочитанные входящие по клинике.
+      // RLS ограничит доступ если у пользователя нет прав.
+      if (!clinicId) return
+      const { count: cnt, error } = await supabase
+        .from('deal_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('clinic_id', clinicId)
+        .eq('direction', 'in')
+        .is('read_at', null)
+      if (error) return
+      setCount(cnt ?? 0)
+      return
+    }
     const { data, error } = await supabase.rpc('fn_unread_deal_messages_for_me')
     if (error) {
       // Тихо падаем — бейджик просто не обновится. Шуметь в консоли
@@ -77,7 +98,7 @@ export function useUnreadDealMessages(opts: Options = {}) {
     // data — число (INT). На всякий случай нормализуем.
     const n = typeof data === 'number' ? data : Number(data ?? 0)
     setCount(Number.isFinite(n) ? n : 0)
-  }, [supabase])
+  }, [supabase, scope, clinicId])
 
   useEffect(() => {
     if (!clinicId) return

@@ -222,8 +222,12 @@ export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname()
   const { profile, reset } = useAuthStore()
   const router = useRouter()
-  // Бейджик «непрочитанные входящие по моим сделкам» на пункте CRM.
-  const { count: crmUnread } = useUnreadDealMessages()
+  // Бейджик «непрочитанные входящие». Для admin/owner — все по клинике
+  // (им важен общий поток); для остальных — только сделки, где я ответственный.
+  const roleSlugForScope = profile?.role?.slug
+  const unreadScope: 'mine' | 'all' =
+    roleSlugForScope === 'owner' || roleSlugForScope === 'admin' ? 'all' : 'mine'
+  const { count: crmUnread } = useUnreadDealMessages({ scope: unreadScope })
   // Бейджик «новые заказы в лабораторию» на пункте Лаборатория.
   const { count: labPending } = useLabPendingOrders()
 
