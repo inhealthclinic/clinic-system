@@ -132,6 +132,16 @@ function fmtDuration(seconds: number | null): string {
   return `${seconds} с`
 }
 
+// ─── module-level SPA cache (persists between navigations, resets on refresh) ─
+
+interface CrmSnapshot {
+  deals: DealRow[]; pipelines: Pipeline[]; stages: Stage[]
+  counts: StageCount[]; conversions: Conversion[]
+  reasons: LossReason[]; sources: LeadSource[]
+  users: UserLite[]; doctors: DoctorLite[]
+}
+const _spaCache: Record<string, CrmSnapshot> = {}
+
 // ─── page ────────────────────────────────────────────────────────────────────
 
 export default function CRMKanbanPage() {
@@ -170,17 +180,19 @@ export default function CRMKanbanPage() {
     return () => { clearInterval(hbTimer); clearInterval(fetchTimer) }
   }, [clinicId, profile?.id, supabase])
 
-  const [pipelines, setPipelines] = useState<Pipeline[]>([])
-  const [stages, setStages] = useState<Stage[]>([])
-  const [deals, setDeals] = useState<DealRow[]>([])
-  const [counts, setCounts] = useState<StageCount[]>([])
-  const [conversions, setConversions] = useState<Conversion[]>([])
-  const [reasons, setReasons] = useState<LossReason[]>([])
-  const [sources, setSources] = useState<LeadSource[]>([])
-  const [users, setUsers] = useState<UserLite[]>([])
-  const [doctors, setDoctors] = useState<DoctorLite[]>([])
+  // Инициализируем из SPA-кэша синхронно — не нужен даже один render с spinner'ом
+  const snap = clinicId ? _spaCache[clinicId] : undefined
+  const [pipelines, setPipelines] = useState<Pipeline[]>(snap?.pipelines ?? [])
+  const [stages, setStages] = useState<Stage[]>(snap?.stages ?? [])
+  const [deals, setDeals] = useState<DealRow[]>(snap?.deals ?? [])
+  const [counts, setCounts] = useState<StageCount[]>(snap?.counts ?? [])
+  const [conversions, setConversions] = useState<Conversion[]>(snap?.conversions ?? [])
+  const [reasons, setReasons] = useState<LossReason[]>(snap?.reasons ?? [])
+  const [sources, setSources] = useState<LeadSource[]>(snap?.sources ?? [])
+  const [users, setUsers] = useState<UserLite[]>(snap?.users ?? [])
+  const [doctors, setDoctors] = useState<DoctorLite[]>(snap?.doctors ?? [])
   const [apptTypes, setApptTypes] = useState<ApptType[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!snap)
 
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
@@ -482,33 +494,12 @@ export default function CRMKanbanPage() {
     return null
   }, [supabase])
 
-  const CACHE_KEY = `crm.cache.${clinicId}`
   const load = useCallback(async () => {
     if (!clinicId) return
 
-    // Показываем кэш мгновенно, пока грузятся свежие данные
-    let hasCache = false
-    try {
-      const cached = localStorage.getItem(CACHE_KEY)
-      if (cached) {
-        const { deals: cd, pipelines: cp, stages: cs, counts: cc, conversions: ccv,
-                reasons: cr, sources: cls, users: cu, doctors: cdc } = JSON.parse(cached)
-        if (cd) setDeals(cd)
-        if (cp) setPipelines(cp)
-        if (cs) setStages(cs)
-        if (cc) setCounts(cc)
-        if (ccv) setConversions(ccv)
-        if (cr) setReasons(cr)
-        if (cls) setSources(cls)
-        if (cu) setUsers(cu)
-        if (cdc) setDoctors(cdc)
-        hasCache = true
-        setLoading(false) // показываем кэш немедленно
-      }
-    } catch { /* ignore */ }
-
-    // Если есть кэш — не показываем экран загрузки, обновляем тихо в фоне
-    if (!hasCache) setLoading(true)
+    // SPA-кэш уже применён синхронно через useState initializer.
+    // Если кэша нет — показываем спиннер, иначе обновляем тихо в фоне.
+    if (!_spaCache[clinicId]) setLoading(true)
     // ── Сделки тянем через server-side роут (service role, обход RLS) ────
     // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
     // например при просроченном refresh-токене или когда auth.uid() не
@@ -590,20 +581,18 @@ export default function CRMKanbanPage() {
       setCounts(countsData)
       setConversions(conversionsData)
 
-      // Сохраняем в кэш для мгновенного показа при следующем открытии
-      try {
-        localStorage.setItem(CACHE_KEY, JSON.stringify({
-          deals: enriched, pipelines: ps, stages: stagesData,
-          counts: countsData, conversions: conversionsData,
-          reasons: r.data ?? [], sources: ls.data ?? [],
-          users: usersList, doctors: doctorsList,
-        }))
-      } catch { /* ignore quota errors */ }
+      // Сохраняем в SPA-кэш — мгновенно при следующем переходе на страницу
+      _spaCache[clinicId] = {
+        deals: enriched, pipelines: ps, stages: stagesData,
+        counts: countsData, conversions: conversionsData,
+        reasons: (r.data ?? []) as LossReason[], sources: (ls.data ?? []) as LeadSource[],
+        users: usersList, doctors: doctorsList,
+      }
     }
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
-  }, [clinicId, supabase, ownerFilter, showTerminal, profile?.id, CACHE_KEY])
+  }, [clinicId, supabase, ownerFilter, showTerminal, profile?.id])
 
   useEffect(() => { load() }, [load])
 
