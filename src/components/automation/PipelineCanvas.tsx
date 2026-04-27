@@ -345,13 +345,22 @@ export default function PipelineCanvas({
         throw new Error(j.error ?? `HTTP ${res.status}`)
       }
 
+      const tmplRows = []
       for (const cards of Object.values(STAGE_AUTOMATIONS)) for (const c of cards) {
         const body = bodies[c.templateKey]?.trim()
         if (!body) continue
-        const { error: tErr } = await supabase.from('message_templates').upsert({
-          clinic_id: clinicId, key: c.templateKey, title: c.title, body, is_active: true,
-        }, { onConflict: 'clinic_id,key' })
-        if (tErr) throw new Error(tErr.message)
+        tmplRows.push({ clinic_id: clinicId, key: c.templateKey, title: c.title, body, is_active: true })
+      }
+      if (tmplRows.length > 0) {
+        const tr = await fetch('/api/settings/stages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ table: 'message_templates', rows: tmplRows, onConflict: 'clinic_id,key' }),
+        })
+        if (!tr.ok) {
+          const j = await tr.json().catch(() => ({}))
+          throw new Error(j.error ?? `HTTP ${tr.status}`)
+        }
       }
 
       setToast('Сохранено')
