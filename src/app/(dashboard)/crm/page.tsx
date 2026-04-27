@@ -1076,6 +1076,13 @@ export default function CRMKanbanPage() {
               📞 Глобально
             </button>
           </div>
+          {debouncedSearch && (
+            <span className="ml-3 text-xs text-blue-600 font-medium whitespace-nowrap self-center">
+              Найдено: {viewMode === 'table'
+                ? tableDeals.length
+                : Array.from(dealsByStage.values()).reduce((s, arr) => s + arr.length, 0)}
+            </span>
+          )}
         </div>
 
         {/* Правый блок: переключатель вида + скрытые этапы + KPI конверсии — всё в один ряд */}
@@ -1183,7 +1190,9 @@ export default function CRMKanbanPage() {
                         {stageUnread}
                       </span>
                     )}
-                    <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
+                    <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
+                      {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
+                    </span>
                   </div>
                   <div className="p-2 space-y-2 min-h-[40px]">
                     {cards.map(d => (
