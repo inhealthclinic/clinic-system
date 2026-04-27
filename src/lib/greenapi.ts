@@ -236,7 +236,18 @@ export interface IncomingMessageWebhook {
   messageData: {
     typeMessage: string
     textMessageData?: { textMessage: string }
-    extendedTextMessageData?: { text: string }
+    extendedTextMessageData?: {
+      text: string
+      /** URL ссылки если WhatsApp сгенерил превью. Часто отсутствует в text. */
+      description?: string
+      title?: string
+      previewType?: string
+      jpegThumbnail?: string
+      /** На пересылке поста: ссылка на оригинальный пост. */
+      forwardingScore?: number
+      isForwarded?: boolean
+      stanzaId?: string
+    }
     /** Для audio/voice/image/video/document/sticker — Green-API отдаёт CDN-ссылку. */
     fileMessageData?: {
       downloadUrl: string
@@ -335,10 +346,26 @@ export function extractIncomingText(wh: IncomingMessageWebhook): string | null {
   // 1. Простой/расширенный текст и свайп-ответы — все они кладут текст в
   // textMessageData или extendedTextMessageData. Если хоть одно из этих
   // полей заполнено непустой строкой — это и есть текст пациента.
+  // Для extendedText ссылка часто живёт в description/title (превью линка),
+  // а в text только подпись пациента — приклеиваем URL отдельной строкой,
+  // чтобы менеджер не терял ссылку.
   const plainText = md.textMessageData?.textMessage?.trim()
-  const extText = md.extendedTextMessageData?.text?.trim()
   if (plainText) return plainText
-  if (extText) return extText
+  const ext = md.extendedTextMessageData
+  if (ext) {
+    const extText = ext.text?.trim() ?? ''
+    const urlLike = (s: string | undefined): string | null => {
+      const t = s?.trim()
+      if (!t) return null
+      return /^https?:\/\//i.test(t) ? t : null
+    }
+    const linkUrl = urlLike(ext.title) || urlLike(ext.description)
+    if (linkUrl && !extText.includes(linkUrl)) {
+      return extText ? `${extText}\n${linkUrl}` : linkUrl
+    }
+    if (extText) return extText
+    if (linkUrl) return linkUrl
+  }
 
   // 2. Реакция эмодзи — может прийти как reactionMessage или внутри
   // другого типа. Проверяем по data-полю.
