@@ -222,6 +222,7 @@ export default function CRMKanbanPage() {
   // после последнего нажатия, чтобы не пересчитывать фильтр на каждую букву.
   const [listSearch, setListSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedSearch(listSearch), 300)
     return () => window.clearTimeout(t)
@@ -728,6 +729,40 @@ export default function CRMKanbanPage() {
       .sort(compareDeals)
   }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
+  // Глобальные результаты поиска для выпадающего списка под инпутом.
+  // Не ограничиваемся активной воронкой — оператор ищет «человека», а не
+  // «человека в воронке X». Сортируем по свежести stage_entered_at, рендерим
+  // первые N штук.
+  const SEARCH_RESULTS_LIMIT = 50
+  const searchResultsAll = useMemo(() => {
+    const q = debouncedSearch.trim().toLowerCase()
+    if (!q) return [] as DealRow[]
+    return deals
+      .filter(d => !d.stage_id ? false : matchesSearch(d, q))
+      .sort((a, b) =>
+        new Date(b.stage_entered_at || b.updated_at || 0).getTime() -
+        new Date(a.stage_entered_at || a.updated_at || 0).getTime()
+      )
+  }, [deals, debouncedSearch, matchesSearch])
+  const searchResults = useMemo(
+    () => searchResultsAll.slice(0, SEARCH_RESULTS_LIMIT),
+    [searchResultsAll]
+  )
+  const searchResultsTotal = searchResultsAll.length
+
+  // Закрываем выпадашку при клике вне инпута/списка.
+  useEffect(() => {
+    if (!searchOpen) return
+    const onDocClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t) return
+      if (t.closest('[data-search-panel]')) return
+      setSearchOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [searchOpen])
+
   // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
   useEffect(() => {
     if (!autoRefresh) return
@@ -1113,7 +1148,7 @@ export default function CRMKanbanPage() {
 
         {/* Поиск — по центру (flex-1 + justify-center) */}
         <div className="flex-1 flex justify-center min-w-[220px]">
-          <div className="relative w-full max-w-md">
+          <div className="relative w-full max-w-md" data-search-panel>
             <svg
               width="14"
               height="14"
@@ -1128,6 +1163,8 @@ export default function CRMKanbanPage() {
               type="search"
               value={listSearch}
               onChange={e => setListSearch(e.target.value)}
+              onFocus={() => setSearchOpen(true)}
+              onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); (e.target as HTMLInputElement).blur() } }}
               placeholder="Поиск по сделкам: имя, телефон, тег, город…"
               className="w-full pl-9 pr-24 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
@@ -1139,12 +1176,64 @@ export default function CRMKanbanPage() {
             >
               📞 Глобально
             </button>
+
+            {searchOpen && debouncedSearch && (
+              <div
+                className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-md shadow-lg max-h-[60vh] overflow-y-auto"
+                onMouseDown={e => e.preventDefault()} /* не сбрасывать фокус инпута при клике на список */
+              >
+                {searchResults.length === 0 ? (
+                  <div className="px-3 py-4 text-sm text-gray-400 text-center">Ничего не найдено</div>
+                ) : (
+                  <>
+                    <div className="sticky top-0 bg-gray-50 border-b border-gray-100 px-3 py-1.5 text-[11px] text-gray-500 flex items-center justify-between">
+                      <span>Найдено: <span className="font-medium text-blue-600">{searchResultsTotal}</span></span>
+                      {searchResultsTotal > searchResults.length && (
+                        <span className="text-gray-400">показаны первые {searchResults.length}</span>
+                      )}
+                    </div>
+                    {searchResults.map(d => {
+                      const st = stages.find(s => s.id === d.stage_id)
+                      const phone = d.patient?.phones?.[0] ?? d.contact_phone ?? ''
+                      const title = d.patient?.full_name || d.name || '—'
+                      return (
+                        <button
+                          key={d.id}
+                          type="button"
+                          onClick={() => { setSearchOpen(false); openDeal(d) }}
+                          className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-50 last:border-0 flex items-center gap-2"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-gray-900 truncate">{title}</div>
+                            <div className="text-[11px] text-gray-500 flex items-center gap-2 truncate">
+                              {phone && <span className="whitespace-nowrap">{phone}</span>}
+                              {st && (
+                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: st.color }} />
+                                  {st.name}
+                                </span>
+                              )}
+                              {d.responsible && (
+                                <span className="text-gray-400 whitespace-nowrap truncate">
+                                  · {d.responsible.first_name} {d.responsible.last_name ?? ''}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <span className="text-[11px] text-gray-400 whitespace-nowrap">
+                            {fmtAge(d.stage_entered_at || d.updated_at)}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </>
+                )}
+              </div>
+            )}
           </div>
           {debouncedSearch && (
             <span className="ml-3 text-xs text-blue-600 font-medium whitespace-nowrap self-center">
-              Найдено: {viewMode === 'table'
-                ? tableDeals.length
-                : Array.from(dealsByStage.values()).reduce((s, arr) => s + arr.length, 0)}
+              Найдено: {searchResultsTotal}
             </span>
           )}
         </div>
