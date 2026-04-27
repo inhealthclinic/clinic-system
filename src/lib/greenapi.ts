@@ -283,14 +283,26 @@ export type GreenApiWebhook =
   | StateWebhook
   | { typeWebhook: string; [k: string]: unknown }
 
-/** Вытащить текст из incomingMessageReceived в человекочитаемый string или null для не-текстовых сообщений */
+/** Вытащить текст из incomingMessageReceived в человекочитаемый string или null для не-текстовых сообщений.
+ *
+ *  Для медиа (image/video/document) сохраняем подпись пациента, если она есть —
+ *  иначе теряются ссылки и комментарии, которые он написал к фото/видео
+ *  (характерный кейс — пересылка поста Instagram: приходит imageMessage
+ *  c превью и caption-ом, содержащим URL и описание).
+ */
 export function extractIncomingText(wh: IncomingMessageWebhook): string | null {
   const md = wh.messageData
+  const caption = md.fileMessageData?.caption?.trim()
+  const captionLine = caption ? `\n${caption}` : ''
+
   if (md.typeMessage === 'textMessage') return md.textMessageData?.textMessage ?? null
   if (md.typeMessage === 'extendedTextMessage') return md.extendedTextMessageData?.text ?? null
-  if (md.typeMessage === 'imageMessage') return '[🖼 изображение]'
-  if (md.typeMessage === 'audioMessage') return '[🎙 аудио]'
-  if (md.typeMessage === 'videoMessage') return '[🎬 видео]'
-  if (md.typeMessage === 'documentMessage') return '[📎 документ]'
+  if (md.typeMessage === 'imageMessage')    return `🖼 изображение${captionLine}`
+  if (md.typeMessage === 'audioMessage')    return `🎙 аудио${captionLine}`
+  if (md.typeMessage === 'videoMessage')    return `🎬 видео${captionLine}`
+  if (md.typeMessage === 'documentMessage') {
+    const name = md.fileMessageData?.fileName?.trim()
+    return `📎 документ${name ? ' · ' + name : ''}${captionLine}`
+  }
   return `[${md.typeMessage}]`
 }
