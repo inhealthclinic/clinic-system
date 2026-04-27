@@ -335,9 +335,15 @@ export default function PipelineCanvas({
         bot_enabled: flags.bot_enabled,
         automation,
       }
-      const { error: cErr } = await supabase
-        .from('clinics').update({ settings }).eq('id', clinicId)
-      if (cErr) throw cErr
+      const res = await fetch('/api/settings/stages', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table: 'clinics', id: clinicId, patch: { settings } }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error ?? `HTTP ${res.status}`)
+      }
 
       for (const cards of Object.values(STAGE_AUTOMATIONS)) for (const c of cards) {
         const body = bodies[c.templateKey]?.trim()
@@ -345,13 +351,13 @@ export default function PipelineCanvas({
         const { error: tErr } = await supabase.from('message_templates').upsert({
           clinic_id: clinicId, key: c.templateKey, title: c.title, body, is_active: true,
         }, { onConflict: 'clinic_id,key' })
-        if (tErr) throw tErr
+        if (tErr) throw new Error(tErr.message)
       }
 
       setToast('Сохранено')
       setTimeout(() => setToast(''), 1800)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Ошибка сохранения')
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
