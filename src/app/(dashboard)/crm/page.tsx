@@ -803,7 +803,7 @@ export default function CRMKanbanPage() {
         </div>
       )}
       {/* Header — только действия, без заголовка */}
-      <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
+      <div className="flex items-center justify-end mb-2 flex-wrap gap-1.5 sm:gap-2">
         {/* Онлайн-сотрудники */}
         <div className="relative">
           <button
@@ -839,15 +839,16 @@ export default function CRMKanbanPage() {
           )}
         </div>
 
-        <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
+        <Link href="/crm/analytics" className="hidden sm:block text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
           Аналитика
         </Link>
         <Link
           href="/settings/pipelines"
-          className="text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
+          className="text-sm px-2 sm:px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
           title="Этапы, причины потери, источники, автоматизации (бот / касания / задачи)"
         >
-          ⚙ Настроить воронку
+          <span className="hidden sm:inline">⚙ Настроить воронку</span>
+          <span className="sm:hidden">⚙</span>
         </Link>
 
         {/* Кнопка «…» — меню сортировки, автообновления, импорта/экспорта и т. п. */}
@@ -966,37 +967,36 @@ export default function CRMKanbanPage() {
           <button
             type="button"
             onClick={() => setOwnerFilter('mine')}
-            className={`px-3 py-1 rounded-[5px] transition-colors ${
-              ownerFilter === 'mine'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-600 hover:bg-gray-50'
+            className={`px-2 sm:px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'mine' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
             }`}
             aria-pressed={ownerFilter === 'mine'}
-            title="Показывать только сделки, где я ответственный"
+            title="Только мои"
           >
-            Только мои
+            <span className="hidden sm:inline">Только мои</span>
+            <span className="sm:hidden">Мои</span>
           </button>
           <button
             type="button"
             onClick={() => setOwnerFilter('all')}
-            className={`px-3 py-1 rounded-[5px] transition-colors ${
-              ownerFilter === 'all'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-600 hover:bg-gray-50'
+            className={`px-2 sm:px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'all' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
             }`}
             aria-pressed={ownerFilter === 'all'}
-            title="Показывать все сделки клиники"
+            title="Все сделки"
           >
-            Все сделки
+            <span className="hidden sm:inline">Все сделки</span>
+            <span className="sm:hidden">Все</span>
           </button>
         </div>
 
         <button
           onClick={() => setQuickCreateOpen(true)}
-          className="text-sm px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
+          className="text-sm px-2 sm:px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
           title="Быстрая сделка: имя + телефон"
         >
-          ⚡ Быстро
+          <span className="hidden sm:inline">⚡ Быстро</span>
+          <span className="sm:hidden">⚡</span>
         </button>
         <button
           onClick={() => openDeal({
@@ -1019,7 +1019,7 @@ export default function CRMKanbanPage() {
       </div>
 
       {/* Табы воронок (слева) + поиск (по центру) + вид сетка/таблица (справа) */}
-      <div className="flex items-center gap-3 mb-3 flex-wrap">
+      <div className="flex items-center gap-2 mb-2 overflow-x-auto pb-1 scrollbar-none [-webkit-overflow-scrolling:touch]">
         {/* Воронки — слева */}
         <div className="flex items-center gap-2 flex-wrap">
           {pipelines.map(p => (
@@ -1144,8 +1144,8 @@ export default function CRMKanbanPage() {
           горизонтальная полоса прокрутки прижималась к низу экрана и
           не перекрывала карточки в верхней части рабочей зоны. */}
       {viewMode === 'kanban' && (
-        <div className="overflow-auto h-[calc(100vh-220px)] pb-2">
-          <div className="flex gap-3 items-start min-w-max">
+        <div className="overflow-auto h-[calc(100vh-200px)] sm:h-[calc(100vh-220px)] pb-2 [-webkit-overflow-scrolling:touch]">
+          <div className="flex gap-2 sm:gap-3 items-start min-w-max px-0.5">
             {activeStages.map(stage => {
               const cards = dealsByStage.get(stage.id) ?? []
               const count = counts.find(c => c.stage_id === stage.id)
@@ -1154,7 +1154,7 @@ export default function CRMKanbanPage() {
               return (
                 <div
                   key={stage.id}
-                  className={`min-w-[280px] w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
+                  className={`min-w-[240px] w-[240px] sm:min-w-[280px] sm:w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
                     isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
                   }`}
                   onDragOver={(e) => onDragOver(e, stage.id)}
@@ -2642,7 +2642,7 @@ function DealModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
       <div
-        className="bg-gray-50 shadow-2xl w-full max-w-[1600px] ml-auto flex flex-col h-full overflow-hidden relative"
+        className="bg-gray-50 shadow-2xl w-full sm:max-w-[1600px] sm:ml-auto flex flex-col h-full overflow-hidden relative"
         onClick={e => e.stopPropagation()}
       >
         {/* Боковая панель непрочитанных — выезжает слева */}
