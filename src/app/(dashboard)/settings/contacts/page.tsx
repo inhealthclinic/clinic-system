@@ -115,20 +115,73 @@ export default function ContactsPage() {
     if (!clinicId) return
     setLoading(true)
 
-    // 1. patients
+    const from = page * PAGE_SIZE
+    const to   = from + PAGE_SIZE - 1
+
+    if (typeFilter === 'patient') {
+      // ── только пациенты ─────────────────────────────────────────────────
+      let q = supabase
+        .from('patients')
+        .select('id, full_name, phones, city, created_at', { count: 'exact' })
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+        .range(from, to)
+      if (search) q = q.or(`full_name.ilike.%${search}%`)
+      const { data, count } = await q
+      setTotal(count ?? 0)
+      setContacts((data ?? []).map((p: { id: string; full_name: string | null; phones: string[] | null; city: string | null; created_at: string }) => ({
+        id: `p_${p.id}`, type: 'patient' as ContactType,
+        name: p.full_name ?? '', phone: (p.phones?.[0] ?? '').replace(/\D/g, ''),
+        city: p.city ?? null, tags: [], created_at: p.created_at, source_id: p.id,
+      })))
+      setLoading(false)
+      return
+    }
+
+    if (typeFilter === 'lead') {
+      // ── только лиды ─────────────────────────────────────────────────────
+      let q = supabase
+        .from('deals')
+        .select('id, name, contact_phone, contact_city, tags, created_at', { count: 'exact' })
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .not('contact_phone', 'is', null)
+        .order('created_at', { ascending: false })
+        .range(from, to)
+      if (search) q = q.or(`name.ilike.%${search}%,contact_phone.ilike.%${search}%`)
+      const { data, count } = await q
+      setTotal(count ?? 0)
+      setContacts((data ?? []).map((d: { id: string; name: string | null; contact_phone: string | null; contact_city: string | null; tags: string[] | null; created_at: string }) => ({
+        id: `d_${d.id}`, type: 'lead' as ContactType,
+        name: d.name ?? '', phone: (d.contact_phone ?? '').replace(/\D/g, ''),
+        city: d.contact_city ?? null, tags: d.tags ?? [], created_at: d.created_at, source_id: d.id,
+      })))
+      setLoading(false)
+      return
+    }
+
+    // ── все: patients + deals, дедупликация по телефону ──────────────────
+    // Пациенты приоритетнее — тянем всех (обычно немного)
     const { data: patients } = await supabase
       .from('patients')
       .select('id, full_name, phones, city, created_at')
       .eq('clinic_id', clinicId)
       .is('deleted_at', null)
+      .limit(5000)
 
-    // 2. deals with phone
-    const { data: deals } = await supabase
+    // Сделки — с поиском и offset
+    let dq = supabase
       .from('deals')
-      .select('id, name, contact_phone, contact_city, tags, created_at')
+      .select('id, name, contact_phone, contact_city, tags, created_at', { count: 'exact' })
       .eq('clinic_id', clinicId)
       .is('deleted_at', null)
       .not('contact_phone', 'is', null)
+      .order('created_at', { ascending: false })
+    if (search) dq = dq.or(`name.ilike.%${search}%,contact_phone.ilike.%${search}%`)
+
+    // Получаем всю страницу сделок + общий count
+    const { data: dealsPage, count: dealsCount } = await dq.range(from, to)
 
     // build unified list, deduplicate by normalized phone
     const seen = new Set<string>()
@@ -153,7 +206,7 @@ export default function ContactsPage() {
     }
 
     // leads (deals)
-    for (const d of deals ?? []) {
+    for (const d of dealsPage ?? []) {
       const phone = (d.contact_phone ?? '').replace(/\D/g, '')
       if (!phone) continue
       if (seen.has(phone)) continue
@@ -170,19 +223,14 @@ export default function ContactsPage() {
       })
     }
 
-    // sort newest first
-    all.sort((a, b) => (b.created_at > a.created_at ? 1 : -1))
-
-    // filter
-    const q = search.toLowerCase()
-    const filtered = all.filter(c => {
-      if (typeFilter !== 'all' && c.type !== typeFilter) return false
-      if (q && !c.name.toLowerCase().includes(q) && !c.phone.includes(q)) return false
-      return true
-    })
-
-    setTotal(filtered.length)
-    setContacts(filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE))
+    // Для режима "Все" показываем текущую страницу сделок + пациентов
+    // (пациенты уже в памяти). Общий total = пациенты + сделки.
+    const patientContacts = all.filter(c => c.type === 'patient')
+    const dealContacts    = all.filter(c => c.type === 'lead')
+    setTotal((patients?.length ?? 0) + (dealsCount ?? 0))
+    // Показываем на странице: сначала пациенты (их мало), потом сделки
+    const combined = [...patientContacts, ...dealContacts]
+    setContacts(combined)
     setLoading(false)
   }, [clinicId, supabase, search, typeFilter, page])
 
@@ -217,10 +265,10 @@ export default function ContactsPage() {
       firstStageId = stageRows?.[0]?.id ?? null
     }
 
-    // collect all existing phones (deals + patients)
+    // collect all existing phones (deals + patients) — limit 50k чтобы не упереться в дефолт PostgREST
     const [{ data: existingDeals }, { data: existingPatients }] = await Promise.all([
-      supabase.from('deals').select('contact_phone').eq('clinic_id', clinicId).is('deleted_at', null).not('contact_phone', 'is', null),
-      supabase.from('patients').select('phones').eq('clinic_id', clinicId).is('deleted_at', null),
+      supabase.from('deals').select('contact_phone').eq('clinic_id', clinicId).is('deleted_at', null).not('contact_phone', 'is', null).limit(50000),
+      supabase.from('patients').select('phones').eq('clinic_id', clinicId).is('deleted_at', null).limit(50000),
     ])
     const existingPhones = new Set<string>()
     for (const d of existingDeals ?? []) existingPhones.add((d.contact_phone ?? '').replace(/\D/g, ''))
