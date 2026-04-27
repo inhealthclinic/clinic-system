@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useIsMobile } from '@/lib/hooks/useIsMobile'
 import { useKeyboardHeight } from '@/lib/hooks/useKeyboardHeight'
+import { useBackHandler } from '@/lib/hooks/useBackHandler'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -1994,6 +1995,7 @@ function DealModal({
   const isMobileModal = useIsMobile(1024)
   const keyboardHeight = useKeyboardHeight()
   const [mobileTab, setMobileTab] = useState<'chat' | 'details'>('chat')
+  useBackHandler(isMobileModal, onClose)
 
   // Счётчик + список непрочитанных по ВСЕМ сделкам клиники
   interface UnreadItem {
