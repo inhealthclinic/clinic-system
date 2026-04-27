@@ -141,34 +141,43 @@ export default function CRMKanbanPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  // ── Online presence ────────────────────────────────────────────────────────
-  interface OnlineUser { id: string; name: string; role: string; avatar?: string }
+  // ── Online presence (heartbeat via last_seen_at) ──────────────────────────
+  interface OnlineUser { id: string; name: string; role: string }
   const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([])
   const [presenceOpen, setPresenceOpen] = useState(false)
 
   useEffect(() => {
     if (!clinicId || !profile?.id) return
-    const me: OnlineUser = {
-      id: profile.id,
-      name: [profile.first_name, profile.last_name].filter(Boolean).join(' ') || 'Сотрудник',
-      role: profile.role?.name ?? '',
+
+    const heartbeat = async () => {
+      await supabase
+        .from('user_profiles')
+        .update({ last_seen_at: new Date().toISOString() })
+        .eq('id', profile.id)
     }
-    const ch = supabase.channel(`presence:crm:${clinicId}`, { config: { presence: { key: profile.id } } })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(ch as any)
-      .on('presence', { event: 'sync' }, () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const state = (ch as any).presenceState() as Record<string, OnlineUser[]>
-        const users = Object.values(state).flat().filter((u): u is OnlineUser => !!u?.id)
-        // дедупликация по id
-        const seen = new Set<string>()
-        setOnlineUsers(users.filter(u => { if (seen.has(u.id)) return false; seen.add(u.id); return true }))
-      })
-      .subscribe(async (status: string) => {
-        if (status === 'SUBSCRIBED') await (ch as any).track(me)
-      })
-    return () => { supabase.removeChannel(ch) }
-  }, [clinicId, profile?.id, profile?.first_name, profile?.last_name, profile?.role?.name, supabase])
+
+    const fetchOnline = async () => {
+      const since = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('id, first_name, last_name, role:roles(name)')
+        .eq('clinic_id', clinicId)
+        .gte('last_seen_at', since)
+        .is('deleted_at', null)
+      const users: OnlineUser[] = (data ?? []).map((u: Record<string, unknown>) => ({
+        id: u.id as string,
+        name: [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Сотрудник',
+        role: (u.role as { name?: string } | null)?.name ?? '',
+      }))
+      setOnlineUsers(users)
+    }
+
+    heartbeat()
+    fetchOnline()
+    const hbTimer = setInterval(heartbeat, 30_000)
+    const fetchTimer = setInterval(fetchOnline, 30_000)
+    return () => { clearInterval(hbTimer); clearInterval(fetchTimer) }
+  }, [clinicId, profile?.id, supabase])
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
