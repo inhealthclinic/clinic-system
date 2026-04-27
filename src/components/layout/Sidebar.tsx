@@ -325,6 +325,27 @@ export function Sidebar({ onClose }: SidebarProps) {
         </div>
       </nav>
 
+      {/* Компактная строка непрочитанных — над блоком профиля. Кликабельна,
+          ведёт на CRM, где менеджер сразу увидит карточки с бейджами. */}
+      {crmUnread > 0 && (
+        <Link
+          href="/crm"
+          onClick={onClose}
+          className="mx-3 mb-2 flex items-center gap-2 px-3 py-1.5 rounded-md bg-green-50 hover:bg-green-100 border border-green-200 text-green-800 transition-colors"
+          title={`${crmUnread} непрочитанных сообщений в CRM`}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="flex-shrink-0">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span className="text-xs font-medium truncate flex-1">
+            {crmUnread} {crmUnread === 1 ? 'непрочитанное' : crmUnread < 5 ? 'непрочитанных' : 'непрочитанных'}
+          </span>
+          <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+            {crmUnread > 99 ? '99+' : crmUnread}
+          </span>
+        </Link>
+      )}
+
       {/* User */}
       {profile && (
         <div className="px-3 py-4 border-t border-gray-100">
