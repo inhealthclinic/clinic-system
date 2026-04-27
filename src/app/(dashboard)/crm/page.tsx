@@ -503,6 +503,7 @@ export default function CRMKanbanPage() {
         if (cu) setUsers(cu)
         if (cdc) setDoctors(cdc)
         hasCache = true
+        setLoading(false) // показываем кэш немедленно
       }
     } catch { /* ignore */ }
 
