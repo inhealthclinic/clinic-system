@@ -1109,59 +1109,6 @@ export default function CRMKanbanPage() {
               className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
 
-            {debouncedSearch && (
-              <div
-                className="absolute left-0 right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-md shadow-lg max-h-[60vh] overflow-y-auto"
-                onMouseDown={e => e.preventDefault()} /* не сбрасывать фокус инпута при клике на список */
-              >
-                {searchResults.length === 0 ? (
-                  <div className="px-3 py-4 text-sm text-gray-400 text-center">Ничего не найдено</div>
-                ) : (
-                  <>
-                    <div className="sticky top-0 bg-gray-50 border-b border-gray-100 px-3 py-1.5 text-[11px] text-gray-500 flex items-center justify-between">
-                      <span>Найдено: <span className="font-medium text-blue-600">{searchResultsTotal}</span></span>
-                      {searchResultsTotal > searchResults.length && (
-                        <span className="text-gray-400">показаны первые {searchResults.length}</span>
-                      )}
-                    </div>
-                    {searchResults.map(d => {
-                      const st = stages.find(s => s.id === d.stage_id)
-                      const phone = d.patient?.phones?.[0] ?? d.contact_phone ?? ''
-                      const title = d.patient?.full_name || d.name || '—'
-                      return (
-                        <button
-                          key={d.id}
-                          type="button"
-                          onClick={() => { setSearchOpen(false); openDeal(d) }}
-                          className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-50 last:border-0 flex items-center gap-2"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm text-gray-900 truncate">{title}</div>
-                            <div className="text-[11px] text-gray-500 flex items-center gap-2 truncate">
-                              {phone && <span className="whitespace-nowrap">{phone}</span>}
-                              {st && (
-                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: st.color }} />
-                                  {st.name}
-                                </span>
-                              )}
-                              {d.responsible && (
-                                <span className="text-gray-400 whitespace-nowrap truncate">
-                                  · {d.responsible.first_name} {d.responsible.last_name ?? ''}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <span className="text-[11px] text-gray-400 whitespace-nowrap">
-                            {fmtAge(d.stage_entered_at || d.updated_at)}
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </>
-                )}
-              </div>
-            )}
           </div>
           {debouncedSearch && (
             <span className="ml-3 text-xs text-blue-600 font-medium whitespace-nowrap self-center">
@@ -1243,6 +1190,62 @@ export default function CRMKanbanPage() {
           )}
         </div>
       </div>
+
+      {/* Список найденных сделок — inline-панель в потоке страницы (не popover),
+          чтобы её не клипали родительские overflow/stacking-контексты. Видна
+          только когда есть запрос. */}
+      {debouncedSearch && (
+        <div className="mb-3 bg-white border border-blue-200 rounded-md shadow-sm max-h-[40vh] overflow-y-auto">
+          {searchResults.length === 0 ? (
+            <div className="px-3 py-4 text-sm text-gray-400 text-center">
+              По запросу «{debouncedSearch}» ничего не найдено
+            </div>
+          ) : (
+            <>
+              <div className="sticky top-0 bg-blue-50 border-b border-blue-100 px-3 py-1.5 text-[11px] text-blue-700 flex items-center justify-between">
+                <span>Результаты поиска: <span className="font-semibold">{searchResultsTotal}</span></span>
+                {searchResultsTotal > searchResults.length && (
+                  <span className="text-blue-400">показаны первые {searchResults.length}</span>
+                )}
+              </div>
+              {searchResults.map(d => {
+                const st = stages.find(s => s.id === d.stage_id)
+                const phone = d.patient?.phones?.[0] ?? d.contact_phone ?? ''
+                const title = d.patient?.full_name || d.name || '—'
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => openDeal(d)}
+                    className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-50 last:border-0 flex items-center gap-3"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-gray-900 truncate">{title}</div>
+                      <div className="text-[11px] text-gray-500 flex items-center gap-2 truncate mt-0.5">
+                        {phone && <span className="whitespace-nowrap">{phone}</span>}
+                        {st && (
+                          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: st.color }} />
+                            {st.name}
+                          </span>
+                        )}
+                        {d.responsible && (
+                          <span className="text-gray-400 whitespace-nowrap truncate">
+                            · {d.responsible.first_name} {d.responsible.last_name ?? ''}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-gray-400 whitespace-nowrap">
+                      {fmtAge(d.stage_entered_at || d.updated_at)}
+                    </span>
+                  </button>
+                )
+              })}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Kanban / сетка — колонки по этапам с drag&drop.
           Контейнер занимает всю оставшуюся высоту вьюпорта, чтобы
