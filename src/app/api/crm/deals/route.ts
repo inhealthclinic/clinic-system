@@ -101,17 +101,7 @@ export async function GET(req: NextRequest) {
   }
   const deals = all
 
-  // Диагностика: считаем все сделки в БД БЕЗ фильтра по клинике.
-  // Если service-role реально bypass'ит RLS — count покажет суммарное
-  // число сделок (порядка 1565). Если ключ невалидный (anon вместо
-  // service_role на Vercel), RLS ляжет, и count тоже будет 0 — это
-  // прямой индикатор misconfig'а, видимый прямо в UI-баннере.
-  const { count: globalDeals } = await admin
-    .from('deals')
-    .select('id', { count: 'exact', head: true })
-
-  // 4) Подгружаем пациентов чанками, без embed-ов (PostgREST на больших
-  //    выборках с FK на удалённые/недоступные patients схлопывает родителей).
+  // 4) Подгружаем пациентов + глобальный счётчик параллельно
   const dealRows = deals as Array<{ id: string; patient_id: string | null }>
   const patientIds = Array.from(
     new Set(dealRows.map(d => d.patient_id).filter((x): x is string => !!x)),
@@ -123,15 +113,19 @@ export async function GET(req: NextRequest) {
     birth_date?: string | null
     city?: string | null
   }
-  const patients: PatientLite[] = []
+
+  const patientBatches = []
   for (let i = 0; i < patientIds.length; i += 500) {
-    const slice = patientIds.slice(i, i + 500)
-    const { data } = await admin
-      .from('patients')
-      .select('id, full_name, phones, birth_date, city')
-      .in('id', slice)
-    if (data) patients.push(...(data as PatientLite[]))
+    patientBatches.push(patientIds.slice(i, i + 500))
   }
+  const [patientResults, countResult] = await Promise.all([
+    Promise.all(patientBatches.map(slice =>
+      admin.from('patients').select('id, full_name, phones, birth_date, city').in('id', slice)
+    )),
+    admin.from('deals').select('id', { count: 'exact', head: true }),
+  ])
+  const patients: PatientLite[] = patientResults.flatMap(r => (r.data ?? []) as PatientLite[])
+  const globalDeals = countResult.count
 
   return NextResponse.json({
     clinic_id: profile.clinic_id,

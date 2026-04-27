@@ -496,10 +496,8 @@ export default function CRMKanbanPage() {
     const { data: { session } } = await supabase.auth.getSession()
     const accessToken = session?.access_token ?? ''
     const ownerParam = ownerFilter === 'mine' ? 'mine' : 'all'
-    const dealsResp = await fetch(`/api/crm/deals?owner=${ownerParam}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      cache: 'no-store',
-    })
+
+    // Все запросы параллельно — deals API + справочники одновременно
     type DealsApiPayload = {
       clinic_id?: string
       deals?: DealRow[]
@@ -507,11 +505,11 @@ export default function CRMKanbanPage() {
       error?: string
       global_deals_count?: number | null
     }
-    const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
-    if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
-    setDealsDiag({ status: dealsResp.status, error: dealsJson?.error ?? null })
-
-    const [p, r, ls, up, doc, cl] = await Promise.all([
+    const [dealsResp, p, r, ls, up, doc, cl] = await Promise.all([
+      fetch(`/api/crm/deals?owner=${ownerParam}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        cache: 'no-store',
+      }),
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
@@ -519,6 +517,10 @@ export default function CRMKanbanPage() {
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
+    const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
+    if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
+    setDealsDiag({ status: dealsResp.status, error: dealsJson?.error ?? null })
+
     const ps = (p.data ?? []) as Pipeline[]
     const usersList = (up.data ?? []) as UserLite[]
     const doctorsList = (doc.data ?? []) as DoctorLite[]
