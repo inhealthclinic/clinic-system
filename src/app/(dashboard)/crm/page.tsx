@@ -15,6 +15,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { crmCache } from '@/lib/crmPrefetch'
 import { notify, confirmAction } from '@/lib/ui/notify'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
@@ -147,17 +148,48 @@ export default function CRMKanbanPage() {
   const isMobileKanban = useIsMobile(768)
   const [activeMobileStageId, setActiveMobileStageId] = useState<string>('')
 
-  const [pipelines, setPipelines] = useState<Pipeline[]>([])
-  const [stages, setStages] = useState<Stage[]>([])
-  const [deals, setDeals] = useState<DealRow[]>([])
-  const [counts, setCounts] = useState<StageCount[]>([])
-  const [conversions, setConversions] = useState<Conversion[]>([])
-  const [reasons, setReasons] = useState<LossReason[]>([])
-  const [sources, setSources] = useState<LeadSource[]>([])
-  const [users, setUsers] = useState<UserLite[]>([])
-  const [doctors, setDoctors] = useState<DoctorLite[]>([])
+  // ── Online presence (heartbeat via last_seen_at) ──────────────────────────
+  interface OnlineUser { id: string; name: string; role: string }
+  const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([])
+  const [presenceOpen, setPresenceOpen] = useState(false)
+
+  useEffect(() => {
+    if (!clinicId || !profile?.id) return
+
+    const heartbeat = async () => {
+      await supabase.rpc('touch_last_seen')
+    }
+
+    const fetchOnline = async () => {
+      const { data } = await supabase.rpc('get_online_users', { p_clinic_id: clinicId })
+      const users: OnlineUser[] = (data ?? []).map((u: Record<string, unknown>) => ({
+        id: u.id as string,
+        name: [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Сотрудник',
+        role: (u.role_name as string) ?? '',
+      }))
+      setOnlineUsers(users)
+    }
+
+    heartbeat()
+    fetchOnline()
+    const hbTimer = setInterval(heartbeat, 30_000)
+    const fetchTimer = setInterval(fetchOnline, 30_000)
+    return () => { clearInterval(hbTimer); clearInterval(fetchTimer) }
+  }, [clinicId, profile?.id, supabase])
+
+  // Инициализируем из prefetch-кэша синхронно — нет spinner'а если данные уже загружены
+  const snap = clinicId ? crmCache[clinicId] : undefined
+  const [pipelines, setPipelines] = useState<Pipeline[]>((snap?.pipelines ?? []) as Pipeline[])
+  const [stages, setStages] = useState<Stage[]>((snap?.stages ?? []) as Stage[])
+  const [deals, setDeals] = useState<DealRow[]>((snap?.deals ?? []) as DealRow[])
+  const [counts, setCounts] = useState<StageCount[]>((snap?.counts ?? []) as StageCount[])
+  const [conversions, setConversions] = useState<Conversion[]>((snap?.conversions ?? []) as Conversion[])
+  const [reasons, setReasons] = useState<LossReason[]>((snap?.reasons ?? []) as LossReason[])
+  const [sources, setSources] = useState<LeadSource[]>((snap?.sources ?? []) as LeadSource[])
+  const [users, setUsers] = useState<UserLite[]>((snap?.users ?? []) as UserLite[])
+  const [doctors, setDoctors] = useState<DoctorLite[]>((snap?.doctors ?? []) as DoctorLite[])
   const [apptTypes, setApptTypes] = useState<ApptType[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!snap)
 
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
@@ -461,38 +493,18 @@ export default function CRMKanbanPage() {
 
   const load = useCallback(async () => {
     if (!clinicId) return
-    setLoading(true)
-    // ── Сделки тянем через server-side роут (service role, обход RLS) ────
-    // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
-    // например при просроченном refresh-токене или когда auth.uid() не
-    // совпадает с user_profiles.id. RLS-политика deals при этом режет
-    // выборку в 0 строк, хотя view v_pipeline_stage_counts (owned by
-    // postgres → bypassRLS) корректно показывает счётчики. Симптом —
-    // «бейджи 1283/283, карточек 0».
-    //
-    // /api/crm/deals сам валидирует Bearer-токен, резолвит clinic_id из
-    // user_profiles и тянет сделки + пациентов service-role клиентом.
-    // Безопасно: клиника берётся из БД, тело запроса не влияет на
-    // фильтрацию.
-    const { data: { session } } = await supabase.auth.getSession()
-    const accessToken = session?.access_token ?? ''
-    const ownerParam = ownerFilter === 'mine' ? 'mine' : 'all'
-    const dealsResp = await fetch(`/api/crm/deals?owner=${ownerParam}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      cache: 'no-store',
-    })
-    type DealsApiPayload = {
-      clinic_id?: string
-      deals?: DealRow[]
-      patients?: { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }[]
-      error?: string
-      global_deals_count?: number | null
-    }
-    const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
-    if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
-    setDealsDiag({ status: dealsResp.status, error: dealsJson?.error ?? null })
 
-    const [p, r, ls, up, doc, cl] = await Promise.all([
+    // prefetch-кэш уже применён синхронно через useState initializer.
+    // Если кэша нет — показываем спиннер, иначе обновляем тихо в фоне.
+    if (!crmCache[clinicId]) setLoading(true)
+
+    // Все запросы параллельно — RPC напрямую к Supabase (без Vercel API-роута).
+    // get_clinic_deals / get_clinic_deal_patients — SECURITY DEFINER функции,
+    // обходят RLS и фильтруют по clinic_id авторизованного пользователя.
+    const ownerParam = ownerFilter === 'mine' ? 'mine' : 'all'
+    const [dealsRes, patientsRes, p, r, ls, up, doc, cl] = await Promise.all([
+      supabase.rpc('get_clinic_deals', { p_owner: ownerParam, p_show_closed: showTerminal }),
+      supabase.rpc('get_clinic_deal_patients', { p_show_closed: showTerminal }),
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
@@ -500,6 +512,9 @@ export default function CRMKanbanPage() {
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
+    if (dealsRes.error) console.error('[crm] get_clinic_deals:', dealsRes.error)
+    setDealsDiag({ status: dealsRes.error ? 500 : 200, error: dealsRes.error?.message ?? null })
+
     const ps = (p.data ?? []) as Pipeline[]
     const usersList = (up.data ?? []) as UserLite[]
     const doctorsList = (doc.data ?? []) as DoctorLite[]
@@ -509,11 +524,10 @@ export default function CRMKanbanPage() {
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
 
-    // Сшиваем deals с patients/users/doctors в памяти.
     type PatientLite = { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }
-    const dealRows = (dealsJson?.deals ?? []) as DealRow[]
+    const dealRows = (dealsRes.data ?? []) as DealRow[]
     const patientsById = new Map<string, PatientLite>(
-      ((dealsJson?.patients ?? []) as PatientLite[]).map(p0 => [p0.id, p0])
+      ((patientsRes.data ?? []) as PatientLite[]).map(p0 => [p0.id, p0])
     )
     const usersById = new Map(usersList.map(u => [u.id, u]))
     const doctorsById = new Map(doctorsList.map(x => [x.id, x]))
@@ -534,14 +548,25 @@ export default function CRMKanbanPage() {
         supabase.from('v_pipeline_stage_counts').select('pipeline_id,stage_id,deals_count,open_count'),
         supabase.from('v_pipeline_conversion').select('pipeline_id,total,won,lost,open_count,conversion_pct').eq('clinic_id', clinicId),
       ])
-      setStages((st.data ?? []) as Stage[])
-      setCounts((c.data ?? []) as StageCount[])
-      setConversions((cv.data ?? []) as Conversion[])
+      const stagesData = (st.data ?? []) as Stage[]
+      const countsData = (c.data ?? []) as StageCount[]
+      const conversionsData = (cv.data ?? []) as Conversion[]
+      setStages(stagesData)
+      setCounts(countsData)
+      setConversions(conversionsData)
+
+      // Обновляем кэш свежими данными
+      crmCache[clinicId] = {
+        deals: enriched, pipelines: ps, stages: stagesData,
+        counts: countsData, conversions: conversionsData,
+        reasons: (r.data ?? []) as LossReason[], sources: (ls.data ?? []) as LeadSource[],
+        users: usersList, doctors: doctorsList,
+      }
     }
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
-  }, [clinicId, supabase, activePipelineId, ownerFilter, profile?.id])
+  }, [clinicId, supabase, ownerFilter, showTerminal, profile?.id])
 
   useEffect(() => { load() }, [load])
 
@@ -903,16 +928,52 @@ export default function CRMKanbanPage() {
         </div>
       )}
       {/* Header — только действия, без заголовка */}
-      <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
-        <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
+      <div className="flex items-center justify-end mb-2 flex-wrap gap-1.5 sm:gap-2">
+        {/* Онлайн-сотрудники */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setPresenceOpen(v => !v)}
+            onBlur={() => setTimeout(() => setPresenceOpen(false), 150)}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50"
+            title="Кто сейчас в системе"
+          >
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="font-medium text-gray-700">{onlineUsers.length}</span>
+          </button>
+          {presenceOpen && (
+            <div className="absolute right-0 top-full mt-1 z-30 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+              <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                Сейчас в системе
+              </div>
+              {onlineUsers.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-gray-400">Никого нет</div>
+              ) : onlineUsers.map(u => (
+                <div key={u.id} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50">
+                  <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center flex-shrink-0">
+                    {u.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase() || '?'}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">{u.name}</div>
+                    {u.role && <div className="text-xs text-gray-400 truncate">{u.role}</div>}
+                  </div>
+                  <span className="ml-auto w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <Link href="/crm/analytics" className="hidden sm:block text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
           Аналитика
         </Link>
         <Link
           href="/settings/pipelines"
-          className="text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
+          className="text-sm px-2 sm:px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
           title="Этапы, причины потери, источники, автоматизации (бот / касания / задачи)"
         >
-          ⚙ Настроить воронку
+          <span className="hidden sm:inline">⚙ Настроить воронку</span>
+          <span className="sm:hidden">⚙</span>
         </Link>
 
         {/* Кнопка «…» — меню сортировки, автообновления, импорта/экспорта и т. п. */}
@@ -1031,37 +1092,36 @@ export default function CRMKanbanPage() {
           <button
             type="button"
             onClick={() => setOwnerFilter('mine')}
-            className={`px-3 py-1 rounded-[5px] transition-colors ${
-              ownerFilter === 'mine'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-600 hover:bg-gray-50'
+            className={`px-2 sm:px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'mine' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
             }`}
             aria-pressed={ownerFilter === 'mine'}
-            title="Показывать только сделки, где я ответственный"
+            title="Только мои"
           >
-            Только мои
+            <span className="hidden sm:inline">Только мои</span>
+            <span className="sm:hidden">Мои</span>
           </button>
           <button
             type="button"
             onClick={() => setOwnerFilter('all')}
-            className={`px-3 py-1 rounded-[5px] transition-colors ${
-              ownerFilter === 'all'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-600 hover:bg-gray-50'
+            className={`px-2 sm:px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'all' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
             }`}
             aria-pressed={ownerFilter === 'all'}
-            title="Показывать все сделки клиники"
+            title="Все сделки"
           >
-            Все сделки
+            <span className="hidden sm:inline">Все сделки</span>
+            <span className="sm:hidden">Все</span>
           </button>
         </div>
 
         <button
           onClick={() => setQuickCreateOpen(true)}
-          className="text-sm px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
+          className="text-sm px-2 sm:px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
           title="Быстрая сделка: имя + телефон"
         >
-          ⚡ Быстро
+          <span className="hidden sm:inline">⚡ Быстро</span>
+          <span className="sm:hidden">⚡</span>
         </button>
         <button
           onClick={() => openDeal({
@@ -1084,7 +1144,7 @@ export default function CRMKanbanPage() {
       </div>
 
       {/* Табы воронок (слева) + поиск (по центру) + вид сетка/таблица (справа) */}
-      <div className="flex items-center gap-3 mb-3 flex-wrap">
+      <div className="flex items-center gap-2 mb-2 overflow-x-auto pb-1 scrollbar-none [-webkit-overflow-scrolling:touch]">
         {/* Воронки — слева */}
         <div className="flex items-center gap-2 flex-wrap">
           {pipelines.map(p => (
@@ -1321,45 +1381,30 @@ export default function CRMKanbanPage() {
             </div>
           )}
 
-          {/* ── DESKTOP вид: оригинальный канбан с drag&drop (>= 768px) ── */}
+          {/* ── DESKTOP вид: виртуализированный канбан с drag&drop (>= 768px) ── */}
           {!isMobileKanban && (
-            <div className="overflow-auto h-[calc(100vh-220px)] pb-2">
-              <div className="flex gap-3 items-start min-w-max">
+            <div className="overflow-auto h-[calc(100vh-200px)] sm:h-[calc(100vh-220px)] pb-2 [-webkit-overflow-scrolling:touch]">
+              <div className="flex gap-2 sm:gap-3 items-start min-w-max px-0.5">
                 {activeStages.map(stage => {
                   const cards = dealsByStage.get(stage.id) ?? []
                   const count = counts.find(c => c.stage_id === stage.id)
                   const isOver = overStage === stage.id
-                  const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
                   return (
-                    <div
+                    <KanbanColumn
                       key={stage.id}
-                      className={`min-w-[280px] w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
-                        isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
-                      }`}
-                      onDragOver={(e) => onDragOver(e, stage.id)}
-                      onDragLeave={() => onDragLeave(stage.id)}
-                      onDrop={(e) => onDrop(e, stage.id)}
-                    >
-                      <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
-                        <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
-                        <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
-                        {stageUnread > 0 && (
-                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
-                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                            {stageUnread}
-                          </span>
-                        )}
-                        <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
-                          {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
-                        </span>
-                      </div>
-                      <div className="p-2 space-y-2 min-h-[40px]">
-                        {cards.map(d => (
-                          <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
-                        ))}
-                        {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
-                      </div>
-                    </div>
+                      stage={stage}
+                      cards={cards}
+                      count={count}
+                      isOver={isOver}
+                      unreadByDeal={unreadByDeal}
+                      lastMsgByDeal={lastMsgByDeal}
+                      onDragStart={onDragStart}
+                      openDeal={openDeal}
+                      onDragOver={onDragOver}
+                      onDragLeave={onDragLeave}
+                      onDrop={onDrop}
+                      debouncedSearch={debouncedSearch}
+                    />
                   )
                 })}
                 {activeStages.length === 0 && (
@@ -1719,6 +1764,97 @@ function MoreMenuItem({ label, icon, onClick }: { label: string; icon: React.Rea
       <span className="text-gray-500">{icon}</span>
       <span className="flex-1">{label}</span>
     </button>
+  )
+}
+
+// ─── linkify: делает URL кликабельными в тексте сообщений ────────────────────
+
+function linkify(text: string, outgoing: boolean) {
+  const URL_RE = /(https?:\/\/[^\s<>"']+)/g
+  const parts = text.split(URL_RE)
+  return parts.map((part, i) => {
+    if (URL_RE.test(part)) {
+      URL_RE.lastIndex = 0
+      return (
+        <a key={i} href={part} target="_blank" rel="noopener noreferrer"
+          className={`underline break-all ${outgoing ? 'text-blue-100 hover:text-white' : 'text-blue-600 hover:text-blue-800'}`}
+          onClick={e => e.stopPropagation()}
+        >{part}</a>
+      )
+    }
+    return part
+  })
+}
+
+// ─── KanbanColumn (lazy render: first 50, +50 on scroll) ─────────────────────
+
+const PAGE = 50
+
+function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDeal, stage, count, isOver, onDragOver, onDragLeave, onDrop, debouncedSearch }: {
+  cards: DealRow[]
+  unreadByDeal: Record<string, number>
+  lastMsgByDeal: Record<string, string>
+  onDragStart: (e: React.DragEvent, d: DealRow) => void
+  openDeal: (d: DealRow) => void
+  stage: { id: string; name: string; color: string }
+  count?: { open_count: number }
+  isOver: boolean
+  onDragOver: (e: React.DragEvent, id: string) => void
+  onDragLeave: (id: string) => void
+  onDrop: (e: React.DragEvent, id: string) => void
+  debouncedSearch: string
+}) {
+  const [visible, setVisible] = useState(PAGE)
+  const sentinelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setVisible(PAGE) // reset when cards change (filter/search)
+  }, [cards])
+
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setVisible(v => Math.min(v + PAGE, cards.length)) },
+      { threshold: 0 }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [cards.length])
+
+  const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+  const shown = cards.slice(0, visible)
+
+  return (
+    <div
+      className={`min-w-[240px] w-[240px] sm:min-w-[280px] sm:w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
+        isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
+      }`}
+      onDragOver={(e) => onDragOver(e, stage.id)}
+      onDragLeave={() => onDragLeave(stage.id)}
+      onDrop={(e) => onDrop(e, stage.id)}
+    >
+      <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
+        <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
+        <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
+        {stageUnread > 0 && (
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            {stageUnread}
+          </span>
+        )}
+        <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
+          {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
+        </span>
+      </div>
+      <div className="p-2 space-y-2 min-h-[40px] overflow-y-auto max-h-[calc(100vh-260px)]">
+        {shown.map(d => (
+          <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+        ))}
+        {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
+        <div ref={sentinelRef} className="h-1" />
+      </div>
+    </div>
   )
 }
 
@@ -2087,16 +2223,27 @@ function DealModal({
   // Параметры режима «Звонок»: входящий/исходящий + длительность (мм:сс).
   const [callDirection, setCallDirection] = useState<'inbound' | 'outbound'>('outbound')
   const [callDurationMin, setCallDurationMin] = useState<string>('')
+  // Inline-редактирование имени пациента прямо из карточки сделки
+  const [editingPatientName, setEditingPatientName] = useState(false)
+  const [patientNameInput, setPatientNameInput] = useState('')
+  const savePatientName = async () => {
+    if (!form.patient?.id || !patientNameInput.trim()) { setEditingPatientName(false); return }
+    const full_name = patientNameInput.trim()
+    await supabase.from('patients').update({ full_name }).eq('id', form.patient.id)
+    setForm(f => ({ ...f, patient: f.patient ? { ...f.patient, full_name } : f.patient }))
+    setEditingPatientName(false)
+  }
+
   // «Записать на приём» — модалка из /schedule, переиспользованная.
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
   const [sendingPrepay, setSendingPrepay] = useState(false)
   const [sending, setSending] = useState(false)
   // Голосовое сообщение: MediaRecorder + UI-таймер.
-  // Хранится в ref, чтобы не пересоздавать рекордер на каждый ререндер.
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const recordStartRef = useRef<number>(0)
+  const streamRef = useRef<MediaStream | null>(null)
   const [recording, setRecording] = useState(false)
   const [recordSecs, setRecordSecs] = useState(0)
   const [sendingVoice, setSendingVoice] = useState(false)
@@ -2510,45 +2657,62 @@ function DealModal({
   // Алгоритм: getUserMedia → MediaRecorder (opus) → onstop собирает Blob →
   // POST FormData в /api/deals/:id/voice. Таймер тикает каждую секунду из
   // setInterval, чтобы UI не зависел от MediaRecorder.requestData().
+  function stopAllTracks() {
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+  }
+
   async function startRecording() {
     if (recording || sendingVoice || isNew) return
-    // Проверяем поддержку — Safari < 14.1 не умеет MediaRecorder, в iOS < 17 нет ogg.
     if (typeof window === 'undefined' || !navigator.mediaDevices || !window.MediaRecorder) {
       notify.error('Браузер не поддерживает запись звука')
       return
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // Предпочитаем audio/ogg;codecs=opus (нативный WhatsApp PTT).
-      // Fallback — webm/opus (Chrome старее), внутри тот же opus, файл переименуется в .ogg на сервере.
-      const mime = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
-        ? 'audio/ogg;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      streamRef.current = stream
+
+      // iOS Safari: только audio/mp4. Chrome/Firefox: webm/opus или ogg/opus.
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
         : ''
+
       const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
       audioChunksRef.current = []
-      rec.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
-      rec.onstop = async () => {
-        // Останавливаем дорожки микрофона — иначе у юзера светится индикатор «идёт запись» в браузере.
-        stream.getTracks().forEach(t => t.stop())
-        const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || 'audio/ogg' })
-        const duration_s = Math.round((Date.now() - recordStartRef.current) / 1000)
-        if (blob.size < 1024 || duration_s < 1) {
-          // Слишком короткая запись — скорее всего случайный клик.
+
+      // timeslice=250ms: iOS Safari не выдаёт chunks без него
+      rec.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        stopAllTracks()
+        const chunks = audioChunksRef.current
+        const finalMime = rec.mimeType || mime || 'audio/mp4'
+        const blob = new Blob(chunks, { type: finalMime })
+        const duration_s = Math.max(1, Math.round((Date.now() - recordStartRef.current) / 1000))
+        if (blob.size < 500) {
           notify.error('Слишком короткая запись')
           return
         }
-        // Не отправляем сразу — даём прослушать в превью.
         const url = URL.createObjectURL(blob)
         setPendingVoice({ blob, url, duration_s })
       }
+      rec.onerror = () => {
+        stopAllTracks()
+        setRecording(false)
+        mediaRecorderRef.current = null
+        notify.error('Ошибка записи')
+      }
+
       mediaRecorderRef.current = rec
       recordStartRef.current = Date.now()
       setRecordSecs(0)
-      rec.start()
+      rec.start(250) // timeslice нужен для iOS
       setRecording(true)
     } catch (e) {
+      stopAllTracks()
       const msg = e instanceof Error ? e.message : 'mic error'
       notify.error(`Не удалось включить микрофон: ${msg}`)
     }
@@ -2556,17 +2720,17 @@ function DealModal({
 
   function stopRecording(send: boolean) {
     const rec = mediaRecorderRef.current
-    if (!rec) { setRecording(false); return }
-    if (!send) {
-      // Отмена: подменяем onstop на чистильщик.
-      rec.onstop = () => {
-        rec.stream.getTracks().forEach(t => t.stop())
-        audioChunksRef.current = []
-      }
-    }
-    if (rec.state !== 'inactive') rec.stop()
     setRecording(false)
     mediaRecorderRef.current = null
+    if (!rec) { stopAllTracks(); return }
+    if (!send) {
+      // Отмена: подменяем onstop на чистильщик
+      rec.onstop = () => { stopAllTracks(); audioChunksRef.current = [] }
+    }
+    try {
+      if (rec.state === 'recording' || rec.state === 'paused') rec.stop()
+      else stopAllTracks()
+    } catch { stopAllTracks() }
   }
 
   function discardPendingVoice() {
@@ -2837,7 +3001,7 @@ function DealModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
       <div
-        className="bg-gray-50 shadow-2xl w-full max-w-[1600px] ml-auto flex flex-col h-full overflow-hidden relative"
+        className="bg-gray-50 shadow-2xl w-full sm:max-w-[1600px] sm:ml-auto flex flex-col h-full overflow-hidden relative"
         onClick={e => e.stopPropagation()}
       >
         {/* Боковая панель непрочитанных — выезжает слева */}
@@ -3026,7 +3190,10 @@ function DealModal({
           </div>
         )}
         {/* Header */}
-        <div className="px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-4">
+        <div className="px-3 sm:px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-2 sm:gap-4">
+          <button onClick={onClose} className="sm:hidden text-gray-500 hover:text-gray-800 flex items-center gap-1 text-sm shrink-0">
+            ← Назад
+          </button>
           <div className="min-w-0 flex-1">
             <div className="text-xs text-gray-400 uppercase tracking-wider">Сделка</div>
             <div className="flex items-center gap-3 mt-0.5 flex-wrap">
@@ -3092,7 +3259,7 @@ function DealModal({
             </div>
           )}
 
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
+          <button onClick={onClose} className="hidden sm:block text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
         {/* Mobile tab switcher — только на < 1024px */}
@@ -3125,6 +3292,7 @@ function DealModal({
         <div className="flex-1 flex overflow-hidden">
           {/* LEFT: properties */}
           <div className={`bg-white border-r border-gray-200 overflow-y-auto ${isMobileModal ? (mobileTab === 'details' ? 'flex-1 w-full' : 'hidden') : 'w-80'}`}>
+
             <div className="p-5 space-y-4 text-sm">
               {(() => {
                 // Карта рендереров встроенных полей (ключи совпадают с DEFAULT_FIELD_CONFIGS).
@@ -3297,7 +3465,29 @@ function DealModal({
                       </label>
                       {form.patient ? (
                         <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50">
-                          <div className="font-medium text-gray-900">{form.patient.full_name}</div>
+                          {editingPatientName ? (
+                            <div className="flex gap-1 mb-1">
+                              <input
+                                autoFocus
+                                value={patientNameInput}
+                                onChange={e => setPatientNameInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') savePatientName(); if (e.key === 'Escape') setEditingPatientName(false) }}
+                                placeholder="Имя Фамилия"
+                                className="flex-1 border border-blue-400 rounded px-2 py-1 text-sm outline-none"
+                              />
+                              <button onClick={savePatientName} className="text-xs bg-blue-600 text-white px-2 rounded hover:bg-blue-700">✓</button>
+                              <button onClick={() => setEditingPatientName(false)} className="text-xs text-gray-500 px-1 hover:text-gray-700">✕</button>
+                            </div>
+                          ) : (
+                            <div
+                              className="font-medium text-gray-900 cursor-pointer hover:text-blue-600 group flex items-center gap-1"
+                              onClick={() => { setPatientNameInput(form.patient?.full_name?.startsWith('Без имени') ? '' : (form.patient?.full_name ?? '')); setEditingPatientName(true) }}
+                              title="Нажмите чтобы изменить имя"
+                            >
+                              {form.patient.full_name}
+                              <span className="text-gray-300 group-hover:text-blue-400 text-xs">✎</span>
+                            </div>
+                          )}
                           <div className="text-xs text-gray-500 mt-0.5">{form.patient.phones?.[0] || form.contact_phone || '— нет телефона —'}</div>
                           {(form.patient.birth_date || form.patient.city) && (
                             <div className="text-xs text-gray-500 mt-0.5">
@@ -3648,7 +3838,7 @@ function DealModal({
                       )}
 
                       {/* Messages list */}
-                      <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
+                      <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50 overscroll-contain [-webkit-overflow-scrolling:touch]">
                         {(() => {
                           const q = search.toLowerCase()
                           // Системные события (кроме дублирующих message_in/out)
@@ -3700,7 +3890,7 @@ function DealModal({
                                         <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
                                       )}
                                     </div>
-                                    <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                    <div className="whitespace-pre-wrap break-words">{linkify(m.body, false)}</div>
                                     <div className="text-[10px] mt-1 text-gray-500">
                                       {new Date(m.created_at).toLocaleString('ru-RU')}
                                     </div>
@@ -3820,7 +4010,7 @@ function DealModal({
                                         </div>
                                       )
                                     }
-                                    return <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                    return <div className="whitespace-pre-wrap break-words">{linkify(m.body, m.direction === 'out')}</div>
                                   })()}
                                   <div className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
                                     <span>{new Date(m.created_at).toLocaleString('ru-RU')}</span>
@@ -4092,37 +4282,48 @@ function DealModal({
                           </div>
                         )}
 
+                        {/* Pending voice preview — отдельный блок поверх инпута */}
+                        {pendingVoice && (
+                          <div className="px-3 pb-2 flex flex-col gap-2">
+                            <audio controls src={pendingVoice.url} className="w-full h-10" />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={discardPendingVoice}
+                                className="flex-1 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                              >✕ Удалить</button>
+                              <button
+                                onClick={sendPendingVoice}
+                                disabled={sendingVoice}
+                                className="flex-1 py-2 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 font-medium"
+                              >{sendingVoice ? '…' : '▶ Отправить'}</button>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Input + send */}
                         <div className="flex gap-2 p-3" style={{ paddingBottom: `calc(0.75rem + var(--keyboard-h, 0px))` }}>
                           {recording ? (
-                            // Режим записи: бегущий «эквалайзер» — наглядно, что мик активен.
-                            <div className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50">
+                            // Сам бар — кнопка «стоп + превью». X — отмена.
+                            // На мобильном нет места для двух кнопок справа, поэтому стоп = тап по бару.
+                            <button
+                              onClick={() => stopRecording(true)}
+                              title="Нажмите чтобы остановить и прослушать"
+                              className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50 active:bg-red-100 text-left"
+                            >
                               <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
                               <span className="text-sm text-red-700 font-mono tabular-nums">
                                 {String(Math.floor(recordSecs / 60)).padStart(2, '0')}:{String(recordSecs % 60).padStart(2, '0')}
                               </span>
                               <span className="flex items-end gap-[3px] h-5 flex-1 min-w-0">
-                                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(i => (
-                                  <span
-                                    key={i}
-                                    className="w-[3px] bg-red-500/80 rounded-full animate-voice-bar"
-                                    style={{
-                                      animationDelay: `${(i % 7) * 0.09}s`,
-                                      animationDuration: `${0.7 + (i % 5) * 0.12}s`,
-                                    }}
-                                  />
+                                {[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19].map(i => (
+                                  <span key={i} className="w-[3px] bg-red-500/80 rounded-full animate-voice-bar"
+                                    style={{ animationDelay: `${(i%7)*0.09}s`, animationDuration: `${0.7+(i%5)*0.12}s` }} />
                                 ))}
                               </span>
-                              <span className="text-xs text-red-600/70 shrink-0">запись…</span>
-                            </div>
+                              <span className="text-xs text-red-600 font-medium shrink-0">⏹ стоп</span>
+                            </button>
                           ) : pendingVoice ? (
-                            // Превью записанного голосового — можно прослушать перед отправкой.
-                            <div className="flex-1 flex items-center gap-2 border border-blue-200 rounded px-3 py-1.5 bg-blue-50">
-                              <audio controls src={pendingVoice.url} className="flex-1 h-8" />
-                              <span className="text-xs text-blue-700/70 font-mono tabular-nums">
-                                {String(Math.floor(pendingVoice.duration_s / 60)).padStart(2, '0')}:{String(pendingVoice.duration_s % 60).padStart(2, '0')}
-                              </span>
-                            </div>
+                            <div className="flex-1" />
                           ) : (
                             <textarea
                               value={msgDraft}
@@ -4146,41 +4347,14 @@ function DealModal({
                           {/* Микрофон — только в режиме чата (whatsapp). */}
                           {composerMode === 'chat' && (
                             recording ? (
-                              <>
-                                <button
-                                  onClick={() => stopRecording(false)}
-                                  title="Отменить запись"
-                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
-                                >
-                                  ✕
-                                </button>
-                                <button
-                                  onClick={() => stopRecording(true)}
-                                  title="Остановить запись (можно будет прослушать)"
-                                  className="self-end px-4 py-1.5 text-sm rounded bg-red-600 hover:bg-red-700 text-white"
-                                >
-                                  ⏹ Стоп
-                                </button>
-                              </>
-                            ) : pendingVoice ? (
-                              <>
-                                <button
-                                  onClick={discardPendingVoice}
-                                  title="Удалить и записать заново"
-                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
-                                >
-                                  ✕
-                                </button>
-                                <button
-                                  onClick={sendPendingVoice}
-                                  disabled={sendingVoice}
-                                  title="Отправить голосовое"
-                                  className="self-end px-4 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
-                                >
-                                  {sendingVoice ? '…' : '▶ Отправить'}
-                                </button>
-                              </>
-                            ) : (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); stopRecording(false) }}
+                                title="Отменить запись"
+                                className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                              >
+                                ✕
+                              </button>
+                            ) : pendingVoice ? null : (
                               <button
                                 onClick={startRecording}
                                 disabled={sendingVoice || sending || !!msgDraft.trim()}

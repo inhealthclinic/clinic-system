@@ -1,13 +1,46 @@
 name: Cron jobs
 on:
   schedule:
+    # каждые 5 мин — бот и автоматизации воронки
+    - cron: '*/5 * * * *'
+    # каждые 15 мин — напоминания о приёмах (24ч/2ч)
     - cron: '*/15 * * * *'
+    # 06:00 UTC ежедневно — генерация задач (дни рождения, контроли, долги)
     - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
+  bot-greeting:
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.BOT_GREETING_URL }}" | tee r.json
+          grep -q '"ok":true' r.json
+
+  bot-followup:
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.BOT_FOLLOWUP_URL }}" | tee r.json
+          grep -q '"ok":true' r.json
+
+  automation:
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sSf -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+               "${{ secrets.AUTOMATION_URL }}" | tee r.json
+          grep -q '"ok":true' r.json
+
   reminders:
-    if: github.event.schedule != '0 6 * * *'
+    # */15 пересекается с */5 (каждые 15 мин обе сработают). Нужно также
+    # */15-only-расписание не запускать на 0 6, поэтому исключаем daily.
+    if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - run: |

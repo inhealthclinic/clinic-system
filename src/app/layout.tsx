@@ -7,6 +7,7 @@ const inter = Inter({ subsets: ['latin', 'cyrillic'] })
 export const metadata: Metadata = {
   title: 'in health МИС',
   description: 'Медицинская информационная система',
+  viewport: 'width=device-width, initial-scale=1, maximum-scale=1',
 }
 
 export const viewport: Viewport = {

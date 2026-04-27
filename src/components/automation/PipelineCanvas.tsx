@@ -67,6 +67,7 @@ export interface Stage {
   stage_role: 'normal' | 'won' | 'lost' | 'closed'
   is_system: boolean; is_editable: boolean; is_deletable: boolean
   counts_in_kpi: boolean
+  default_responsible_user_id?: string | null
 }
 
 // ─── автоматизации ───────────────────────────────────────────────────────────
@@ -179,6 +180,19 @@ export default function PipelineCanvas({
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id
+
+  // пользователи клиники для выбора ответственного
+  const [clinicUsers, setClinicUsers] = useState<{ id: string; name: string }[]>([])
+  useEffect(() => {
+    if (!clinicId) return
+    supabase.from('user_profiles').select('id, first_name, last_name').eq('clinic_id', clinicId)
+      .then(({ data }) => {
+        setClinicUsers((data ?? []).map(u => ({
+          id: u.id as string,
+          name: [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Сотрудник',
+        })))
+      })
+  }, [clinicId, supabase])
 
   // автоматизации
   const [autoLoading, setAutoLoading] = useState(true)
@@ -321,23 +335,38 @@ export default function PipelineCanvas({
         bot_enabled: flags.bot_enabled,
         automation,
       }
-      const { error: cErr } = await supabase
-        .from('clinics').update({ settings }).eq('id', clinicId)
-      if (cErr) throw cErr
+      const res = await fetch('/api/settings/stages', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table: 'clinics', id: clinicId, patch: { settings } }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error ?? `HTTP ${res.status}`)
+      }
 
+      const tmplRows = []
       for (const cards of Object.values(STAGE_AUTOMATIONS)) for (const c of cards) {
         const body = bodies[c.templateKey]?.trim()
         if (!body) continue
-        const { error: tErr } = await supabase.from('message_templates').upsert({
-          clinic_id: clinicId, key: c.templateKey, title: c.title, body, is_active: true,
-        }, { onConflict: 'clinic_id,key' })
-        if (tErr) throw tErr
+        tmplRows.push({ clinic_id: clinicId, key: c.templateKey, title: c.title, body, is_active: true })
+      }
+      if (tmplRows.length > 0) {
+        const tr = await fetch('/api/settings/stages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ table: 'message_templates', rows: tmplRows, onConflict: 'clinic_id,key' }),
+        })
+        if (!tr.ok) {
+          const j = await tr.json().catch(() => ({}))
+          throw new Error(j.error ?? `HTTP ${tr.status}`)
+        }
       }
 
       setToast('Сохранено')
       setTimeout(() => setToast(''), 1800)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Ошибка сохранения')
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
@@ -469,6 +498,20 @@ export default function PipelineCanvas({
                       <span className="text-gray-500">Активен</span>
                       <input type="checkbox" checked={s.is_active}
                         onChange={e => onUpdateStage(s.id, { is_active: e.target.checked })} />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-gray-500 shrink-0">Ответственный</span>
+                      <select
+                        value={s.default_responsible_user_id ?? ''}
+                        onChange={e => onUpdateStage(s.id, { default_responsible_user_id: e.target.value || null })}
+                        className="text-xs border border-gray-200 rounded px-1.5 py-0.5 max-w-[140px] truncate"
+                        title="Автоназначать при входе в этап"
+                      >
+                        <option value="">— не задан —</option>
+                        {clinicUsers.map(u => (
+                          <option key={u.id} value={u.id}>{u.name}</option>
+                        ))}
+                      </select>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-gray-500 font-mono">{s.code}</span>

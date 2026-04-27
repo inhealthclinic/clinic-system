@@ -130,7 +130,15 @@ export default function PipelinesSettingsPage() {
     load()
   }
   async function updateStage(id: string, patch: Partial<Stage>) {
-    if (await runSave(() => supabase.from('pipeline_stages').update(patch).eq('id', id))) load()
+    if (await runSave(async () => {
+      const res = await fetch('/api/settings/stages', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, patch }),
+      })
+      const json = await res.json()
+      return { error: json.error ? { message: json.error } : null }
+    })) load()
   }
   async function deleteStage(s: Stage) {
     if (!confirm(`Удалить этап «${s.name}»?`)) return
