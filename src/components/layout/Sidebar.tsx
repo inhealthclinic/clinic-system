@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { useUnreadDealMessages } from '@/lib/hooks/useUnreadDealMessages'
 import { useLabPendingOrders } from '@/lib/hooks/useLabPendingOrders'
+import { useEffect, useRef, useState } from 'react'
 
 interface NavItem {
   label: string
@@ -330,34 +331,12 @@ export function Sidebar({ onClose }: SidebarProps) {
         </div>
       </nav>
 
-      {/* Компактная строка непрочитанных — над блоком профиля. Всегда видна
-          и кликабельна (ведёт на /crm). При наличии непрочитанных — зелёная
-          с цифрой; иначе — приглушённая «Нет новых», чтобы кнопка не
-          исчезала и оператор всегда мог быстро прыгнуть в CRM. */}
-      <Link
-        href="/crm"
-        onClick={onClose}
-        className={`mx-3 mb-2 flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-          crmUnread > 0
-            ? 'bg-green-50 hover:bg-green-100 border-green-200 text-green-800'
-            : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-600'
-        }`}
-        title={crmUnread > 0 ? `${crmUnread} непрочитанных сообщений в CRM` : 'Открыть CRM'}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="flex-shrink-0">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        <span className="text-xs font-medium truncate flex-1">
-          {crmUnread > 0
-            ? `${crmUnread} ${crmUnread === 1 ? 'непрочитанное' : 'непрочитанных'}`
-            : 'Нет новых сообщений'}
-        </span>
-        {crmUnread > 0 && (
-          <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-            {crmUnread > 99 ? '99+' : crmUnread}
-          </span>
-        )}
-      </Link>
+      {/* Кнопка непрочитанных + всплывающий список — стиль амо.
+          Клик по кнопке открывает попап со списком чатов; клик по строке
+          переводит на конкретную сделку. Снаружи попап закрывается на
+          mousedown по document. */}
+      <UnreadDropdown crmUnread={crmUnread} scope={_scope} onClose={onClose} />
+
 
       {/* User */}
       {profile && (
@@ -385,5 +364,190 @@ export function Sidebar({ onClose }: SidebarProps) {
         </div>
       )}
     </aside>
+  )
+}
+
+// ─── Unread dropdown ─────────────────────────────────────────────────────
+// Попап-список непрочитанных сообщений по сделкам — как в amoCRM.
+// Появляется по клику на кнопку, закрывается кликом снаружи.
+// Каждая строка — клик ведёт на /crm с открытой сделкой.
+
+interface UnreadRow {
+  message_id: string
+  deal_id: string
+  deal_name: string | null
+  contact_phone: string | null
+  body: string
+  external_sender: string | null
+  created_at: string
+}
+
+function fmtAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const m = Math.floor(ms / 60_000)
+  if (m < 1) return 'только что'
+  if (m < 60) return `${m} мин`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} ч`
+  const d = Math.floor(h / 24)
+  return `${d} д`
+}
+
+function UnreadDropdown({
+  crmUnread,
+  scope,
+  onClose,
+}: {
+  crmUnread: number
+  scope: 'mine' | 'all'
+  onClose?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [rows, setRows] = useState<UnreadRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const router = useRouter()
+  const { profile } = useAuthStore()
+  const clinicId = profile?.clinic_id
+
+  // Закрытие на клик вне попапа
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current) return
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  // Загрузка списка при открытии. Запрос делаем на клиенте, RLS
+  // ограничивает видимость. Для scope='mine' дополнительно фильтруем
+  // по сделкам, где пользователь responsible_user_id.
+  useEffect(() => {
+    if (!open || !clinicId) return
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      const supabase = createClient()
+      const { data } = await supabase
+        .from('deal_messages')
+        .select('id, deal_id, body, external_sender, created_at, deal:deals(name, contact_phone, responsible_user_id)')
+        .eq('clinic_id', clinicId)
+        .eq('direction', 'in')
+        .is('read_at', null)
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (cancelled) return
+      const me = profile?.id
+      const items: UnreadRow[] = (data ?? [])
+        .map((m: Record<string, unknown>) => {
+          const d = (m.deal as { name?: string | null; contact_phone?: string | null; responsible_user_id?: string | null } | null) ?? null
+          return {
+            message_id: m.id as string,
+            deal_id: m.deal_id as string,
+            deal_name: d?.name ?? null,
+            contact_phone: d?.contact_phone ?? null,
+            body: (m.body as string) ?? '',
+            external_sender: (m.external_sender as string | null) ?? null,
+            created_at: m.created_at as string,
+            _resp: d?.responsible_user_id ?? null,
+          } as UnreadRow & { _resp: string | null }
+        })
+        .filter(r => scope === 'all' || (r as UnreadRow & { _resp: string | null })._resp === me)
+      setRows(items)
+      setLoading(false)
+    }
+    load()
+    return () => { cancelled = true }
+  }, [open, clinicId, scope, profile?.id])
+
+  const goToDeal = (dealId: string) => {
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem('crm.openDeal', dealId)
+    }
+    setOpen(false)
+    onClose?.()
+    router.push('/crm')
+  }
+
+  return (
+    <div className="relative mx-3 mb-2" ref={wrapRef}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
+          crmUnread > 0
+            ? 'bg-green-50 hover:bg-green-100 border-green-200 text-green-800'
+            : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-600'
+        } ${open ? 'ring-2 ring-green-300' : ''}`}
+        title={crmUnread > 0 ? `${crmUnread} непрочитанных` : 'Открыть список'}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="flex-shrink-0">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        <span className="text-xs font-medium truncate flex-1 text-left">
+          {crmUnread > 0
+            ? `${crmUnread} ${crmUnread === 1 ? 'непрочитанное' : 'непрочитанных'}`
+            : 'Нет новых сообщений'}
+        </span>
+        {crmUnread > 0 && (
+          <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+            {crmUnread > 99 ? '99+' : crmUnread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute left-0 bottom-full mb-2 w-[340px] max-h-[60vh] bg-white border border-gray-200 rounded-md shadow-xl z-50 overflow-hidden flex flex-col">
+          <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+            <span className="text-sm font-semibold text-gray-800">Непрочитанные</span>
+            {crmUnread > 0 && (
+              <span className="text-xs text-gray-500">{crmUnread}</span>
+            )}
+          </div>
+          <div className="overflow-y-auto flex-1">
+            {loading && (
+              <div className="px-3 py-4 text-xs text-gray-500 text-center">Загрузка…</div>
+            )}
+            {!loading && rows.length === 0 && (
+              <div className="px-3 py-6 text-xs text-gray-500 text-center">
+                {crmUnread === 0 ? 'Все чаты прочитаны 👌' : 'Нет данных для отображения'}
+              </div>
+            )}
+            {!loading && rows.map(r => {
+              const title = r.deal_name?.trim() || r.contact_phone || r.external_sender || '—'
+              const preview = r.body.length > 80 ? r.body.slice(0, 80) + '…' : r.body
+              return (
+                <button
+                  key={r.message_id}
+                  type="button"
+                  onClick={() => goToDeal(r.deal_id)}
+                  className="w-full flex gap-2 px-3 py-2 text-left hover:bg-green-50/60 border-b border-gray-50 last:border-b-0 transition-colors"
+                >
+                  <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-700 text-xs font-semibold flex-shrink-0">
+                    {(title[0] || '?').toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-gray-900 truncate">{title}</span>
+                      <span className="text-[10px] text-gray-400 flex-shrink-0">{fmtAgo(r.created_at)}</span>
+                    </div>
+                    <div className="text-xs text-gray-500 truncate whitespace-pre-line">{preview}</div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <Link
+            href="/crm"
+            onClick={() => { setOpen(false); onClose?.() }}
+            className="px-3 py-2 text-xs text-center text-blue-600 hover:bg-blue-50 border-t border-gray-100"
+          >
+            Открыть CRM →
+          </Link>
+        </div>
+      )}
+    </div>
   )
 }
