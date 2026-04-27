@@ -2,9 +2,12 @@
  * Green-API — тонкий клиент для WhatsApp.
  * Docs: https://green-api.com/docs/api/
  *
- * Креды берутся из БД (clinics.whatsapp_instance_id / whatsapp_api_token)
- * и кешируются в памяти процесса на 30 секунд. Если в БД пусто — fallback
- * на env-переменные GREENAPI_INSTANCE_ID / GREENAPI_API_TOKEN.
+ * Креды per-clinic: берутся из БД (clinics.whatsapp_instance_id / whatsapp_api_token)
+ * и кешируются в памяти процесса на 30 секунд per-clinic. Если в БД для конкретной
+ * клиники пусто — НЕ фолбэчим на env (иначе уйдёт сообщение с чужого инстанса).
+ *
+ * Особый случай: clinicId === null → используем env (для системных операций
+ * без контекста конкретной клиники, если такие появятся).
  *
  * GREENAPI_WEBHOOK_TOKEN тоже мигрирует в БД (clinics.whatsapp_webhook_token),
  * этой функцией не пользуется — только webhook-роут.
@@ -38,69 +41,98 @@ function inferApiUrl(instanceId: string): string {
   return DEFAULT_API_URL
 }
 
-let _credsCache: { creds: GreenApiCreds | null; at: number } | null = null
+type CacheEntry = { creds: GreenApiCreds | null; at: number }
+const _credsCache: Map<string, CacheEntry> = new Map()
 const CRED_TTL_MS = 30_000
+const ENV_KEY = '__env__'
 
 /**
  * Сбросить кеш кредов — после изменения настроек в UI вызывайте это,
  * чтобы следующий запрос подхватил новые значения сразу.
+ *
+ * Если передан clinicId — инвалидируем только его. Без аргумента — весь кеш
+ * (включая env-fallback).
  */
-export function invalidateGreenApiCredsCache() {
-  _credsCache = null
+export function invalidateGreenApiCredsCache(clinicId?: string) {
+  if (clinicId === undefined) {
+    _credsCache.clear()
+    return
+  }
+  _credsCache.delete(clinicId)
 }
 
-async function loadCreds(): Promise<GreenApiCreds | null> {
-  if (_credsCache && Date.now() - _credsCache.at < CRED_TTL_MS) {
-    return _credsCache.creds
+function loadEnvCreds(): GreenApiCreds | null {
+  const id = process.env.GREENAPI_INSTANCE_ID
+  const token = process.env.GREENAPI_API_TOKEN
+  const url = process.env.GREENAPI_API_URL
+  if (id && token) return { instanceId: id, apiToken: token, apiUrl: url?.trim() || inferApiUrl(id) }
+  return null
+}
+
+/**
+ * Загрузить креды для конкретной клиники.
+ *
+ * • clinicId !== null → грузим из clinics по id. Если в БД пусто — возвращаем
+ *   null (НЕ фолбэчим на env, чтобы сообщения не уходили с чужого инстанса
+ *   в multi-tenant).
+ * • clinicId === null → берём env (для системных операций без контекста клиники).
+ *
+ * TTL 30 секунд per-clinic.
+ */
+async function loadCreds(clinicId: string | null): Promise<GreenApiCreds | null> {
+  const key = clinicId ?? ENV_KEY
+  const cached = _credsCache.get(key)
+  if (cached && Date.now() - cached.at < CRED_TTL_MS) {
+    return cached.creds
   }
+
   let creds: GreenApiCreds | null = null
-  try {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-    if (!url || !serviceKey) throw new Error('no supabase env')
-    const admin = createSupabaseClient(url, serviceKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
-    const { data } = await admin
-      .from('clinics')
-      .select('whatsapp_instance_id, whatsapp_api_token, whatsapp_api_url')
-      .not('whatsapp_instance_id', 'is', null)
-      .not('whatsapp_api_token', 'is', null)
-      .limit(1)
-      .maybeSingle()
-    if (data?.whatsapp_instance_id && data?.whatsapp_api_token) {
-      creds = {
-        instanceId: data.whatsapp_instance_id,
-        apiToken: data.whatsapp_api_token,
-        apiUrl: (data.whatsapp_api_url as string | null)?.trim() || inferApiUrl(data.whatsapp_instance_id),
+
+  if (clinicId === null) {
+    creds = loadEnvCreds()
+  } else {
+    try {
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+      if (!url || !serviceKey) throw new Error('no supabase env')
+      const admin = createSupabaseClient(url, serviceKey, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+      const { data } = await admin
+        .from('clinics')
+        .select('whatsapp_instance_id, whatsapp_api_token, whatsapp_api_url')
+        .eq('id', clinicId)
+        .maybeSingle()
+      if (data?.whatsapp_instance_id && data?.whatsapp_api_token) {
+        creds = {
+          instanceId: data.whatsapp_instance_id,
+          apiToken: data.whatsapp_api_token,
+          apiUrl: (data.whatsapp_api_url as string | null)?.trim() || inferApiUrl(data.whatsapp_instance_id),
+        }
       }
+    } catch {
+      // если БД недоступна — оставляем creds=null, не фолбэчим на env
+      // (чтобы не уехало с чужого инстанса)
     }
-  } catch {
-    // если БД недоступна — провалимся на env
   }
-  if (!creds) {
-    const id = process.env.GREENAPI_INSTANCE_ID
-    const token = process.env.GREENAPI_API_TOKEN
-    const url = process.env.GREENAPI_API_URL
-    if (id && token) creds = { instanceId: id, apiToken: token, apiUrl: url?.trim() || inferApiUrl(id) }
-  }
-  _credsCache = { creds, at: Date.now() }
+
+  _credsCache.set(key, { creds, at: Date.now() })
   return creds
 }
 
-async function requireCreds(): Promise<GreenApiCreds> {
-  const c = await loadCreds()
+async function requireCreds(clinicId: string | null): Promise<GreenApiCreds> {
+  const c = await loadCreds(clinicId)
   if (!c) {
-    throw new Error(
-      'Green-API not configured: задайте instanceId/apiToken в /settings/whatsapp ' +
-      'или переменные окружения GREENAPI_INSTANCE_ID / GREENAPI_API_TOKEN',
-    )
+    const where = clinicId === null
+      ? 'переменные окружения GREENAPI_INSTANCE_ID / GREENAPI_API_TOKEN'
+      : `clinics.whatsapp_instance_id / whatsapp_api_token для клиники ${clinicId}`
+    throw new Error(`Green-API not configured: задайте ${where} (или /settings/whatsapp)`)
   }
   return c
 }
 
-async function base(): Promise<{ url: string; token: string }> {
-  const c = await requireCreds()
+async function base(clinicId: string | null): Promise<{ url: string; token: string }> {
+  const c = await requireCreds(clinicId)
   const apiUrl = c.apiUrl.replace(/\/$/, '')
   return {
     url: `${apiUrl}/waInstance${c.instanceId}`,
@@ -118,8 +150,12 @@ export function toChatId(phone: string): string {
   return normalizePhone(phone) + '@c.us'
 }
 
-export async function sendWhatsAppText(phoneE164: string, text: string): Promise<{ idMessage: string }> {
-  const { url, token } = await base()
+export async function sendWhatsAppText(
+  phoneE164: string,
+  text: string,
+  clinicId: string | null,
+): Promise<{ idMessage: string }> {
+  const { url, token } = await base(clinicId)
   const res = await fetch(`${url}/sendMessage/${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -142,9 +178,10 @@ export async function sendWhatsAppFileByUrl(
   phoneE164: string,
   fileUrl: string,
   fileName: string,
-  caption?: string,
+  caption: string | undefined,
+  clinicId: string | null,
 ): Promise<{ idMessage: string }> {
-  const { url, token } = await base()
+  const { url, token } = await base(clinicId)
   const res = await fetch(`${url}/sendFileByUrl/${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -170,16 +207,16 @@ export type InstanceState =
   | 'starting'
   | 'yellowCard'
 
-export async function getStateInstance(): Promise<{ stateInstance: InstanceState }> {
-  const { url, token } = await base()
+export async function getStateInstance(clinicId: string | null): Promise<{ stateInstance: InstanceState }> {
+  const { url, token } = await base(clinicId)
   const res = await fetch(`${url}/getStateInstance/${token}`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`GreenAPI getStateInstance ${res.status}: ${await res.text()}`)
   return res.json()
 }
 
 /** Base64 PNG QR-кода для привязки номера */
-export async function getQr(): Promise<{ type: 'qrCode' | 'alreadyLogged' | 'error'; message: string }> {
-  const { url, token } = await base()
+export async function getQr(clinicId: string | null): Promise<{ type: 'qrCode' | 'alreadyLogged' | 'error'; message: string }> {
+  const { url, token } = await base(clinicId)
   const res = await fetch(`${url}/qr/${token}`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`GreenAPI qr ${res.status}: ${await res.text()}`)
   return res.json()
@@ -189,8 +226,8 @@ export async function getQr(): Promise<{ type: 'qrCode' | 'alreadyLogged' | 'err
  * Прописать webhook URL и включить нужные события.
  * Вызывается один раз с админки, или из server-side при ротации.
  */
-export async function setWebhookSettings(webhookUrl: string) {
-  const { url, token } = await base()
+export async function setWebhookSettings(webhookUrl: string, clinicId: string | null) {
+  const { url, token } = await base(clinicId)
   const res = await fetch(`${url}/setSettings/${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -212,9 +249,9 @@ export async function setWebhookSettings(webhookUrl: string) {
   return res.json()
 }
 
-/** Есть ли где-то заданные креды (БД или env) — для UI-индикатора. */
-export async function isGreenApiConfigured(): Promise<boolean> {
-  const c = await loadCreds()
+/** Есть ли заданные креды для клиники (или env, если clinicId=null) — для UI-индикатора. */
+export async function isGreenApiConfigured(clinicId: string | null): Promise<boolean> {
+  const c = await loadCreds(clinicId)
   return !!c
 }
 

@@ -83,7 +83,7 @@ export async function sendTemplateToDeal(
   // 3. Шлём через Green-API
   let providerId: string
   try {
-    const r = await sendWhatsAppText(phone, tmpl.body)
+    const r = await sendWhatsAppText(phone, tmpl.body, deal.clinic_id)
     providerId = r.idMessage
   } catch (err) {
     return { status: 'failed', error: err instanceof Error ? err.message : String(err) }

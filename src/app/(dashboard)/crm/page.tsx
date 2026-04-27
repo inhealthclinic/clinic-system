@@ -326,38 +326,41 @@ export default function CRMKanbanPage() {
     const fetchUnread = async () => {
       // Загружаем входящие и исходящие-человека (author_id != null = не бот).
       // Значок стоит пока нет ответа живого менеджера после последнего входящего.
+      // ORDER BY DESC + LIMIT — берём самые СВЕЖИЕ сообщения по клинике.
+      // Раньше было ASC, и при большом архиве в выборку попадали древние
+      // сообщения, а ответы менеджера не доходили до фронта — бейдж не сбрасывался.
       const { data } = await supabase
         .from('deal_messages')
         .select('deal_id, direction, author_id, created_at')
         .eq('clinic_id', clinicId)
         .in('channel', ['whatsapp', 'sms', 'telegram'])
-        .order('created_at', { ascending: true })
+        .order('created_at', { ascending: false })
         .limit(5000)
       if (cancelled) return
-      // Группируем по сделке, вычисляем нужен ли ответ менеджера
-      const byDeal = new Map<string, { lastInbound: string | null; lastHumanOut: string | null; pending: number }>()
+      // Идём от свежих к старым: для каждой сделки ищем lastInbound, lastHumanOut
+      // и считаем pending — число входящих, накопившихся ПОСЛЕ последнего ответа менеджера.
+      const byDeal = new Map<string, { lastInbound: string | null; lastHumanOut: string | null; pending: number; humanOutSeen: boolean }>()
       const lastMsg: Record<string, string> = {}
       for (const m of (data ?? []) as { deal_id: string; direction: string; author_id: string | null; created_at: string }[]) {
-        if (!byDeal.has(m.deal_id)) byDeal.set(m.deal_id, { lastInbound: null, lastHumanOut: null, pending: 0 })
+        if (!byDeal.has(m.deal_id)) byDeal.set(m.deal_id, { lastInbound: null, lastHumanOut: null, pending: 0, humanOutSeen: false })
         const s = byDeal.get(m.deal_id)!
+        // Самое свежее сообщение по сделке (в т.ч. бот) — для отображения «Xмин» на карточке.
+        if (!lastMsg[m.deal_id]) lastMsg[m.deal_id] = m.created_at
+
         if (m.direction === 'in') {
-          s.lastInbound = m.created_at
-          s.pending++
+          if (s.lastInbound == null) s.lastInbound = m.created_at
+          // Пока не встретили человеческий out — считаем входящие как непрочитанные.
+          if (!s.humanOutSeen) s.pending++
         } else if (m.direction === 'out' && m.author_id != null) {
-          // человек ответил — сбрасываем счётчик
-          s.lastHumanOut = m.created_at
-          s.pending = 0
+          if (s.lastHumanOut == null) s.lastHumanOut = m.created_at
+          s.humanOutSeen = true
         }
         // бот (direction='out', author_id=null) — игнорируем
-        // Запоминаем время самого свежего сообщения (любого направления, включая бота).
-        if (!lastMsg[m.deal_id] || m.created_at > lastMsg[m.deal_id]) {
-          lastMsg[m.deal_id] = m.created_at
-        }
       }
       const map: Record<string, number> = {}
       for (const [dealId, s] of byDeal) {
         const needsReply = s.lastInbound != null && (s.lastHumanOut == null || s.lastInbound > s.lastHumanOut)
-        if (needsReply) map[dealId] = s.pending
+        if (needsReply && s.pending > 0) map[dealId] = s.pending
       }
       setUnreadByDeal(map)
       setLastMsgByDeal(lastMsg)

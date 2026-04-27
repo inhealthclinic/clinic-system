@@ -69,12 +69,16 @@ async function maybeBackfillDealName(
 }
 
 /**
- * Возвращает открытую сделку по номеру телефона (приоритет).
+ * Возвращает открытую сделку по номеру телефона (приоритет) — ОБЯЗАТЕЛЬНО
+ * фильтруем по clinic_id, иначе входящее сообщение может «упасть» в чужую
+ * клинику с тем же номером.
+ *
  * Если открытой нет — возвращает последнюю закрытую в поле `closed`
  * чтобы вызывающий код мог создать новую сделку со ссылкой на историю.
  */
 async function findDealByPhone(
   phone: string,
+  clinicId: string,
 ): Promise<{ open: DealRef | null; closed: DealRef | null }> {
   const db = admin()
   const none = { open: null, closed: null }
@@ -84,6 +88,7 @@ async function findDealByPhone(
   const { data } = await db
     .from('deals')
     .select('id, clinic_id, status, name')
+    .eq('clinic_id', clinicId)
     .or(`contact_phone.ilike.%${tail}%`)
     .is('deleted_at', null)
     .order('updated_at', { ascending: false })
@@ -107,6 +112,7 @@ async function findDealByPhone(
   const { data: pats } = await db
     .from('patients')
     .select('id, clinic_id')
+    .eq('clinic_id', clinicId)
     .or(orExpr)
     .limit(5)
 
@@ -115,6 +121,7 @@ async function findDealByPhone(
     const { data: deals } = await db
       .from('deals')
       .select('id, clinic_id, status, name')
+      .eq('clinic_id', clinicId)
       .in('patient_id', patientIds)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false })
@@ -132,15 +139,17 @@ async function findDealByPhone(
   return none
 }
 
-/** Создать «Входящий лид» в первой стадии первой воронки. */
-async function createInboundDeal(phone: string, waName: string | null): Promise<DealRef | null> {
+/** Создать «Входящий лид» в первой стадии первой воронки указанной клиники. */
+async function createInboundDeal(phone: string, waName: string | null, clinicId: string): Promise<DealRef | null> {
   const db = admin()
 
-  // clinic_id живёт на pipelines, не на pipeline_stages — джойним.
+  // Берём первую активную стадию ИМЕННО этой клиники — иначе можно
+  // случайно положить лид в чужую воронку.
   const { data: stage, error: stageErr } = await db
     .from('pipeline_stages')
-    .select('id, pipeline_id, pipeline:pipelines(clinic_id)')
+    .select('id, pipeline_id, pipeline:pipelines!inner(clinic_id)')
     .eq('is_active', true)
+    .eq('pipeline.clinic_id', clinicId)
     .order('sort_order', { ascending: true })
     .limit(1)
     .maybeSingle()
@@ -150,14 +159,7 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
     return null
   }
   if (!stage) {
-    console.error('[greenapi] no pipeline_stages row — нужно создать воронку')
-    return null
-  }
-
-  const pipelineRel = Array.isArray(stage.pipeline) ? stage.pipeline[0] : stage.pipeline
-  const clinicId = (pipelineRel as { clinic_id?: string } | null)?.clinic_id
-  if (!clinicId) {
-    console.error('[greenapi] stage has no linked clinic via pipelines')
+    console.error('[greenapi] no pipeline_stages row for clinic', clinicId, '— нужно создать воронку')
     return null
   }
 
@@ -355,7 +357,7 @@ async function ingestIncomingFile(
   }
 }
 
-async function handleIncomingMessage(wh: IncomingMessageWebhook) {
+async function handleIncomingMessage(wh: IncomingMessageWebhook, clinicId: string) {
   const db = admin()
   const phone = chatIdToPhone(wh.senderData.chatId)
   const text = extractIncomingText(wh)
@@ -363,11 +365,12 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   console.log(
     '[greenapi] incoming from', phone,
     waName ? `(${waName})` : '(no name)',
-    '— text:', text?.slice(0, 80)
+    '— text:', text?.slice(0, 80),
+    'clinic:', clinicId,
   )
   if (!text) return
 
-  const { open: openDeal, closed: closedDeal } = await findDealByPhone(phone)
+  const { open: openDeal, closed: closedDeal } = await findDealByPhone(phone, clinicId)
 
   let deal: DealRef
   let isReopened = false
@@ -381,7 +384,7 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
     // Все сделки закрыты (won/lost) — повторное обращение:
     // создаём новую в первой стадии ("Неразобранное") и сохраняем ссылку на историю
     console.log('[greenapi] closed deal found', closedDeal.id, '— creating new inbound deal for returning contact')
-    const newDeal = await createInboundDeal(phone, waName)
+    const newDeal = await createInboundDeal(phone, waName, clinicId)
     if (!newDeal) {
       console.error('[greenapi] createInboundDeal returned null — no pipeline_stages?')
       return
@@ -406,7 +409,7 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   } else {
     // Новый контакт — создаём сделку
     console.log('[greenapi] no matching deal, creating inbound lead')
-    const newDeal = await createInboundDeal(phone, waName)
+    const newDeal = await createInboundDeal(phone, waName, clinicId)
     if (!newDeal) {
       console.error('[greenapi] createInboundDeal returned null — no pipeline_stages?')
       return
@@ -519,32 +522,47 @@ async function handleOutgoingStatus(wh: OutgoingStatusWebhook) {
 }
 
 export async function POST(req: NextRequest) {
-  // 1. Проверяем secret. Токен может лежать в env (старый путь) или в БД
-  // (clinics.whatsapp_webhook_token — новый путь, per-clinic).
-  // Принимаем валидным любой из вариантов: токен из env ИЛИ совпадение
-  // с одной из клиник в БД.
+  // 1. Проверяем secret и одновременно резолвим clinic_id владельца токена.
+  // Токен может лежать в env (legacy single-tenant) или в БД
+  // (clinics.whatsapp_webhook_token — per-clinic). Для env-токена ищем
+  // первую клинику, у которой задан instanceId — иначе writes провалятся.
   const token = req.nextUrl.searchParams.get('t') ?? req.headers.get('x-green-api-token')
   const envSecret = process.env.GREENAPI_WEBHOOK_TOKEN
-  let authorized = false
-  if (envSecret && token === envSecret) {
-    authorized = true
-  } else if (token) {
+  let clinicId: string | null = null
+
+  if (token) {
     try {
       const sb = admin()
-      const { data } = await sb
+      // Сначала ищем по whatsapp_webhook_token в БД (per-clinic путь).
+      const { data: byToken } = await sb
         .from('clinics')
         .select('id')
         .eq('whatsapp_webhook_token', token)
         .limit(1)
         .maybeSingle()
-      if (data?.id) authorized = true
-    } catch {
-      // ignore — упадём в 403
+      if (byToken?.id) {
+        clinicId = byToken.id as string
+      } else if (envSecret && token === envSecret) {
+        // Legacy fallback: env-токен общий для инсталляции; используем
+        // единственную клинику с настроенным WA-инстансом. Если их несколько —
+        // env-токен НЕ годится для multi-tenant: отклоняем во избежание утечки.
+        const { data: clinics } = await sb
+          .from('clinics')
+          .select('id')
+          .not('whatsapp_instance_id', 'is', null)
+          .limit(2)
+        if (clinics && clinics.length === 1) {
+          clinicId = clinics[0].id as string
+        } else if (clinics && clinics.length > 1) {
+          console.error('[greenapi webhook] env GREENAPI_WEBHOOK_TOKEN is ambiguous in multi-clinic install — set per-clinic whatsapp_webhook_token')
+        }
+      }
+    } catch (e) {
+      console.error('[greenapi webhook] token resolution failed:', e)
     }
   }
-  // Если ни env, ни в БД токен не задан — пропускаем (для первичной настройки),
-  // но только если env-secret тоже пустой и в БД нет ни одной записи с токеном.
-  if (!authorized) {
+
+  if (!clinicId) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   }
 
@@ -558,7 +576,7 @@ export async function POST(req: NextRequest) {
 
   try {
     if (wh.typeWebhook === 'incomingMessageReceived') {
-      await handleIncomingMessage(wh as IncomingMessageWebhook)
+      await handleIncomingMessage(wh as IncomingMessageWebhook, clinicId)
     } else if (wh.typeWebhook === 'outgoingMessageStatus') {
       await handleOutgoingStatus(wh as OutgoingStatusWebhook)
     } else if (wh.typeWebhook === 'stateInstanceChanged') {

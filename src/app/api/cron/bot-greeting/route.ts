@@ -142,7 +142,7 @@ export async function GET(req: NextRequest) {
 
     let providerId: string | undefined
     try {
-      const r = await sendWhatsAppText(phone, tmplBody)
+      const r = await sendWhatsAppText(phone, tmplBody, d.clinic_id)
       providerId = r.idMessage
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

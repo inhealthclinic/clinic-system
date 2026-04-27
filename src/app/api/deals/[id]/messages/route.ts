@@ -117,7 +117,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // 5. Зовём Green-API
   try {
-    const { idMessage } = await sendWhatsAppText(phone, body)
+    const { idMessage } = await sendWhatsAppText(phone, body, deal.clinic_id)
     await supabase
       .from('deal_messages')
       .update({ status: 'sent', external_id: idMessage })
