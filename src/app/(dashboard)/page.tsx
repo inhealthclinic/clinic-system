@@ -212,11 +212,7 @@ export default function DashboardPage() {
   // Предзагружаем CRM-данные пока пользователь на дашборде
   useEffect(() => {
     if (!profile?.clinic_id) return
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.access_token) {
-        prefetchCrm(profile.clinic_id, session.access_token, supabase)
-      }
-    })
+    prefetchCrm(profile.clinic_id, supabase)
   }, [profile?.clinic_id, supabase])
 
   const dateLabel = now.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })

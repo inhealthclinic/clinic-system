@@ -1,7 +1,6 @@
 /**
  * Module-level CRM prefetch cache.
- * Lives in memory for the lifetime of the browser tab (SPA session).
- * Dashboard pre-warms it; CRM page reads synchronously on mount — zero spinner.
+ * Dashboard pre-warms it via RPC; CRM page reads synchronously on mount — zero spinner.
  */
 
 export interface CrmCacheEntry {
@@ -22,7 +21,6 @@ const inflight: Record<string, Promise<void>> = {}
 
 export async function prefetchCrm(
   clinicId: string,
-  accessToken: string,
   supabase: ReturnType<typeof import('./supabase/client').createClient>,
 ) {
   if (crmCache[clinicId]) return
@@ -30,31 +28,28 @@ export async function prefetchCrm(
 
   inflight[clinicId] = (async () => {
     try {
-      const [dealsResp, p, r, ls, up, doc] = await Promise.all([
-        fetch(`/api/crm/deals?owner=all`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-          cache: 'no-store',
-        }),
+      const [dealsRes, patientsRes, p, r, ls, up, doc] = await Promise.all([
+        supabase.rpc('get_clinic_deals', { p_owner: 'all', p_show_closed: false }),
+        supabase.rpc('get_clinic_deal_patients', { p_show_closed: false }),
         supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
         supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
         supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
         supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
         supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       ])
-      if (!dealsResp.ok) return
-      const { deals: rawDeals = [], patients = [] } = await dealsResp.json()
+      if (dealsRes.error) return
 
       const ps = p.data ?? []
       const usersList = up.data ?? []
       const doctorsList = doc.data ?? []
 
       type IdObj = { id: string }
-      const patientsById = new Map((patients as IdObj[]).map(x => [x.id, x]))
+      type RawDeal = { id: string; patient_id?: string | null; responsible_user_id?: string | null; preferred_doctor_id?: string | null }
+      const patientsById = new Map((patientsRes.data ?? [] as IdObj[]).map((x: IdObj) => [x.id, x]))
       const usersById = new Map((usersList as IdObj[]).map(x => [x.id, x]))
       const doctorsById = new Map((doctorsList as IdObj[]).map(x => [x.id, x]))
 
-      type RawDeal = { id: string; patient_id?: string | null; responsible_user_id?: string | null; preferred_doctor_id?: string | null }
-      const enriched = (rawDeals as RawDeal[]).map(d => ({
+      const enriched = ((dealsRes.data ?? []) as RawDeal[]).map(d => ({
         ...d,
         patient: d.patient_id ? (patientsById.get(d.patient_id) ?? null) : null,
         responsible: d.responsible_user_id ? (usersById.get(d.responsible_user_id) ?? null) : null,

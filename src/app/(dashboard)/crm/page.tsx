@@ -491,35 +491,14 @@ export default function CRMKanbanPage() {
     // prefetch-кэш уже применён синхронно через useState initializer.
     // Если кэша нет — показываем спиннер, иначе обновляем тихо в фоне.
     if (!crmCache[clinicId]) setLoading(true)
-    // ── Сделки тянем через server-side роут (service role, обход RLS) ────
-    // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
-    // например при просроченном refresh-токене или когда auth.uid() не
-    // совпадает с user_profiles.id. RLS-политика deals при этом режет
-    // выборку в 0 строк, хотя view v_pipeline_stage_counts (owned by
-    // postgres → bypassRLS) корректно показывает счётчики. Симптом —
-    // «бейджи 1283/283, карточек 0».
-    //
-    // /api/crm/deals сам валидирует Bearer-токен, резолвит clinic_id из
-    // user_profiles и тянет сделки + пациентов service-role клиентом.
-    // Безопасно: клиника берётся из БД, тело запроса не влияет на
-    // фильтрацию.
-    const { data: { session } } = await supabase.auth.getSession()
-    const accessToken = session?.access_token ?? ''
-    const ownerParam = ownerFilter === 'mine' ? 'mine' : 'all'
 
-    // Все запросы параллельно — deals API + справочники одновременно
-    type DealsApiPayload = {
-      clinic_id?: string
-      deals?: DealRow[]
-      patients?: { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }[]
-      error?: string
-      global_deals_count?: number | null
-    }
-    const [dealsResp, p, r, ls, up, doc, cl] = await Promise.all([
-      fetch(`/api/crm/deals?owner=${ownerParam}${showTerminal ? '&closed=1' : ''}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        cache: 'no-store',
-      }),
+    // Все запросы параллельно — RPC напрямую к Supabase (без Vercel API-роута).
+    // get_clinic_deals / get_clinic_deal_patients — SECURITY DEFINER функции,
+    // обходят RLS и фильтруют по clinic_id авторизованного пользователя.
+    const ownerParam = ownerFilter === 'mine' ? 'mine' : 'all'
+    const [dealsRes, patientsRes, p, r, ls, up, doc, cl] = await Promise.all([
+      supabase.rpc('get_clinic_deals', { p_owner: ownerParam, p_show_closed: showTerminal }),
+      supabase.rpc('get_clinic_deal_patients', { p_show_closed: showTerminal }),
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
@@ -527,9 +506,8 @@ export default function CRMKanbanPage() {
       supabase.from('doctors').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
-    const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
-    if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
-    setDealsDiag({ status: dealsResp.status, error: dealsJson?.error ?? null })
+    if (dealsRes.error) console.error('[crm] get_clinic_deals:', dealsRes.error)
+    setDealsDiag({ status: dealsRes.error ? 500 : 200, error: dealsRes.error?.message ?? null })
 
     const ps = (p.data ?? []) as Pipeline[]
     const usersList = (up.data ?? []) as UserLite[]
@@ -540,11 +518,10 @@ export default function CRMKanbanPage() {
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
 
-    // Сшиваем deals с patients/users/doctors в памяти.
     type PatientLite = { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }
-    const dealRows = (dealsJson?.deals ?? []) as DealRow[]
+    const dealRows = (dealsRes.data ?? []) as DealRow[]
     const patientsById = new Map<string, PatientLite>(
-      ((dealsJson?.patients ?? []) as PatientLite[]).map(p0 => [p0.id, p0])
+      ((patientsRes.data ?? []) as PatientLite[]).map(p0 => [p0.id, p0])
     )
     const usersById = new Map(usersList.map(u => [u.id, u]))
     const doctorsById = new Map(doctorsList.map(x => [x.id, x]))
