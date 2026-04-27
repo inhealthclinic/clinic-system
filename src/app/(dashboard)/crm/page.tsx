@@ -2424,6 +2424,26 @@ function DealModal({
   const [newTaskDue, setNewTaskDue] = useState('')
   const [newTaskAssignee, setNewTaskAssignee] = useState('')
 
+  // Дебаунс mark_deal_messages_read: его дёргают сразу 3 места (loadRelated,
+  // realtime INSERT, polling fallback). Раньше — 3 fire-and-forget RPC за
+  // секунду на bursty чате, и ошибки молча терялись (.then(() => {}) глотал
+  // всё). Теперь один таймер на 300мс + console.error для диагностики.
+  const markReadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const markRead = useCallback(() => {
+    if (isNew || !deal.id) return
+    if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current)
+    markReadTimerRef.current = setTimeout(() => {
+      markReadTimerRef.current = null
+      supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id })
+        .then(({ error }) => {
+          if (error) console.error('[crm] mark_deal_messages_read failed:', error.message)
+        })
+    }, 300)
+  }, [deal.id, isNew, supabase])
+  useEffect(() => () => {
+    if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current)
+  }, [])
+
   const loadRelated = useCallback(() => {
     if (isNew || !deal.id) return
     supabase.from('v_deal_timeline')
@@ -2450,7 +2470,7 @@ function DealModal({
       .then(({ data }) => {
         setMessages((data ?? []) as unknown as MessageRow[])
         // mark incoming as read
-        supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+        markRead()
       })
     supabase.from('v_deal_journey')
       .select('appointments_count,visits_count,visits_completed,charges_total,payments_total,refunds_total')
@@ -2509,7 +2529,7 @@ function DealModal({
         })
         // Входящее — сразу помечаем прочитанным, т.к. карточка открыта
         if (row.direction === 'in') {
-          supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+          markRead()
         }
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2568,7 +2588,7 @@ function DealModal({
         if (toAdd.length === 0) return prev
         // Если появилось новое входящее — помечаем прочитанным
         if (toAdd.some(m => m.direction === 'in')) {
-          supabase.rpc('mark_deal_messages_read', { p_deal_id: deal.id }).then(() => {})
+          markRead()
         }
         return [...prev, ...toAdd]
       })
