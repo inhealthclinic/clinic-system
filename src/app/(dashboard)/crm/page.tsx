@@ -1361,37 +1361,22 @@ export default function CRMKanbanPage() {
               const cards = dealsByStage.get(stage.id) ?? []
               const count = counts.find(c => c.stage_id === stage.id)
               const isOver = overStage === stage.id
-              const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
               return (
-                <div
+                <KanbanColumn
                   key={stage.id}
-                  className={`min-w-[240px] w-[240px] sm:min-w-[280px] sm:w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
-                    isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
-                  }`}
-                  onDragOver={(e) => onDragOver(e, stage.id)}
-                  onDragLeave={() => onDragLeave(stage.id)}
-                  onDrop={(e) => onDrop(e, stage.id)}
-                >
-                  <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
-                    <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
-                    <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
-                    {stageUnread > 0 && (
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
-                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                        {stageUnread}
-                      </span>
-                    )}
-                    <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
-                      {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
-                    </span>
-                  </div>
-                  <div className="p-2 space-y-2 min-h-[40px]">
-                    {cards.map(d => (
-                      <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
-                    ))}
-                    {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
-                  </div>
-                </div>
+                  stage={stage}
+                  cards={cards}
+                  count={count}
+                  isOver={isOver}
+                  unreadByDeal={unreadByDeal}
+                  lastMsgByDeal={lastMsgByDeal}
+                  onDragStart={onDragStart}
+                  openDeal={openDeal}
+                  onDragOver={onDragOver}
+                  onDragLeave={onDragLeave}
+                  onDrop={onDrop}
+                  debouncedSearch={debouncedSearch}
+                />
               )
             })}
             {activeStages.length === 0 && (
@@ -1749,6 +1734,78 @@ function MoreMenuItem({ label, icon, onClick }: { label: string; icon: React.Rea
       <span className="text-gray-500">{icon}</span>
       <span className="flex-1">{label}</span>
     </button>
+  )
+}
+
+// ─── KanbanColumn (lazy render: first 50, +50 on scroll) ─────────────────────
+
+const PAGE = 50
+
+function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDeal, stage, count, isOver, onDragOver, onDragLeave, onDrop, debouncedSearch }: {
+  cards: DealRow[]
+  unreadByDeal: Record<string, number>
+  lastMsgByDeal: Record<string, string>
+  onDragStart: (e: React.DragEvent, d: DealRow) => void
+  openDeal: (d: DealRow) => void
+  stage: { id: string; name: string; color: string }
+  count?: { open_count: number }
+  isOver: boolean
+  onDragOver: (e: React.DragEvent, id: string) => void
+  onDragLeave: (id: string) => void
+  onDrop: (e: React.DragEvent, id: string) => void
+  debouncedSearch: string
+}) {
+  const [visible, setVisible] = useState(PAGE)
+  const sentinelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setVisible(PAGE) // reset when cards change (filter/search)
+  }, [cards])
+
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setVisible(v => Math.min(v + PAGE, cards.length)) },
+      { threshold: 0 }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [cards.length])
+
+  const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+  const shown = cards.slice(0, visible)
+
+  return (
+    <div
+      className={`min-w-[240px] w-[240px] sm:min-w-[280px] sm:w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
+        isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
+      }`}
+      onDragOver={(e) => onDragOver(e, stage.id)}
+      onDragLeave={() => onDragLeave(stage.id)}
+      onDrop={(e) => onDrop(e, stage.id)}
+    >
+      <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
+        <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
+        <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
+        {stageUnread > 0 && (
+          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            {stageUnread}
+          </span>
+        )}
+        <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
+          {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
+        </span>
+      </div>
+      <div className="p-2 space-y-2 min-h-[40px] overflow-y-auto max-h-[calc(100vh-260px)]">
+        {shown.map(d => (
+          <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+        ))}
+        {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
+        <div ref={sentinelRef} className="h-1" />
+      </div>
+    </div>
   )
 }
 
