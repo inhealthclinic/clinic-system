@@ -1899,12 +1899,9 @@ function DealModal({
   const [patientNameInput, setPatientNameInput] = useState('')
   const savePatientName = async () => {
     if (!form.patient?.id || !patientNameInput.trim()) { setEditingPatientName(false); return }
-    const parts = patientNameInput.trim().split(' ')
-    const first_name = parts[0] ?? ''
-    const last_name = parts.slice(1).join(' ') || ''
-    await supabase.from('patients').update({ first_name, last_name }).eq('id', form.patient.id)
-    const newName = [first_name, last_name].filter(Boolean).join(' ')
-    setForm(f => ({ ...f, patient: f.patient ? { ...f.patient, full_name: newName } : f.patient }))
+    const full_name = patientNameInput.trim()
+    await supabase.from('patients').update({ full_name }).eq('id', form.patient.id)
+    setForm(f => ({ ...f, patient: f.patient ? { ...f.patient, full_name } : f.patient }))
     setEditingPatientName(false)
   }
 
