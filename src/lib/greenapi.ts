@@ -237,7 +237,7 @@ export interface IncomingMessageWebhook {
     typeMessage: string
     textMessageData?: { textMessage: string }
     extendedTextMessageData?: { text: string }
-    /** Для audio/voice/image/video/document — Green-API отдаёт CDN-ссылку. */
+    /** Для audio/voice/image/video/document/sticker — Green-API отдаёт CDN-ссылку. */
     fileMessageData?: {
       downloadUrl: string
       caption?: string
@@ -245,6 +245,29 @@ export interface IncomingMessageWebhook {
       mimeType?: string
       isAnimated?: boolean
       jpegThumbnail?: string
+    }
+    locationMessageData?: {
+      nameLocation?: string
+      address?: string
+      latitude: number
+      longitude: number
+      jpegThumbnail?: string
+    }
+    contactMessageData?: {
+      displayName: string
+      vcard: string
+    }
+    contactsArrayMessageData?: {
+      contacts: Array<{ displayName: string; vcard: string }>
+    }
+    pollMessageData?: {
+      name: string
+      options: Array<{ optionName: string }>
+      multipleAnswers?: boolean
+    }
+    reactionMessageData?: {
+      text: string
+      messageId?: string
     }
   }
 }
@@ -310,6 +333,33 @@ export function extractIncomingText(wh: IncomingMessageWebhook): string | null {
   if (md.typeMessage === 'documentMessage') {
     const name = md.fileMessageData?.fileName?.trim()
     return `📎 документ${name ? ' · ' + name : ''}${captionLine}`
+  }
+  if (md.typeMessage === 'stickerMessage') return '🎭 стикер'
+  if (md.typeMessage === 'locationMessage') {
+    const l = md.locationMessageData
+    if (!l) return '📍 геолокация'
+    const label = [l.nameLocation, l.address].filter(Boolean).join(', ')
+    const coords = `${l.latitude},${l.longitude}`
+    const map = `https://maps.google.com/?q=${coords}`
+    return `📍 геолокация${label ? ' · ' + label : ''}\n${map}`
+  }
+  if (md.typeMessage === 'contactMessage') {
+    const name = md.contactMessageData?.displayName?.trim()
+    return `👤 контакт${name ? ' · ' + name : ''}`
+  }
+  if (md.typeMessage === 'contactsArrayMessage') {
+    const names = md.contactsArrayMessageData?.contacts?.map(c => c.displayName).filter(Boolean)
+    return `👤 контакты${names?.length ? ' · ' + names.join(', ') : ''}`
+  }
+  if (md.typeMessage === 'pollMessage') {
+    const p = md.pollMessageData
+    if (!p) return '📊 опрос'
+    const opts = p.options?.map(o => '• ' + o.optionName).join('\n')
+    return `📊 опрос: ${p.name}${opts ? '\n' + opts : ''}`
+  }
+  if (md.typeMessage === 'reactionMessage') {
+    const emoji = md.reactionMessageData?.text?.trim()
+    return emoji ? `↪️ реакция: ${emoji}` : '↪️ реакция снята'
   }
   return `[${md.typeMessage}]`
 }
