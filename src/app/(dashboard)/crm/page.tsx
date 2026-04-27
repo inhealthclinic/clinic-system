@@ -2144,10 +2144,10 @@ function DealModal({
   const [sendingPrepay, setSendingPrepay] = useState(false)
   const [sending, setSending] = useState(false)
   // Голосовое сообщение: MediaRecorder + UI-таймер.
-  // Хранится в ref, чтобы не пересоздавать рекордер на каждый ререндер.
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const recordStartRef = useRef<number>(0)
+  const streamRef = useRef<MediaStream | null>(null)
   const [recording, setRecording] = useState(false)
   const [recordSecs, setRecordSecs] = useState(0)
   const [sendingVoice, setSendingVoice] = useState(false)
@@ -2560,45 +2560,62 @@ function DealModal({
   // Алгоритм: getUserMedia → MediaRecorder (opus) → onstop собирает Blob →
   // POST FormData в /api/deals/:id/voice. Таймер тикает каждую секунду из
   // setInterval, чтобы UI не зависел от MediaRecorder.requestData().
+  function stopAllTracks() {
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+  }
+
   async function startRecording() {
     if (recording || sendingVoice || isNew) return
-    // Проверяем поддержку — Safari < 14.1 не умеет MediaRecorder, в iOS < 17 нет ogg.
     if (typeof window === 'undefined' || !navigator.mediaDevices || !window.MediaRecorder) {
       notify.error('Браузер не поддерживает запись звука')
       return
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // Предпочитаем audio/ogg;codecs=opus (нативный WhatsApp PTT).
-      // Fallback — webm/opus (Chrome старее), внутри тот же opus, файл переименуется в .ogg на сервере.
-      const mime = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
-        ? 'audio/ogg;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      streamRef.current = stream
+
+      // iOS Safari: только audio/mp4. Chrome/Firefox: webm/opus или ogg/opus.
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
         : ''
+
       const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
       audioChunksRef.current = []
-      rec.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
-      rec.onstop = async () => {
-        // Останавливаем дорожки микрофона — иначе у юзера светится индикатор «идёт запись» в браузере.
-        stream.getTracks().forEach(t => t.stop())
-        const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || 'audio/ogg' })
-        const duration_s = Math.round((Date.now() - recordStartRef.current) / 1000)
-        if (blob.size < 1024 || duration_s < 1) {
-          // Слишком короткая запись — скорее всего случайный клик.
+
+      // timeslice=250ms: iOS Safari не выдаёт chunks без него
+      rec.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        stopAllTracks()
+        const chunks = audioChunksRef.current
+        const finalMime = rec.mimeType || mime || 'audio/mp4'
+        const blob = new Blob(chunks, { type: finalMime })
+        const duration_s = Math.max(1, Math.round((Date.now() - recordStartRef.current) / 1000))
+        if (blob.size < 500) {
           notify.error('Слишком короткая запись')
           return
         }
-        // Не отправляем сразу — даём прослушать в превью.
         const url = URL.createObjectURL(blob)
         setPendingVoice({ blob, url, duration_s })
       }
+      rec.onerror = () => {
+        stopAllTracks()
+        setRecording(false)
+        mediaRecorderRef.current = null
+        notify.error('Ошибка записи')
+      }
+
       mediaRecorderRef.current = rec
       recordStartRef.current = Date.now()
       setRecordSecs(0)
-      rec.start()
+      rec.start(250) // timeslice нужен для iOS
       setRecording(true)
     } catch (e) {
+      stopAllTracks()
       const msg = e instanceof Error ? e.message : 'mic error'
       notify.error(`Не удалось включить микрофон: ${msg}`)
     }
@@ -2606,17 +2623,17 @@ function DealModal({
 
   function stopRecording(send: boolean) {
     const rec = mediaRecorderRef.current
-    if (!rec) { setRecording(false); return }
-    if (!send) {
-      // Отмена: подменяем onstop на чистильщик.
-      rec.onstop = () => {
-        rec.stream.getTracks().forEach(t => t.stop())
-        audioChunksRef.current = []
-      }
-    }
-    if (rec.state !== 'inactive') rec.stop()
     setRecording(false)
     mediaRecorderRef.current = null
+    if (!rec) { stopAllTracks(); return }
+    if (!send) {
+      // Отмена: подменяем onstop на чистильщик
+      rec.onstop = () => { stopAllTracks(); audioChunksRef.current = [] }
+    }
+    try {
+      if (rec.state === 'recording' || rec.state === 'paused') rec.stop()
+      else stopAllTracks()
+    } catch { stopAllTracks() }
   }
 
   function discardPendingVoice() {
