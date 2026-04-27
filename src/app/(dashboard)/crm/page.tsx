@@ -7,6 +7,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useIsMobile } from '@/lib/hooks/useIsMobile'
+import { useKeyboardHeight } from '@/lib/hooks/useKeyboardHeight'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -140,6 +142,8 @@ export default function CRMKanbanPage() {
   const clinicId = profile?.clinic_id
   const router = useRouter()
   const searchParams = useSearchParams()
+  const isMobileKanban = useIsMobile(768)
+  const [activeMobileStageId, setActiveMobileStageId] = useState<string>('')
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
@@ -567,6 +571,13 @@ export default function CRMKanbanPage() {
   )
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
   const conversion = conversions.find(c => c.pipeline_id === activePipelineId)
+
+  // Синхронизируем activeMobileStageId с первым этапом воронки при изменении
+  useEffect(() => {
+    if (activeStages.length > 0 && !activeStages.find(s => s.id === activeMobileStageId)) {
+      setActiveMobileStageId(activeStages[0].id)
+    }
+  }, [activeStages, activeMobileStageId])
 
   const sourceById = useMemo(
     () => new Map(sources.map(s => [s.id, s.name])),
@@ -1252,52 +1263,112 @@ export default function CRMKanbanPage() {
           горизонтальная полоса прокрутки прижималась к низу экрана и
           не перекрывала карточки в верхней части рабочей зоны. */}
       {viewMode === 'kanban' && (
-        <div className="overflow-auto h-[calc(100vh-220px)] pb-2">
-          <div className="flex gap-3 items-start min-w-max">
-            {activeStages.map(stage => {
-              const cards = dealsByStage.get(stage.id) ?? []
-              const count = counts.find(c => c.stage_id === stage.id)
-              const isOver = overStage === stage.id
-              const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
-              return (
-                <div
-                  key={stage.id}
-                  className={`min-w-[280px] w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
-                    isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
-                  }`}
-                  onDragOver={(e) => onDragOver(e, stage.id)}
-                  onDragLeave={() => onDragLeave(stage.id)}
-                  onDrop={(e) => onDrop(e, stage.id)}
-                >
-                  <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
-                    <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
-                    <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
-                    {stageUnread > 0 && (
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
-                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                        {stageUnread}
+        <>
+          {/* ── МОБИЛЬНЫЙ вид: табы этапов + вертикальный список (< 768px) ── */}
+          {isMobileKanban && (
+            <div className="flex flex-col flex-1 overflow-hidden">
+              {/* Горизонтально-скроллируемая полоса чипов */}
+              <div className="flex gap-2 overflow-x-auto pb-2 flex-shrink-0 px-1 py-1 scrollbar-none">
+                {activeStages.map(stage => {
+                  const count = counts.find(c => c.stage_id === stage.id)
+                  const stageUnread = (dealsByStage.get(stage.id) ?? []).filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+                  return (
+                    <button
+                      key={stage.id}
+                      onClick={() => setActiveMobileStageId(stage.id)}
+                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-full text-sm font-medium whitespace-nowrap min-h-[40px] transition-colors ${
+                        stage.id === activeMobileStageId
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 text-gray-700'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: stage.color }} />
+                      {stage.name}
+                      <span className="ml-0.5 text-xs opacity-80">
+                        {debouncedSearch
+                          ? (dealsByStage.get(stage.id) ?? []).length
+                          : (count?.open_count ?? (dealsByStage.get(stage.id) ?? []).length)}
                       </span>
-                    )}
-                    <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
-                      {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
-                    </span>
-                  </div>
-                  <div className="p-2 space-y-2 min-h-[40px]">
-                    {cards.map(d => (
-                      <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
-                    ))}
-                    {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
-                  </div>
-                </div>
-              )
-            })}
-            {activeStages.length === 0 && (
-              <div className="text-sm text-gray-500 p-6">
-                В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
+                      {stageUnread > 0 && (
+                        <span className="w-4 h-4 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none flex-shrink-0">
+                          {stageUnread}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
               </div>
-            )}
-          </div>
-        </div>
+              {/* Вертикальный список карточек активного этапа */}
+              <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                {(() => {
+                  const activeStage = activeStages.find(s => s.id === activeMobileStageId)
+                  if (!activeStage) return null
+                  const cards = dealsByStage.get(activeStage.id) ?? []
+                  return (
+                    <>
+                      {cards.map(d => (
+                        <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={() => {}} onClick={() => openDeal(d)} />
+                      ))}
+                      {cards.length === 0 && (
+                        <div className="text-sm text-gray-400 text-center py-8">Нет сделок в этом этапе</div>
+                      )}
+                    </>
+                  )
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* ── DESKTOP вид: оригинальный канбан с drag&drop (>= 768px) ── */}
+          {!isMobileKanban && (
+            <div className="overflow-auto h-[calc(100vh-220px)] pb-2">
+              <div className="flex gap-3 items-start min-w-max">
+                {activeStages.map(stage => {
+                  const cards = dealsByStage.get(stage.id) ?? []
+                  const count = counts.find(c => c.stage_id === stage.id)
+                  const isOver = overStage === stage.id
+                  const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+                  return (
+                    <div
+                      key={stage.id}
+                      className={`min-w-[280px] w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
+                        isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
+                      }`}
+                      onDragOver={(e) => onDragOver(e, stage.id)}
+                      onDragLeave={() => onDragLeave(stage.id)}
+                      onDrop={(e) => onDrop(e, stage.id)}
+                    >
+                      <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
+                        <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
+                        <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
+                        {stageUnread > 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
+                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            {stageUnread}
+                          </span>
+                        )}
+                        <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
+                          {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
+                        </span>
+                      </div>
+                      <div className="p-2 space-y-2 min-h-[40px]">
+                        {cards.map(d => (
+                          <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+                        ))}
+                        {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
+                      </div>
+                    </div>
+                  )
+                })}
+                {activeStages.length === 0 && (
+                  <div className="text-sm text-gray-500 p-6">
+                    В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Таблица — плоский список сделок активной воронки */}
@@ -1920,6 +1991,10 @@ function DealModal({
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
+  const isMobileModal = useIsMobile(1024)
+  const keyboardHeight = useKeyboardHeight()
+  const [mobileTab, setMobileTab] = useState<'chat' | 'details'>('chat')
+
   // Счётчик + список непрочитанных по ВСЕМ сделкам клиники
   interface UnreadItem {
     id: string
@@ -3016,10 +3091,36 @@ function DealModal({
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
+        {/* Mobile tab switcher — только на < 1024px */}
+        {isMobileModal && !isNew && (
+          <div className="flex border-b border-gray-200 bg-white flex-shrink-0">
+            <button
+              onClick={() => setMobileTab('chat')}
+              className={`flex-1 py-3 text-base font-medium transition-colors ${
+                mobileTab === 'chat'
+                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  : 'text-gray-500'
+              }`}
+            >
+              💬 Чат
+            </button>
+            <button
+              onClick={() => setMobileTab('details')}
+              className={`flex-1 py-3 text-base font-medium transition-colors ${
+                mobileTab === 'details'
+                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  : 'text-gray-500'
+              }`}
+            >
+              📋 Детали
+            </button>
+          </div>
+        )}
+
         {/* Body: 2 columns */}
         <div className="flex-1 flex overflow-hidden">
           {/* LEFT: properties */}
-          <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto">
+          <div className={`bg-white border-r border-gray-200 overflow-y-auto ${isMobileModal ? (mobileTab === 'details' ? 'flex-1 w-full' : 'hidden') : 'w-80'}`}>
             <div className="p-5 space-y-4 text-sm">
               {(() => {
                 // Карта рендереров встроенных полей (ключи совпадают с DEFAULT_FIELD_CONFIGS).
@@ -3429,7 +3530,7 @@ function DealModal({
              * flex-col layout: верхний блок (KPI / приёмы / лабы) — shrink-0 и
              * скроллится сам, если разрастётся; tabs-карточка занимает всё
              * оставшееся место по высоте, чтобы композер всегда был у футера. */}
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className={`flex-1 flex flex-col overflow-hidden ${isMobileModal && mobileTab !== 'chat' ? 'hidden' : ''}`}>
             {/* Tabs + чат: растягиваемся на оставшуюся высоту, композер прилипает к низу */}
             <div className="flex-1 min-h-0 p-5 pt-4 flex flex-col overflow-hidden">
               {/* Tabs: chat / timeline / tasks */}
@@ -3988,7 +4089,7 @@ function DealModal({
                         )}
 
                         {/* Input + send */}
-                        <div className="flex gap-2 p-3">
+                        <div className="flex gap-2 p-3" style={{ paddingBottom: `calc(0.75rem + var(--keyboard-h, 0px))` }}>
                           {recording ? (
                             // Режим записи: бегущий «эквалайзер» — наглядно, что мик активен.
                             <div className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50">
@@ -4034,7 +4135,7 @@ function DealModal({
                                 'Название задачи…'
                               }
                               rows={composerMode === 'task' ? 1 : 2}
-                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
+                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-base resize-none focus:border-blue-400 outline-none"
                             />
                           )}
 
