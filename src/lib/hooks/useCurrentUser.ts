@@ -7,13 +7,16 @@ import { useAuthStore } from '@/lib/stores/authStore'
 /**
  * Восстанавливает сессию Supabase при загрузке страницы.
  *
- * Быстрая стратегия:
- *   1) Если в persisted-кеше (localStorage) уже есть user — СРАЗУ снимаем
- *      isLoading, страница рендерится мгновенно. Supabase параллельно
- *      проверит сессию и при необходимости скорректирует state.
- *   2) Если кеша нет — ждём getSession() (обычно < 50 мс), потом снимаем
- *      лоадер. Safety-таймаут 5с на всякий случай.
- *   3) Профиль всегда догружается фоном, не блокирует рендер.
+ * Стратегия (после фикса race condition с протухшим токеном):
+ *   1) Если в persisted-кеше есть user — рендерим страницу сразу с этим
+ *      кешем, НО isLoading НЕ снимаем, пока getUser() не подтвердит.
+ *      Иначе при сломанном refresh-токене setUser(null) прилетал ПОСЛЕ
+ *      того, как лоадер уже был снят, и юзера кидало на /login.
+ *   2) Используем getUser() (а не getSession()), потому что он валидирует
+ *      JWT через Supabase и триггерит refresh — middleware на сервере
+ *      делает то же самое, и cookies остаются согласованными.
+ *   3) onAuthStateChange сбрасывает user в null ТОЛЬКО на явный SIGNED_OUT.
+ *      INITIAL_SESSION с пустой сессией игнорируем — getUser() авторитетен.
  */
 export function useCurrentUser() {
   const { user, profile, isLoading, setUser, setProfile, setLoading } = useAuthStore()
@@ -35,42 +38,53 @@ export function useCurrentUser() {
       if (!cancelled) setProfile(data ?? null)
     }
 
-    // Мгновенный рендер: если в persisted-сторе уже есть user — не ждём сеть.
-    const cached = useAuthStore.getState().user
-    if (cached) {
-      setLoading(false)
-    }
-
+    // Safety: если сеть зависла — через 5с снимаем лоадер,
+    // чтобы юзер хотя бы что-то увидел (а не вечный спиннер).
     const safety = setTimeout(() => {
       if (!cancelled) setLoading(false)
     }, 5000)
 
     ;(async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession()
+        // getUser() валидирует JWT через Supabase API + автоматически
+        // рефрешит токен. В отличие от getSession() — не вернёт стухший
+        // user из локального стораджа.
+        const { data: { user: u }, error } = await supabase.auth.getUser()
         if (cancelled) return
-        const u = session?.user ?? null
-        setUser(u)
+
+        if (error || !u) {
+          // Точно нет валидной сессии — чистим стейт.
+          setUser(null)
+          setProfile(null)
+        } else {
+          setUser(u)
+          loadProfile(u.id).catch(() => {})
+        }
         setLoading(false)
         clearTimeout(safety)
-        if (u) {
-          loadProfile(u.id).catch(() => {})
-        } else {
-          setProfile(null)
-        }
       } catch {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          // Сетевая ошибка — НЕ выкидываем юзера, оставляем cached state.
+          setLoading(false)
+        }
       }
     })()
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        const u = session?.user ?? null
-        setUser(u)
+        // Реагируем только на явные события — INITIAL_SESSION с null
+        // нам не интересен (его обработает getUser() выше).
         if (event === 'SIGNED_OUT') {
+          setUser(null)
           setProfile(null)
-        } else if (u) {
-          loadProfile(u.id).catch(() => {})
+          return
+        }
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+          const u = session?.user ?? null
+          if (u) {
+            setUser(u)
+            loadProfile(u.id).catch(() => {})
+          }
         }
       }
     )

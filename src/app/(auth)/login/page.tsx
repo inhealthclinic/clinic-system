@@ -32,7 +32,6 @@ function LoginForm() {
 
     const redirect = searchParams.get('redirect') ?? '/'
     router.push(redirect)
-    router.refresh()
   }
 
   return (
