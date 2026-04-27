@@ -284,17 +284,35 @@ export default function CRMKanbanPage() {
     if (!clinicId) return
     let cancelled = false
     const fetchUnread = async () => {
+      // Загружаем входящие и исходящие-человека (author_id != null = не бот).
+      // Значок стоит пока нет ответа живого менеджера после последнего входящего.
       const { data } = await supabase
         .from('deal_messages')
-        .select('deal_id')
+        .select('deal_id, direction, author_id, created_at')
         .eq('clinic_id', clinicId)
-        .eq('direction', 'in')
-        .is('read_at', null)
-        .limit(2000)
+        .in('channel', ['whatsapp', 'sms', 'telegram'])
+        .order('created_at', { ascending: true })
+        .limit(5000)
       if (cancelled) return
+      // Группируем по сделке, вычисляем нужен ли ответ менеджера
+      const byDeal = new Map<string, { lastInbound: string | null; lastHumanOut: string | null; pending: number }>()
+      for (const m of (data ?? []) as { deal_id: string; direction: string; author_id: string | null; created_at: string }[]) {
+        if (!byDeal.has(m.deal_id)) byDeal.set(m.deal_id, { lastInbound: null, lastHumanOut: null, pending: 0 })
+        const s = byDeal.get(m.deal_id)!
+        if (m.direction === 'in') {
+          s.lastInbound = m.created_at
+          s.pending++
+        } else if (m.direction === 'out' && m.author_id != null) {
+          // человек ответил — сбрасываем счётчик
+          s.lastHumanOut = m.created_at
+          s.pending = 0
+        }
+        // бот (direction='out', author_id=null) — игнорируем
+      }
       const map: Record<string, number> = {}
-      for (const row of (data ?? []) as { deal_id: string }[]) {
-        map[row.deal_id] = (map[row.deal_id] ?? 0) + 1
+      for (const [dealId, s] of byDeal) {
+        const needsReply = s.lastInbound != null && (s.lastHumanOut == null || s.lastInbound > s.lastHumanOut)
+        if (needsReply) map[dealId] = s.pending
       }
       setUnreadByDeal(map)
     }
@@ -1074,6 +1092,7 @@ export default function CRMKanbanPage() {
               const cards = dealsByStage.get(stage.id) ?? []
               const count = counts.find(c => c.stage_id === stage.id)
               const isOver = overStage === stage.id
+              const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
               return (
                 <div
                   key={stage.id}
@@ -1087,6 +1106,12 @@ export default function CRMKanbanPage() {
                   <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
                     <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
                     <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
+                    {stageUnread > 0 && (
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                        {stageUnread}
+                      </span>
+                    )}
                     <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
                   </div>
                   <div className="p-2 space-y-2 min-h-[40px]">
