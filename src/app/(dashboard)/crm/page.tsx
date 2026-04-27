@@ -603,7 +603,7 @@ export default function CRMKanbanPage() {
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
-  }, [clinicId, supabase, activePipelineId, ownerFilter, showTerminal, profile?.id, CACHE_KEY])
+  }, [clinicId, supabase, ownerFilter, showTerminal, profile?.id, CACHE_KEY])
 
   useEffect(() => { load() }, [load])
 
