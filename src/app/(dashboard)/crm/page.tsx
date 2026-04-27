@@ -565,19 +565,39 @@ export default function CRMKanbanPage() {
 
   // Совпадение сделки с поисковым запросом. Сравниваем по имени сделки,
   // ФИО пациента, всем телефонам, городам, заметкам и тегам.
+  // - Многословный запрос: каждый токен ищется отдельно (AND), порядок не важен.
+  // - Если токен — это цифры (телефон), сравниваем с нормализованной (только
+  //   цифры) версией всех телефонов сделки. Так "+7 778" находит "77783658387".
+  // - ё ≡ е, чтобы не ловить промахи по диакритикам.
   const matchesSearch = useCallback((d: DealRow, q: string) => {
     if (!q) return true
-    const hay = [
-      d.name ?? '',
-      d.patient?.full_name ?? '',
+    const norm = (s: string) => s.toLowerCase().replace(/ё/g, 'е')
+    const digits = (s: string) => s.replace(/\D+/g, '')
+    const phones = [
       ...(d.patient?.phones ?? []),
       d.contact_phone ?? '',
+    ].filter(Boolean)
+    const phonesDigits = phones.map(digits).filter(Boolean).join(' ')
+    const text = norm([
+      d.name ?? '',
+      d.patient?.full_name ?? '',
+      phones.join(' '),
       d.contact_city ?? '',
       d.patient?.city ?? '',
       d.notes ?? '',
       ...(d.tags ?? []),
-    ].join(' ').toLowerCase()
-    return hay.includes(q)
+    ].join(' '))
+    const tokens = norm(q).split(/\s+/).filter(Boolean)
+    for (const t of tokens) {
+      const td = digits(t)
+      // Цифровой токен длиной ≥3 — ищем в нормализованных телефонах.
+      if (td.length >= 3 && td.length === t.replace(/[\s+()\-]/g, '').length) {
+        if (!phonesDigits.includes(td)) return false
+        continue
+      }
+      if (!text.includes(t)) return false
+    }
+    return true
   }, [])
 
   // Универсальный компаратор по выбранному полю/направлению.
