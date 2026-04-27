@@ -24,7 +24,7 @@ export async function prefetchCrm(
   supabase: ReturnType<typeof import('./supabase/client').createClient>,
 ) {
   if (crmCache[clinicId]) return
-  if (inflight[clinicId]) return
+  if (clinicId in inflight) return
 
   inflight[clinicId] = (async () => {
     try {
