@@ -1704,7 +1704,13 @@ export default function CRMKanbanPage() {
             const selectedDeals = deals.filter(d => ids.includes(d.id))
             // Обновляем каждую сделку отдельно — у каждой свой текущий
             // набор tags, простого UPDATE массовым SQL не сделать.
+            // Раньше: state патчился ОДНИМ setDeals в конце. Если запрос упал
+            // на N-ой сделке (RLS / сеть) — БД уже содержала новые теги для 0..N-1,
+            // а UI оставался без изменений → расхождение, юзер думал что всё откатилось,
+            // но при следующем рефреше теги «вдруг» появлялись.
+            // Теперь: патчим state сразу после успешного UPDATE по каждой сделке.
             const nextTagsById = new Map<string, string[]>()
+            let failed = 0
             for (const d of selectedDeals) {
               let next: string[]
               if (replaceList) {
@@ -1716,11 +1722,16 @@ export default function CRMKanbanPage() {
                 next = Array.from(cur)
               }
               const { error } = await supabase.from('deals').update({ tags: next }).eq('id', d.id)
-              if (error) { notify.error(error.message); return }
+              if (error) {
+                failed++
+                notify.error(`Сделка «${d.name ?? d.id}»: ${error.message}`)
+                break
+              }
               nextTagsById.set(d.id, next)
+              // Сразу применяем — БД и UI остаются согласованы на каждом шаге.
+              patchDeal(d.id, { tags: next })
             }
-            setDeals(prev => prev.map(d => nextTagsById.has(d.id) ? { ...d, tags: nextTagsById.get(d.id)! } : d))
-            setBulkSelected(new Set())
+            if (failed === 0) setBulkSelected(new Set())
           }}
           onEditField={async ({ field, value }) => {
             const ids = Array.from(bulkSelected)
