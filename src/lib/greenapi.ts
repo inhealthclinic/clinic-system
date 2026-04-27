@@ -313,53 +313,81 @@ export type GreenApiWebhook =
  *  (характерный кейс — пересылка поста Instagram: приходит imageMessage
  *  c превью и caption-ом, содержащим URL и описание).
  */
+/** Вытащить первый номер телефона из vCard-строки. */
+function parseVcardPhone(vcard: string | undefined): string | null {
+  if (!vcard) return null
+  const m = vcard.match(/TEL[^:]*:([+\d\s()-]+)/i)
+  return m ? m[1].trim() : null
+}
+
 export function extractIncomingText(wh: IncomingMessageWebhook): string | null {
-  const md = wh.messageData
+  // Зачем не полагаемся только на typeMessage: Green-API в разных версиях
+  // присылает то 'quotedMessage', то 'extendedTextMessage' с вложенным
+  // quotedMessage; типы могут отличаться регистром или иметь префиксы
+  // ('reactionMessage' vs 'editedMessage' vs 'forwardedMessage'). Поэтому
+  // сначала смотрим на наличие специфических data-полей, затем уже
+  // на typeMessage как подсказку.
+  const md = wh.messageData as IncomingMessageWebhook['messageData'] & Record<string, unknown>
+  const t = (md.typeMessage || '').toLowerCase()
   const caption = md.fileMessageData?.caption?.trim()
   const captionLine = caption ? `\n${caption}` : ''
 
-  if (md.typeMessage === 'textMessage') return md.textMessageData?.textMessage ?? null
-  if (md.typeMessage === 'extendedTextMessage') return md.extendedTextMessageData?.text ?? null
-  // quotedMessage — пациент сделал свайп-ответ на сообщение. Сам ответ лежит
-  // в extendedTextMessageData.text, оригинал цитаты — в отдельном поле, его
-  // мы не показываем (UI и так покажет соседнее сообщение из истории).
-  if (md.typeMessage === 'quotedMessage') {
-    const t = md.extendedTextMessageData?.text?.trim() || md.textMessageData?.textMessage?.trim()
-    return t || '↩️ ответ'
+  // 1. Простой/расширенный текст и свайп-ответы — все они кладут текст в
+  // textMessageData или extendedTextMessageData. Если хоть одно из этих
+  // полей заполнено непустой строкой — это и есть текст пациента.
+  const plainText = md.textMessageData?.textMessage?.trim()
+  const extText = md.extendedTextMessageData?.text?.trim()
+  if (plainText) return plainText
+  if (extText) return extText
+
+  // 2. Реакция эмодзи — может прийти как reactionMessage или внутри
+  // другого типа. Проверяем по data-полю.
+  if (md.reactionMessageData) {
+    const emoji = md.reactionMessageData.text?.trim()
+    return emoji ? `↪️ реакция: ${emoji}` : '↪️ реакция снята'
   }
-  if (md.typeMessage === 'imageMessage')    return `🖼 изображение${captionLine}`
-  if (md.typeMessage === 'audioMessage')    return `🎙 аудио${captionLine}`
-  if (md.typeMessage === 'videoMessage')    return `🎬 видео${captionLine}`
-  if (md.typeMessage === 'documentMessage') {
-    const name = md.fileMessageData?.fileName?.trim()
-    return `📎 документ${name ? ' · ' + name : ''}${captionLine}`
-  }
-  if (md.typeMessage === 'stickerMessage') return '🎭 стикер'
-  if (md.typeMessage === 'locationMessage') {
+
+  // 3. Геолокация
+  if (md.locationMessageData) {
     const l = md.locationMessageData
-    if (!l) return '📍 геолокация'
     const label = [l.nameLocation, l.address].filter(Boolean).join(', ')
-    const coords = `${l.latitude},${l.longitude}`
-    const map = `https://maps.google.com/?q=${coords}`
+    const map = `https://maps.google.com/?q=${l.latitude},${l.longitude}`
     return `📍 геолокация${label ? ' · ' + label : ''}\n${map}`
   }
-  if (md.typeMessage === 'contactMessage') {
-    const name = md.contactMessageData?.displayName?.trim()
-    return `👤 контакт${name ? ' · ' + name : ''}`
+
+  // 4. Контакт визиткой
+  if (md.contactMessageData) {
+    const name = md.contactMessageData.displayName?.trim()
+    const phone = parseVcardPhone(md.contactMessageData.vcard)
+    const parts = [name, phone].filter(Boolean).join(' · ')
+    return `👤 контакт${parts ? ' · ' + parts : ''}`
   }
-  if (md.typeMessage === 'contactsArrayMessage') {
-    const names = md.contactsArrayMessageData?.contacts?.map(c => c.displayName).filter(Boolean)
-    return `👤 контакты${names?.length ? ' · ' + names.join(', ') : ''}`
+  if (md.contactsArrayMessageData) {
+    const items = (md.contactsArrayMessageData.contacts ?? []).map(c => {
+      const ph = parseVcardPhone(c.vcard)
+      return [c.displayName, ph].filter(Boolean).join(' · ')
+    }).filter(Boolean)
+    return `👤 контакты${items.length ? '\n' + items.map(i => '• ' + i).join('\n') : ''}`
   }
-  if (md.typeMessage === 'pollMessage') {
+
+  // 5. Опрос
+  if (md.pollMessageData) {
     const p = md.pollMessageData
-    if (!p) return '📊 опрос'
     const opts = p.options?.map(o => '• ' + o.optionName).join('\n')
     return `📊 опрос: ${p.name}${opts ? '\n' + opts : ''}`
   }
-  if (md.typeMessage === 'reactionMessage') {
-    const emoji = md.reactionMessageData?.text?.trim()
-    return emoji ? `↪️ реакция: ${emoji}` : '↪️ реакция снята'
+
+  // 6. Медиа: ориентируемся на typeMessage (он чёткий) + caption
+  if (t.includes('image'))    return `🖼 изображение${captionLine}`
+  if (t.includes('video'))    return `🎬 видео${captionLine}`
+  if (t.includes('audio'))    return `🎙 аудио${captionLine}`
+  if (t.includes('sticker'))  return '🎭 стикер'
+  if (t.includes('document')) {
+    const name = md.fileMessageData?.fileName?.trim()
+    return `📎 документ${name ? ' · ' + name : ''}${captionLine}`
   }
-  return `[${md.typeMessage}]`
+
+  // 7. Совсем неизвестный тип — оставим placeholder, но без квадратных
+  // скобок, чтобы оператор хотя бы видел осмысленную отметку.
+  return `❓ сообщение (${md.typeMessage || 'unknown'})`
 }
