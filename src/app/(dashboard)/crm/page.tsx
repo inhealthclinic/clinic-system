@@ -4189,6 +4189,24 @@ function DealModal({
                           </div>
                         )}
 
+                        {/* Pending voice preview — отдельный блок поверх инпута */}
+                        {pendingVoice && (
+                          <div className="px-3 pb-2 flex flex-col gap-2">
+                            <audio controls src={pendingVoice.url} className="w-full h-10" />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={discardPendingVoice}
+                                className="flex-1 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                              >✕ Удалить</button>
+                              <button
+                                onClick={sendPendingVoice}
+                                disabled={sendingVoice}
+                                className="flex-1 py-2 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 font-medium"
+                              >{sendingVoice ? '…' : '▶ Отправить'}</button>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Input + send */}
                         <div className="flex gap-2 p-3">
                           {recording ? (
@@ -4212,13 +4230,7 @@ function DealModal({
                               <span className="text-xs text-red-600 font-medium shrink-0">⏹ стоп</span>
                             </button>
                           ) : pendingVoice ? (
-                            // Превью записанного голосового — можно прослушать перед отправкой.
-                            <div className="flex-1 flex items-center gap-2 border border-blue-200 rounded px-3 py-1.5 bg-blue-50">
-                              <audio controls src={pendingVoice.url} className="flex-1 h-8" />
-                              <span className="text-xs text-blue-700/70 font-mono tabular-nums">
-                                {String(Math.floor(pendingVoice.duration_s / 60)).padStart(2, '0')}:{String(pendingVoice.duration_s % 60).padStart(2, '0')}
-                              </span>
-                            </div>
+                            <div className="flex-1" />
                           ) : (
                             <textarea
                               value={msgDraft}
@@ -4249,24 +4261,7 @@ function DealModal({
                               >
                                 ✕
                               </button>
-                            ) : pendingVoice ? (
-                              <>
-                                <button
-                                  onClick={discardPendingVoice}
-                                  title="Удалить и записать заново"
-                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
-                                >
-                                  ✕
-                                </button>
-                                <button
-                                  onClick={sendPendingVoice}
-                                  disabled={sendingVoice}
-                                  title="Отправить голосовое"
-                                  className="self-end px-4 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
-                                >
-                                  {sendingVoice ? '…' : '▶ Отправить'}
-                                </button>
-                              </>
+                            ) : pendingVoice ? null
                             ) : (
                               <button
                                 onClick={startRecording}
