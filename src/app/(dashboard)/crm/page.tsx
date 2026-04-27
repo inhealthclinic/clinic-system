@@ -303,6 +303,9 @@ export default function CRMKanbanPage() {
   // на карточках канбана. Обновляем каждые 8 сек + подписываемся на realtime,
   // чтобы новое WhatsApp/SMS сообщение мгновенно поднимало цифру.
   const [unreadByDeal, setUnreadByDeal] = useState<Record<string, number>>({})
+  // Время последнего сообщения по сделке (включая исходящие/бот) — показываем
+  // на карточке канбана рядом с возрастом этапа.
+  const [lastMsgByDeal, setLastMsgByDeal] = useState<Record<string, string>>({})
   useEffect(() => {
     if (!clinicId) return
     let cancelled = false
@@ -319,6 +322,7 @@ export default function CRMKanbanPage() {
       if (cancelled) return
       // Группируем по сделке, вычисляем нужен ли ответ менеджера
       const byDeal = new Map<string, { lastInbound: string | null; lastHumanOut: string | null; pending: number }>()
+      const lastMsg: Record<string, string> = {}
       for (const m of (data ?? []) as { deal_id: string; direction: string; author_id: string | null; created_at: string }[]) {
         if (!byDeal.has(m.deal_id)) byDeal.set(m.deal_id, { lastInbound: null, lastHumanOut: null, pending: 0 })
         const s = byDeal.get(m.deal_id)!
@@ -331,6 +335,10 @@ export default function CRMKanbanPage() {
           s.pending = 0
         }
         // бот (direction='out', author_id=null) — игнорируем
+        // Запоминаем время самого свежего сообщения (любого направления, включая бота).
+        if (!lastMsg[m.deal_id] || m.created_at > lastMsg[m.deal_id]) {
+          lastMsg[m.deal_id] = m.created_at
+        }
       }
       const map: Record<string, number> = {}
       for (const [dealId, s] of byDeal) {
@@ -338,6 +346,7 @@ export default function CRMKanbanPage() {
         if (needsReply) map[dealId] = s.pending
       }
       setUnreadByDeal(map)
+      setLastMsgByDeal(lastMsg)
     }
     fetchUnread()
     const interval = setInterval(fetchUnread, 8000)
@@ -1174,7 +1183,7 @@ export default function CRMKanbanPage() {
                   </div>
                   <div className="p-2 space-y-2 min-h-[40px]">
                     {cards.map(d => (
-                      <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+                      <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
                     ))}
                     {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
                   </div>
@@ -1541,9 +1550,10 @@ function MoreMenuItem({ label, icon, onClick }: { label: string; icon: React.Rea
 
 // ─── DealCard ─────────────────────────────────────────────────────────────────
 
-function DealCard({ deal, unread = 0, onDragStart, onClick }: {
+function DealCard({ deal, unread = 0, lastMsgAt, onDragStart, onClick }: {
   deal: DealRow
   unread?: number
+  lastMsgAt?: string
   onDragStart: (e: React.DragEvent) => void
   onClick: () => void
 }) {
@@ -1587,6 +1597,11 @@ function DealCard({ deal, unread = 0, onDragStart, onClick }: {
       )}
       <div className="flex items-center gap-2 mt-1.5 text-xs text-gray-500">
         <span>⏱ {fmtAge(deal.stage_entered_at)}</span>
+        {lastMsgAt && (
+          <span className="text-gray-400" title="Последнее сообщение">
+            💬 {fmtAge(lastMsgAt)}
+          </span>
+        )}
         {deal.responsible && (
           <span className="ml-auto truncate max-w-[100px]">
             {deal.responsible.first_name}{deal.responsible.last_name ? ` ${deal.responsible.last_name[0]}.` : ''}
