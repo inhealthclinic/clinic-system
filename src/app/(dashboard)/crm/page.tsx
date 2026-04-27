@@ -1102,16 +1102,8 @@ export default function CRMKanbanPage() {
               onFocus={() => setSearchOpen(true)}
               onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); (e.target as HTMLInputElement).blur() } }}
               placeholder="Поиск по сделкам: имя, телефон, тег, город…"
-              className="w-full pl-9 pr-24 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
-            <button
-              type="button"
-              onClick={() => setPhoneSearchOpen(true)}
-              title="Поиск по телефону по всем сделкам клиники (горячая клавиша: /)"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-1 text-[11px] rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
-            >
-              📞 Глобально
-            </button>
 
             {searchOpen && debouncedSearch && (
               <div
