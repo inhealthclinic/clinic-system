@@ -150,24 +150,15 @@ export default function CRMKanbanPage() {
     if (!clinicId || !profile?.id) return
 
     const heartbeat = async () => {
-      await supabase
-        .from('user_profiles')
-        .update({ last_seen_at: new Date().toISOString() })
-        .eq('id', profile.id)
+      await supabase.rpc('touch_last_seen')
     }
 
     const fetchOnline = async () => {
-      const since = new Date(Date.now() - 5 * 60 * 1000).toISOString()
-      const { data } = await supabase
-        .from('user_profiles')
-        .select('id, first_name, last_name, role:roles(name)')
-        .eq('clinic_id', clinicId)
-        .gte('last_seen_at', since)
-        .is('deleted_at', null)
+      const { data } = await supabase.rpc('get_online_users', { p_clinic_id: clinicId })
       const users: OnlineUser[] = (data ?? []).map((u: Record<string, unknown>) => ({
         id: u.id as string,
         name: [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Сотрудник',
-        role: (u.role as { name?: string } | null)?.name ?? '',
+        role: (u.role_name as string) ?? '',
       }))
       setOnlineUsers(users)
     }
