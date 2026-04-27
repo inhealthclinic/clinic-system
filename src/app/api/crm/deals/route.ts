@@ -23,9 +23,24 @@ import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
 // Серверный in-memory кэш: все пользователи одной клиники получают один ответ.
 // Fluid Compute переиспользует инстанс между запросами — кэш живёт в памяти процесса.
-// TTL 30 сек: свежесть достаточная для CRM, нагрузка на БД снижается в 10×.
+// TTL 15 сек: свежесть для CRM (мутации с фронта идут мимо нас), нагрузка на БД снижена.
+// Фронт может пройти мимо кэша через ?fresh=1 после собственного UPDATE/INSERT.
 const _cache = new Map<string, { data: unknown; exp: number }>()
-const CACHE_TTL = 30_000
+const CACHE_TTL = 15_000
+
+// Жёсткий потолок на одну выгрузку. На реальной CRM 5000 открытых сделок —
+// уже патология (нужна архивация). Без потолка прежний цикл мог сделать до
+// 100 запросов в Supabase подряд и быстро исчерпать пул соединений.
+const MAX_DEALS = 5000
+const PAGE_SIZE = 1000
+const MAX_PAGES = Math.ceil(MAX_DEALS / PAGE_SIZE)
+
+/** Сбросить серверный кэш сделок для конкретной клиники. */
+export function invalidateDealsCache(clinicId: string) {
+  for (const key of _cache.keys()) {
+    if (key.startsWith(`${clinicId}:`)) _cache.delete(key)
+  }
+}
 
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -82,10 +97,12 @@ export async function GET(req: NextRequest) {
   const owner = req.nextUrl.searchParams.get('owner') ?? 'all'
   const showClosed = req.nextUrl.searchParams.get('closed') === '1'
 
-  // Серверный кэш: owner=all (общий вид) кэшируем на 30 сек.
+  // Серверный кэш: owner=all (общий вид) кэшируем на 15 сек.
   // owner=mine не кэшируем — у каждого свой набор.
+  // ?fresh=1 — фронт после собственной мутации может потребовать свежие данные.
+  const fresh = req.nextUrl.searchParams.get('fresh') === '1'
   const cacheKey = `${profile.clinic_id}:${owner}:${showClosed ? '1' : '0'}`
-  if (owner === 'all') {
+  if (owner === 'all' && !fresh) {
     const hit = _cache.get(cacheKey)
     if (hit && hit.exp > Date.now()) {
       return NextResponse.json(hit.data)
@@ -95,10 +112,11 @@ export async function GET(req: NextRequest) {
   // По умолчанию — только открытые сделки (status = 'open').
   // Закрытые грузим только если явно запрошено closed=1.
   type DealRowSrv = { id: string; patient_id: string | null }
-  const PAGE_SIZE = 1000
   const all: DealRowSrv[] = []
   let dealsErr: { message: string } | null = null
-  for (let from = 0; from < 100_000; from += PAGE_SIZE) {
+  let truncated = false
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_SIZE
     let q = admin
       .from('deals')
       .select(DEAL_COLUMNS)
@@ -112,6 +130,12 @@ export async function GET(req: NextRequest) {
     const chunk = (data ?? []) as DealRowSrv[]
     all.push(...chunk)
     if (chunk.length < PAGE_SIZE) break
+    if (page === MAX_PAGES - 1 && chunk.length === PAGE_SIZE) {
+      // Достигли потолка — в БД ещё есть сделки, но мы их не покажем.
+      // Это сигнал что клинике пора архивировать или поднять лимит.
+      truncated = true
+      console.warn(`[api/crm/deals] truncated at MAX_DEALS=${MAX_DEALS} for clinic ${profile.clinic_id}`)
+    }
   }
   if (dealsErr) {
     return NextResponse.json({ error: dealsErr.message }, { status: 500 })
@@ -139,7 +163,9 @@ export async function GET(req: NextRequest) {
     Promise.all(patientBatches.map(slice =>
       admin.from('patients').select('id, full_name, phones, birth_date, city').in('id', slice)
     )),
-    admin.from('deals').select('id', { count: 'exact', head: true }),
+    // Счётчик сделок по КЛИНИКЕ (раньше считалось по всем — info-leak, давало
+    // менеджеру представление о размере соседних клиник).
+    admin.from('deals').select('id', { count: 'exact', head: true }).eq('clinic_id', profile.clinic_id),
   ])
   const patients: PatientLite[] = patientResults.flatMap(r => (r.data ?? []) as PatientLite[])
   const globalDeals = countResult.count
@@ -149,6 +175,7 @@ export async function GET(req: NextRequest) {
     deals: dealRows,
     patients,
     global_deals_count: globalDeals ?? null,
+    truncated,
   }
 
   if (owner === 'all') {
