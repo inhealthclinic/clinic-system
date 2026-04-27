@@ -889,6 +889,55 @@ export default function CRMKanbanPage() {
           </div>
         </div>
       )}
+      {/* Строка непрочитанных: показываем сделки, где есть необработанные
+          входящие сообщения. Менеджер сразу видит, кому надо ответить, без
+          необходимости пролистывать канбан. Скроллится горизонтально. */}
+      {(() => {
+        const unreadDeals = deals
+          .filter(d => (unreadByDeal[d.id] ?? 0) > 0)
+          .sort((a, b) => (lastMsgByDeal[b.id] ?? '').localeCompare(lastMsgByDeal[a.id] ?? ''))
+        if (unreadDeals.length === 0) return null
+        const totalUnreadAll = unreadDeals.reduce((s, d) => s + (unreadByDeal[d.id] ?? 0), 0)
+        return (
+          <div className="mb-3 rounded-md border border-green-200 bg-green-50/60 px-3 py-2">
+            <div className="flex items-center gap-2 mb-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-green-600">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <span className="text-sm font-medium text-green-900">
+                Непрочитанные · {unreadDeals.length} {unreadDeals.length === 1 ? 'чат' : unreadDeals.length < 5 ? 'чата' : 'чатов'} · {totalUnreadAll} {totalUnreadAll === 1 ? 'сообщение' : totalUnreadAll < 5 ? 'сообщения' : 'сообщений'}
+              </span>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1" style={{ scrollbarWidth: 'thin' }}>
+              {unreadDeals.map(d => {
+                const cnt = unreadByDeal[d.id] ?? 0
+                const last = lastMsgByDeal[d.id]
+                const ago = last ? fmtAge(last) : ''
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => openDeal(d)}
+                    className="shrink-0 flex items-center gap-2 bg-white border border-green-300 hover:border-green-400 hover:shadow-sm rounded-md px-3 py-1.5 text-left transition-colors"
+                    title={`${d.name ?? d.contact_phone ?? ''} — ${cnt} непрочитанных`}
+                  >
+                    <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                      {cnt > 99 ? '99+' : cnt}
+                    </span>
+                    <span className="flex flex-col min-w-0 max-w-[180px]">
+                      <span className="text-sm font-medium text-gray-900 truncate">
+                        {d.name?.trim() || d.contact_phone || '—'}
+                      </span>
+                      {ago && <span className="text-[10px] text-gray-500">{ago}</span>}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
