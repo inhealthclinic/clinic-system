@@ -4261,8 +4261,7 @@ function DealModal({
                               >
                                 ✕
                               </button>
-                            ) : pendingVoice ? null
-                            ) : (
+                            ) : pendingVoice ? null : (
                               <button
                                 onClick={startRecording}
                                 disabled={sendingVoice || sending || !!msgDraft.trim()}
