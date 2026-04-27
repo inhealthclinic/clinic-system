@@ -1209,9 +1209,9 @@ export default function CRMKanbanPage() {
               className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
 
-            {searchOpen && debouncedSearch && (
+            {debouncedSearch && (
               <div
-                className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-md shadow-lg max-h-[60vh] overflow-y-auto"
+                className="absolute left-0 right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-md shadow-lg max-h-[60vh] overflow-y-auto"
                 onMouseDown={e => e.preventDefault()} /* не сбрасывать фокус инпута при клике на список */
               >
                 {searchResults.length === 0 ? (
