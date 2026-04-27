@@ -1694,6 +1694,25 @@ function MoreMenuItem({ label, icon, onClick }: { label: string; icon: React.Rea
   )
 }
 
+// ─── linkify: делает URL кликабельными в тексте сообщений ────────────────────
+
+function linkify(text: string, outgoing: boolean) {
+  const URL_RE = /(https?:\/\/[^\s<>"']+)/g
+  const parts = text.split(URL_RE)
+  return parts.map((part, i) => {
+    if (URL_RE.test(part)) {
+      URL_RE.lastIndex = 0
+      return (
+        <a key={i} href={part} target="_blank" rel="noopener noreferrer"
+          className={`underline break-all ${outgoing ? 'text-blue-100 hover:text-white' : 'text-blue-600 hover:text-blue-800'}`}
+          onClick={e => e.stopPropagation()}
+        >{part}</a>
+      )
+    }
+    return part
+  })
+}
+
 // ─── KanbanColumn (lazy render: first 50, +50 on scroll) ─────────────────────
 
 const PAGE = 50
@@ -3778,7 +3797,7 @@ function DealModal({
                                         <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
                                       )}
                                     </div>
-                                    <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                    <div className="whitespace-pre-wrap break-words">{linkify(m.body, false)}</div>
                                     <div className="text-[10px] mt-1 text-gray-500">
                                       {new Date(m.created_at).toLocaleString('ru-RU')}
                                     </div>
@@ -3898,7 +3917,7 @@ function DealModal({
                                         </div>
                                       )
                                     }
-                                    return <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                    return <div className="whitespace-pre-wrap break-words">{linkify(m.body, m.direction === 'out')}</div>
                                   })()}
                                   <div className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
                                     <span>{new Date(m.created_at).toLocaleString('ru-RU')}</span>
