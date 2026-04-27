@@ -15,6 +15,7 @@ const SETTINGS_NAV = [
   { href: '/settings/notifications', label: 'Уведомления',     icon: '🔔' },
   { href: '/settings/schedule',     label: 'Типы записей',    icon: '🎨' },
   { href: '/settings/packages',    label: 'Пакеты анализов', icon: '📦' },
+  { href: '/settings/contacts',    label: 'Контакты',        icon: '📇' },
   { href: '/settings/audit',       label: 'Журнал действий', icon: '📜' },
 ]
 
