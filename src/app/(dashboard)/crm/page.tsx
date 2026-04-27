@@ -563,42 +563,90 @@ export default function CRMKanbanPage() {
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
   const conversion = conversions.find(c => c.pipeline_id === activePipelineId)
 
-  // Совпадение сделки с поисковым запросом. Сравниваем по имени сделки,
-  // ФИО пациента, всем телефонам, городам, заметкам и тегам.
-  // - Многословный запрос: каждый токен ищется отдельно (AND), порядок не важен.
-  // - Если токен — это цифры (телефон), сравниваем с нормализованной (только
-  //   цифры) версией всех телефонов сделки. Так "+7 778" находит "77783658387".
-  // - ё ≡ е, чтобы не ловить промахи по диакритикам.
+  const sourceById = useMemo(
+    () => new Map(sources.map(s => [s.id, s.name])),
+    [sources]
+  )
+
+  // Совпадение сделки с поисковым запросом. Стараемся быть терпимыми к тому,
+  // как реально пишут операторы:
+  // - Многословный запрос → AND по токенам, порядок не важен.
+  // - Телефонный токен (цифры с допустимой пунктуацией) ищется в нормализованных
+  //   (только цифры) телефонах сделки. Так "+7 778" / "8(778)" / "778-365"
+  //   все находят "+77783658387". Дополнительно нормализуем ведущую "8" → "7"
+  //   (KZ/RU) и работаем по последним 10 цифрам, чтобы не зависеть от кода
+  //   страны.
+  // - Латиница → транслит в кириллицу: "ivan" → "иван", "almaty" → "алматы".
+  // - ё ≡ е.
+  // Хей включает: имя сделки, ФИО пациента, телефоны, города, заметки, теги,
+  // имена ответственного и врача, имя источника лида.
   const matchesSearch = useCallback((d: DealRow, q: string) => {
     if (!q) return true
     const norm = (s: string) => s.toLowerCase().replace(/ё/g, 'е')
     const digits = (s: string) => s.replace(/\D+/g, '')
+    // KZ/RU: телефон может быть записан и через 8, и через +7 — приводим
+    // к 10 значащим цифрам без кода страны.
+    const phoneCore = (s: string) => {
+      let x = digits(s)
+      if (x.length === 11 && (x.startsWith('7') || x.startsWith('8'))) x = x.slice(1)
+      return x
+    }
+    // Грубая транслитерация лат→кир для поиска по имени/городу.
+    const TRANSLIT: Record<string, string> = {
+      a:'а', b:'б', v:'в', g:'г', d:'д', e:'е', z:'з', i:'и', y:'й',
+      k:'к', l:'л', m:'м', n:'н', o:'о', p:'п', r:'р', s:'с', t:'т',
+      u:'у', f:'ф', h:'х', c:'ц',
+    }
+    const TRANSLIT_MULTI: Array<[RegExp, string]> = [
+      [/zh/g,'ж'], [/kh/g,'х'], [/ts/g,'ц'], [/ch/g,'ч'], [/sh/g,'ш'],
+      [/sch/g,'щ'], [/yu/g,'ю'], [/ya/g,'я'], [/yo/g,'ё'],
+    ]
+    const translit = (s: string) => {
+      let x = s
+      for (const [re, r] of TRANSLIT_MULTI) x = x.replace(re, r)
+      return x.replace(/[a-z]/g, ch => TRANSLIT[ch] ?? ch)
+    }
+
     const phones = [
       ...(d.patient?.phones ?? []),
       d.contact_phone ?? '',
     ].filter(Boolean)
-    const phonesDigits = phones.map(digits).filter(Boolean).join(' ')
+    const phonesCore = phones.map(phoneCore).filter(Boolean).join(' ')
+    const responsibleName = d.responsible
+      ? `${d.responsible.first_name ?? ''} ${d.responsible.last_name ?? ''}`
+      : ''
+    const doctorName = d.doctor
+      ? `${d.doctor.first_name ?? ''} ${d.doctor.last_name ?? ''}`
+      : ''
+    const sourceName = d.source_id ? (sourceById.get(d.source_id) ?? '') : ''
     const text = norm([
       d.name ?? '',
       d.patient?.full_name ?? '',
-      phones.join(' '),
       d.contact_city ?? '',
       d.patient?.city ?? '',
       d.notes ?? '',
       ...(d.tags ?? []),
+      responsibleName,
+      doctorName,
+      sourceName,
     ].join(' '))
+
     const tokens = norm(q).split(/\s+/).filter(Boolean)
     for (const t of tokens) {
       const td = digits(t)
-      // Цифровой токен длиной ≥3 — ищем в нормализованных телефонах.
-      if (td.length >= 3 && td.length === t.replace(/[\s+()\-]/g, '').length) {
-        if (!phonesDigits.includes(td)) return false
+      // Чисто цифровой/телефонный токен (≥3 цифр, без букв).
+      const isPhone = td.length >= 3 && /^[\s+()\-\d]+$/.test(t)
+      if (isPhone) {
+        const needle = phoneCore(t) || td
+        if (!phonesCore.includes(needle)) return false
         continue
       }
-      if (!text.includes(t)) return false
+      // Текстовый токен: пробуем как есть, и в виде транслита (на случай, если
+      // оператор печатает латиницей).
+      if (!text.includes(t) && !text.includes(translit(t))) return false
     }
     return true
-  }, [])
+  }, [sourceById])
 
   // Универсальный компаратор по выбранному полю/направлению.
   const compareDeals = useCallback((a: DealRow, b: DealRow) => {
