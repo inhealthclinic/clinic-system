@@ -7,6 +7,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useIsMobile } from '@/lib/hooks/useIsMobile'
+import { useKeyboardHeight } from '@/lib/hooks/useKeyboardHeight'
+import { useBackHandler } from '@/lib/hooks/useBackHandler'
+import { haptic } from '@/lib/haptics'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -140,6 +144,8 @@ export default function CRMKanbanPage() {
   const clinicId = profile?.clinic_id
   const router = useRouter()
   const searchParams = useSearchParams()
+  const isMobileKanban = useIsMobile(768)
+  const [activeMobileStageId, setActiveMobileStageId] = useState<string>('')
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
@@ -193,9 +199,14 @@ export default function CRMKanbanPage() {
   // после последнего нажатия, чтобы не пересчитывать фильтр на каждую букву.
   const [listSearch, setListSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearch(listSearch), 300)
+    const t = window.setTimeout(() => setDebouncedSearch(listSearch), 150)
     return () => window.clearTimeout(t)
+  }, [listSearch])
+  // Любой ввод должен открывать список — оператор не должен думать про фокус.
+  useEffect(() => {
+    if (listSearch.length > 0) setSearchOpen(true)
   }, [listSearch])
 
   // Фильтр «Только мои / Все сделки». По умолчанию все сотрудники видят все сделки.
@@ -563,22 +574,97 @@ export default function CRMKanbanPage() {
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
   const conversion = conversions.find(c => c.pipeline_id === activePipelineId)
 
-  // Совпадение сделки с поисковым запросом. Сравниваем по имени сделки,
-  // ФИО пациента, всем телефонам, городам, заметкам и тегам.
+  // Синхронизируем activeMobileStageId с первым этапом воронки при изменении
+  useEffect(() => {
+    if (activeStages.length > 0 && !activeStages.find(s => s.id === activeMobileStageId)) {
+      setActiveMobileStageId(activeStages[0].id)
+    }
+  }, [activeStages, activeMobileStageId])
+
+  const sourceById = useMemo(
+    () => new Map(sources.map(s => [s.id, s.name])),
+    [sources]
+  )
+
+  // Совпадение сделки с поисковым запросом. Стараемся быть терпимыми к тому,
+  // как реально пишут операторы:
+  // - Многословный запрос → AND по токенам, порядок не важен.
+  // - Телефонный токен (цифры с допустимой пунктуацией) ищется в нормализованных
+  //   (только цифры) телефонах сделки. Так "+7 778" / "8(778)" / "778-365"
+  //   все находят "+77783658387". Дополнительно нормализуем ведущую "8" → "7"
+  //   (KZ/RU) и работаем по последним 10 цифрам, чтобы не зависеть от кода
+  //   страны.
+  // - Латиница → транслит в кириллицу: "ivan" → "иван", "almaty" → "алматы".
+  // - ё ≡ е.
+  // Хей включает: имя сделки, ФИО пациента, телефоны, города, заметки, теги,
+  // имена ответственного и врача, имя источника лида.
   const matchesSearch = useCallback((d: DealRow, q: string) => {
     if (!q) return true
-    const hay = [
-      d.name ?? '',
-      d.patient?.full_name ?? '',
+    const norm = (s: string) => s.toLowerCase().replace(/ё/g, 'е')
+    const digits = (s: string) => s.replace(/\D+/g, '')
+    // KZ/RU: телефон может быть записан и через 8, и через +7 — приводим
+    // к 10 значащим цифрам без кода страны.
+    const phoneCore = (s: string) => {
+      let x = digits(s)
+      if (x.length === 11 && (x.startsWith('7') || x.startsWith('8'))) x = x.slice(1)
+      return x
+    }
+    // Грубая транслитерация лат→кир для поиска по имени/городу.
+    const TRANSLIT: Record<string, string> = {
+      a:'а', b:'б', v:'в', g:'г', d:'д', e:'е', z:'з', i:'и', y:'й',
+      k:'к', l:'л', m:'м', n:'н', o:'о', p:'п', r:'р', s:'с', t:'т',
+      u:'у', f:'ф', h:'х', c:'ц',
+    }
+    const TRANSLIT_MULTI: Array<[RegExp, string]> = [
+      [/zh/g,'ж'], [/kh/g,'х'], [/ts/g,'ц'], [/ch/g,'ч'], [/sh/g,'ш'],
+      [/sch/g,'щ'], [/yu/g,'ю'], [/ya/g,'я'], [/yo/g,'ё'],
+    ]
+    const translit = (s: string) => {
+      let x = s
+      for (const [re, r] of TRANSLIT_MULTI) x = x.replace(re, r)
+      return x.replace(/[a-z]/g, ch => TRANSLIT[ch] ?? ch)
+    }
+
+    const phones = [
       ...(d.patient?.phones ?? []),
       d.contact_phone ?? '',
+    ].filter(Boolean)
+    const phonesCore = phones.map(phoneCore).filter(Boolean).join(' ')
+    const responsibleName = d.responsible
+      ? `${d.responsible.first_name ?? ''} ${d.responsible.last_name ?? ''}`
+      : ''
+    const doctorName = d.doctor
+      ? `${d.doctor.first_name ?? ''} ${d.doctor.last_name ?? ''}`
+      : ''
+    const sourceName = d.source_id ? (sourceById.get(d.source_id) ?? '') : ''
+    const text = norm([
+      d.name ?? '',
+      d.patient?.full_name ?? '',
       d.contact_city ?? '',
       d.patient?.city ?? '',
       d.notes ?? '',
       ...(d.tags ?? []),
-    ].join(' ').toLowerCase()
-    return hay.includes(q)
-  }, [])
+      responsibleName,
+      doctorName,
+      sourceName,
+    ].join(' '))
+
+    const tokens = norm(q).split(/\s+/).filter(Boolean)
+    for (const t of tokens) {
+      const td = digits(t)
+      // Чисто цифровой/телефонный токен (≥3 цифр, без букв).
+      const isPhone = td.length >= 3 && /^[\s+()\-\d]+$/.test(t)
+      if (isPhone) {
+        const needle = phoneCore(t) || td
+        if (!phonesCore.includes(needle)) return false
+        continue
+      }
+      // Текстовый токен: пробуем как есть, и в виде транслита (на случай, если
+      // оператор печатает латиницей).
+      if (!text.includes(t) && !text.includes(translit(t))) return false
+    }
+    return true
+  }, [sourceById])
 
   // Универсальный компаратор по выбранному полю/направлению.
   const compareDeals = useCallback((a: DealRow, b: DealRow) => {
@@ -630,6 +716,40 @@ export default function CRMKanbanPage() {
       .filter(d => matchesSearch(d, q))
       .sort(compareDeals)
   }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
+
+  // Глобальные результаты поиска для выпадающего списка под инпутом.
+  // Не ограничиваемся активной воронкой — оператор ищет «человека», а не
+  // «человека в воронке X». Сортируем по свежести stage_entered_at, рендерим
+  // первые N штук.
+  const SEARCH_RESULTS_LIMIT = 50
+  const searchResultsAll = useMemo(() => {
+    const q = debouncedSearch.trim().toLowerCase()
+    if (!q) return [] as DealRow[]
+    return deals
+      .filter(d => !d.stage_id ? false : matchesSearch(d, q))
+      .sort((a, b) =>
+        new Date(b.stage_entered_at || b.updated_at || 0).getTime() -
+        new Date(a.stage_entered_at || a.updated_at || 0).getTime()
+      )
+  }, [deals, debouncedSearch, matchesSearch])
+  const searchResults = useMemo(
+    () => searchResultsAll.slice(0, SEARCH_RESULTS_LIMIT),
+    [searchResultsAll]
+  )
+  const searchResultsTotal = searchResultsAll.length
+
+  // Закрываем выпадашку при клике вне инпута/списка.
+  useEffect(() => {
+    if (!searchOpen) return
+    const onDocClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t) return
+      if (t.closest('[data-search-panel]')) return
+      setSearchOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [searchOpen])
 
   // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
   useEffect(() => {
@@ -981,7 +1101,7 @@ export default function CRMKanbanPage() {
 
         {/* Поиск — по центру (flex-1 + justify-center) */}
         <div className="flex-1 flex justify-center min-w-[220px]">
-          <div className="relative w-full max-w-md">
+          <div className="relative w-full max-w-md" data-search-panel>
             <svg
               width="14"
               height="14"
@@ -996,18 +1116,18 @@ export default function CRMKanbanPage() {
               type="search"
               value={listSearch}
               onChange={e => setListSearch(e.target.value)}
+              onFocus={() => setSearchOpen(true)}
+              onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); (e.target as HTMLInputElement).blur() } }}
               placeholder="Поиск по сделкам: имя, телефон, тег, город…"
-              className="w-full pl-9 pr-24 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
-            <button
-              type="button"
-              onClick={() => setPhoneSearchOpen(true)}
-              title="Поиск по телефону по всем сделкам клиники (горячая клавиша: /)"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-1 text-[11px] rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
-            >
-              📞 Глобально
-            </button>
+
           </div>
+          {debouncedSearch && (
+            <span className="ml-3 text-xs text-blue-600 font-medium whitespace-nowrap self-center">
+              Найдено: {searchResultsTotal}
+            </span>
+          )}
         </div>
 
         {/* Правый блок: переключатель вида + скрытые этапы + KPI конверсии — всё в один ряд */}
@@ -1084,55 +1204,173 @@ export default function CRMKanbanPage() {
         </div>
       </div>
 
+      {/* Список найденных сделок — inline-панель в потоке страницы (не popover),
+          чтобы её не клипали родительские overflow/stacking-контексты. Видна
+          только когда есть запрос. */}
+      {debouncedSearch && (
+        <div className="mb-3 bg-white border border-blue-200 rounded-md shadow-sm max-h-[40vh] overflow-y-auto">
+          {searchResults.length === 0 ? (
+            <div className="px-3 py-4 text-sm text-gray-400 text-center">
+              По запросу «{debouncedSearch}» ничего не найдено
+            </div>
+          ) : (
+            <>
+              <div className="sticky top-0 bg-blue-50 border-b border-blue-100 px-3 py-1.5 text-[11px] text-blue-700 flex items-center justify-between">
+                <span>Результаты поиска: <span className="font-semibold">{searchResultsTotal}</span></span>
+                {searchResultsTotal > searchResults.length && (
+                  <span className="text-blue-400">показаны первые {searchResults.length}</span>
+                )}
+              </div>
+              {searchResults.map(d => {
+                const st = stages.find(s => s.id === d.stage_id)
+                const phone = d.patient?.phones?.[0] ?? d.contact_phone ?? ''
+                const title = d.patient?.full_name || d.name || '—'
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => openDeal(d)}
+                    className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-50 last:border-0 flex items-center gap-3"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-gray-900 truncate">{title}</div>
+                      <div className="text-[11px] text-gray-500 flex items-center gap-2 truncate mt-0.5">
+                        {phone && <span className="whitespace-nowrap">{phone}</span>}
+                        {st && (
+                          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: st.color }} />
+                            {st.name}
+                          </span>
+                        )}
+                        {d.responsible && (
+                          <span className="text-gray-400 whitespace-nowrap truncate">
+                            · {d.responsible.first_name} {d.responsible.last_name ?? ''}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-gray-400 whitespace-nowrap">
+                      {fmtAge(d.stage_entered_at || d.updated_at)}
+                    </span>
+                  </button>
+                )
+              })}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Kanban / сетка — колонки по этапам с drag&drop.
           Контейнер занимает всю оставшуюся высоту вьюпорта, чтобы
           горизонтальная полоса прокрутки прижималась к низу экрана и
           не перекрывала карточки в верхней части рабочей зоны. */}
       {viewMode === 'kanban' && (
-        <div className="overflow-auto h-[calc(100vh-220px)] pb-2">
-          <div className="flex gap-3 items-start min-w-max">
-            {activeStages.map(stage => {
-              const cards = dealsByStage.get(stage.id) ?? []
-              const count = counts.find(c => c.stage_id === stage.id)
-              const isOver = overStage === stage.id
-              const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
-              return (
-                <div
-                  key={stage.id}
-                  className={`min-w-[280px] w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
-                    isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
-                  }`}
-                  onDragOver={(e) => onDragOver(e, stage.id)}
-                  onDragLeave={() => onDragLeave(stage.id)}
-                  onDrop={(e) => onDrop(e, stage.id)}
-                >
-                  <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
-                    <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
-                    <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
-                    {stageUnread > 0 && (
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
-                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                        {stageUnread}
+        <>
+          {/* ── МОБИЛЬНЫЙ вид: табы этапов + вертикальный список (< 768px) ── */}
+          {isMobileKanban && (
+            <div className="flex flex-col flex-1 overflow-hidden">
+              {/* Горизонтально-скроллируемая полоса чипов */}
+              <div className="flex gap-2 overflow-x-auto pb-2 flex-shrink-0 px-1 py-1 scrollbar-none">
+                {activeStages.map(stage => {
+                  const count = counts.find(c => c.stage_id === stage.id)
+                  const stageUnread = (dealsByStage.get(stage.id) ?? []).filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+                  return (
+                    <button
+                      key={stage.id}
+                      onClick={() => setActiveMobileStageId(stage.id)}
+                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-full text-sm font-medium whitespace-nowrap min-h-[40px] transition-colors ${
+                        stage.id === activeMobileStageId
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 text-gray-700'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: stage.color }} />
+                      {stage.name}
+                      <span className="ml-0.5 text-xs opacity-80">
+                        {debouncedSearch
+                          ? (dealsByStage.get(stage.id) ?? []).length
+                          : (count?.open_count ?? (dealsByStage.get(stage.id) ?? []).length)}
                       </span>
-                    )}
-                    <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
-                  </div>
-                  <div className="p-2 space-y-2 min-h-[40px]">
-                    {cards.map(d => (
-                      <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
-                    ))}
-                    {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
-                  </div>
-                </div>
-              )
-            })}
-            {activeStages.length === 0 && (
-              <div className="text-sm text-gray-500 p-6">
-                В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
+                      {stageUnread > 0 && (
+                        <span className="w-4 h-4 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none flex-shrink-0">
+                          {stageUnread}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
               </div>
-            )}
-          </div>
-        </div>
+              {/* Вертикальный список карточек активного этапа */}
+              <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                {(() => {
+                  const activeStage = activeStages.find(s => s.id === activeMobileStageId)
+                  if (!activeStage) return null
+                  const cards = dealsByStage.get(activeStage.id) ?? []
+                  return (
+                    <>
+                      {cards.map(d => (
+                        <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={() => {}} onClick={() => openDeal(d)} />
+                      ))}
+                      {cards.length === 0 && (
+                        <div className="text-sm text-gray-400 text-center py-8">Нет сделок в этом этапе</div>
+                      )}
+                    </>
+                  )
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* ── DESKTOP вид: оригинальный канбан с drag&drop (>= 768px) ── */}
+          {!isMobileKanban && (
+            <div className="overflow-auto h-[calc(100vh-220px)] pb-2">
+              <div className="flex gap-3 items-start min-w-max">
+                {activeStages.map(stage => {
+                  const cards = dealsByStage.get(stage.id) ?? []
+                  const count = counts.find(c => c.stage_id === stage.id)
+                  const isOver = overStage === stage.id
+                  const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+                  return (
+                    <div
+                      key={stage.id}
+                      className={`min-w-[280px] w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
+                        isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
+                      }`}
+                      onDragOver={(e) => onDragOver(e, stage.id)}
+                      onDragLeave={() => onDragLeave(stage.id)}
+                      onDrop={(e) => onDrop(e, stage.id)}
+                    >
+                      <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
+                        <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
+                        <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
+                        {stageUnread > 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
+                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            {stageUnread}
+                          </span>
+                        )}
+                        <span className={`text-xs ${debouncedSearch ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
+                          {debouncedSearch ? cards.length : (count?.open_count ?? cards.length)}
+                        </span>
+                      </div>
+                      <div className="p-2 space-y-2 min-h-[40px]">
+                        {cards.map(d => (
+                          <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+                        ))}
+                        {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
+                      </div>
+                    </div>
+                  )
+                })}
+                {activeStages.length === 0 && (
+                  <div className="text-sm text-gray-500 p-6">
+                    В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Таблица — плоский список сделок активной воронки */}
@@ -1755,6 +1993,11 @@ function DealModal({
   const { profile } = useAuthStore()
 
   const isNew = !deal.id
+  const isMobileModal = useIsMobile(1024)
+  const keyboardHeight = useKeyboardHeight()
+  const [mobileTab, setMobileTab] = useState<'chat' | 'details'>('chat')
+  useBackHandler(isMobileModal, onClose)
+
   // Счётчик + список непрочитанных по ВСЕМ сделкам клиники
   interface UnreadItem {
     id: string
@@ -2240,6 +2483,7 @@ function DealModal({
   async function sendMessage() {
     const body = msgDraft.trim()
     if (!body || isNew || sending) return
+    haptic(20)
     // Оптимистично очищаем черновик сразу — не ждём ответа API
     setMsgDraft('')
     setSending(true)
@@ -2851,10 +3095,36 @@ function DealModal({
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">×</button>
         </div>
 
+        {/* Mobile tab switcher — только на < 1024px */}
+        {isMobileModal && !isNew && (
+          <div className="flex border-b border-gray-200 bg-white flex-shrink-0">
+            <button
+              onClick={() => setMobileTab('chat')}
+              className={`flex-1 py-3 text-base font-medium transition-colors ${
+                mobileTab === 'chat'
+                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  : 'text-gray-500'
+              }`}
+            >
+              💬 Чат
+            </button>
+            <button
+              onClick={() => setMobileTab('details')}
+              className={`flex-1 py-3 text-base font-medium transition-colors ${
+                mobileTab === 'details'
+                  ? 'border-b-2 border-blue-600 text-blue-600'
+                  : 'text-gray-500'
+              }`}
+            >
+              📋 Детали
+            </button>
+          </div>
+        )}
+
         {/* Body: 2 columns */}
         <div className="flex-1 flex overflow-hidden">
           {/* LEFT: properties */}
-          <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto">
+          <div className={`bg-white border-r border-gray-200 overflow-y-auto ${isMobileModal ? (mobileTab === 'details' ? 'flex-1 w-full' : 'hidden') : 'w-80'}`}>
             <div className="p-5 space-y-4 text-sm">
               {(() => {
                 // Карта рендереров встроенных полей (ключи совпадают с DEFAULT_FIELD_CONFIGS).
@@ -3264,7 +3534,7 @@ function DealModal({
              * flex-col layout: верхний блок (KPI / приёмы / лабы) — shrink-0 и
              * скроллится сам, если разрастётся; tabs-карточка занимает всё
              * оставшееся место по высоте, чтобы композер всегда был у футера. */}
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className={`flex-1 flex flex-col overflow-hidden ${isMobileModal && mobileTab !== 'chat' ? 'hidden' : ''}`}>
             {/* Tabs + чат: растягиваемся на оставшуюся высоту, композер прилипает к низу */}
             <div className="flex-1 min-h-0 p-5 pt-4 flex flex-col overflow-hidden">
               {/* Tabs: chat / timeline / tasks */}
@@ -3476,10 +3746,14 @@ function DealModal({
                                       <span>· {m.external_sender}</span>
                                     )}
                                   </div>
-                                  {/* Голосовое: рендерим <audio>, если в attachments[0].kind==='voice'.
-                                      Иначе — обычный текст. */}
+                                  {/* Медиа: voice → плеер, image → <img>, video → <video>,
+                                      file → ссылка-плашка. Подпись/текст из body показываем под медиа. */}
                                   {(() => {
-                                    const att = (m.attachments?.[0] as { kind?: string; url?: string; duration_s?: number | null } | undefined)
+                                    const att = (m.attachments?.[0] as {
+                                      kind?: string; url?: string; mime?: string;
+                                      size?: number; name?: string; duration_s?: number | null
+                                    } | undefined)
+                                    const caption = (m.body ?? '').replace(/^(🖼 изображение|🎬 видео|🎙 аудио|📎 документ[^\n]*)\n?/, '').trim()
                                     if (att?.kind === 'voice' && att.url) {
                                       return (
                                         <VoiceBubble
@@ -3487,6 +3761,63 @@ function DealModal({
                                           duration_s={att.duration_s ?? null}
                                           direction={m.direction as 'in' | 'out'}
                                         />
+                                      )
+                                    }
+                                    if (att?.kind === 'image' && att.url) {
+                                      return (
+                                        <div className="space-y-1">
+                                          <a href={att.url} target="_blank" rel="noopener noreferrer" className="block">
+                                            <img
+                                              src={att.url}
+                                              alt={att.name ?? 'image'}
+                                              className="rounded-md max-w-[260px] max-h-[260px] object-cover border border-black/10"
+                                              loading="lazy"
+                                            />
+                                          </a>
+                                          {caption && <div className="whitespace-pre-wrap break-words">{caption}</div>}
+                                        </div>
+                                      )
+                                    }
+                                    if (att?.kind === 'video' && att.url) {
+                                      return (
+                                        <div className="space-y-1">
+                                          <video
+                                            src={att.url}
+                                            controls
+                                            className="rounded-md max-w-[280px] max-h-[280px] bg-black"
+                                            preload="metadata"
+                                          />
+                                          {caption && <div className="whitespace-pre-wrap break-words">{caption}</div>}
+                                        </div>
+                                      )
+                                    }
+                                    if (att?.kind === 'file' && att.url) {
+                                      const sizeKb = att.size ? Math.round(att.size / 1024) : null
+                                      return (
+                                        <div className="space-y-1">
+                                          <a
+                                            href={att.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            download={att.name ?? undefined}
+                                            className={`flex items-center gap-2 px-2.5 py-2 rounded-md border ${
+                                              m.direction === 'out'
+                                                ? 'bg-blue-500/30 border-blue-300 text-white hover:bg-blue-500/40'
+                                                : 'bg-white border-gray-200 hover:bg-gray-50'
+                                            }`}
+                                          >
+                                            <span className="text-lg">📎</span>
+                                            <span className="flex-1 min-w-0">
+                                              <span className="block text-sm truncate">{att.name ?? 'файл'}</span>
+                                              {sizeKb != null && (
+                                                <span className={`block text-[10px] ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
+                                                  {sizeKb} КБ{att.mime ? ' · ' + att.mime : ''}
+                                                </span>
+                                              )}
+                                            </span>
+                                          </a>
+                                          {caption && <div className="whitespace-pre-wrap break-words">{caption}</div>}
+                                        </div>
                                       )
                                     }
                                     return <div className="whitespace-pre-wrap break-words">{m.body}</div>
@@ -3762,7 +4093,7 @@ function DealModal({
                         )}
 
                         {/* Input + send */}
-                        <div className="flex gap-2 p-3">
+                        <div className="flex gap-2 p-3" style={{ paddingBottom: `calc(0.75rem + var(--keyboard-h, 0px))` }}>
                           {recording ? (
                             // Режим записи: бегущий «эквалайзер» — наглядно, что мик активен.
                             <div className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50">
@@ -3808,7 +4139,7 @@ function DealModal({
                                 'Название задачи…'
                               }
                               rows={composerMode === 'task' ? 1 : 2}
-                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
+                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-base resize-none focus:border-blue-400 outline-none"
                             />
                           )}
 

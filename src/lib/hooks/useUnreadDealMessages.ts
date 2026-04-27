@@ -120,7 +120,21 @@ export function useUnreadDealMessages(opts: Options = {}) {
     )
     const channel = ch.subscribe()
 
+    // При возврате из фона (сворачивали приложение) — переподключаем Realtime
+    // и сразу делаем рефетч, чтобы непрочитанные обновились без ожидания polling.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refetch()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((channel as any).state !== 'joined') {
+          channel.subscribe()
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisible)
       supabase.removeChannel(channel)
     }
   }, [clinicId, supabase, refetch, instanceId])
