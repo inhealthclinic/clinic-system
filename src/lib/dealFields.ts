@@ -48,6 +48,7 @@ export const BUILTIN_FIELD_KEYS = [
   'patient',
   'contact_phone',
   'contact_city',
+  'birth_date',
 ] as const
 
 export type BuiltinFieldKey = typeof BUILTIN_FIELD_KEYS[number]
@@ -62,6 +63,7 @@ export const BUILTIN_FIELD_LABELS: Record<BuiltinFieldKey, string> = {
   patient:       'Пациент',
   contact_phone: 'Телефон контакта',
   contact_city:  'Город',
+  birth_date:    'День рождения',
 }
 
 /** Дефолт: все встроенные поля видны, ни одно не обязательное, в каноническом порядке. */
@@ -138,6 +140,7 @@ export function getFieldValue(
     case 'patient':        return form.patient_id
     case 'contact_phone':  return form.contact_phone
     case 'contact_city':   return form.contact_city
+    case 'birth_date':     return form.birth_date
     default:               return undefined
   }
 }

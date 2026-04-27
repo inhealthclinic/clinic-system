@@ -7,19 +7,27 @@ const SETTINGS_NAV = [
   { href: '/settings/clinic',        label: 'Клиника',         icon: '🏥' },
   { href: '/settings/doctors',       label: 'Врачи',           icon: '👨‍⚕️' },
   { href: '/settings/services',      label: 'Услуги / Прайс',  icon: '📋' },
-  { href: '/settings/users',         label: 'Сотрудники',      icon: '👥' },
-  { href: '/settings/roles',         label: 'Роли и доступ',   icon: '🔐' },
+  { href: '/settings/users',         label: 'Сотрудники и роли', icon: '👥' },
   { href: '/settings/lab',           label: 'Анализы (шаблоны)', icon: '🧪' },
-  { href: '/settings/pipelines',     label: 'CRM — воронки',   icon: '📊' },
-  { href: '/settings/message-templates', label: 'Шаблоны сообщений', icon: '💬' },
+  { href: '/settings/pipelines',     label: 'CRM — воронки и автоматизации', icon: '📊' },
+  { href: '/settings/salesbots',         label: 'Salesbot и шаблоны', icon: '🤖' },
+  { href: '/settings/whatsapp',      label: 'WhatsApp',        icon: '💬' },
   { href: '/settings/notifications', label: 'Уведомления',     icon: '🔔' },
   { href: '/settings/schedule',     label: 'Типы записей',    icon: '🎨' },
   { href: '/settings/packages',    label: 'Пакеты анализов', icon: '📦' },
+  { href: '/settings/contacts',    label: 'Контакты',        icon: '📇' },
   { href: '/settings/audit',       label: 'Журнал действий', icon: '📜' },
 ]
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+
+  // На редакторе воронки нужен максимум ширины — там горизонтальный канвас
+  // amoCRM-стиля. Прячем sub-nav и контейнер.
+  const fullscreenRoutes = ['/settings/pipelines', '/settings/salesbots/new']
+  if (fullscreenRoutes.some(r => pathname?.startsWith(r))) {
+    return <div className="w-full">{children}</div>
+  }
 
   return (
     <div className="max-w-5xl mx-auto flex gap-6 items-start">
@@ -30,7 +38,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         </div>
         <nav className="p-2">
           {SETTINGS_NAV.map(item => {
-            const active = pathname === item.href
+            const active = pathname === item.href || (item.href === '/settings/users' && pathname === '/settings/roles')
             return (
               <Link
                 key={item.href}

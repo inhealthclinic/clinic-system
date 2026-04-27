@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { printPrescription as printRxDoc } from '@/lib/print/documents'
 
 /* Types */
 
@@ -42,62 +43,28 @@ const EMPTY_ITEM: RxItem = {
   name: '', form: '', dosage: '', frequency: '', duration: '', route: '', instructions: '',
 }
 
-/* Print a single prescription */
-function printRx(p: Patient | null, rx: {
-  issued_at: string
-  diagnosis: string | null
-  notes: string | null
-  doctor: { first_name: string; last_name: string } | null
-  items: RxItem[]
-}) {
-  const w = window.open('', '_blank', 'width=640,height=800')
-  if (!w) return
-  const rows = rx.items.map((i, idx) => `
-    <tr>
-      <td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top;width:28px;color:#888">${idx + 1}.</td>
-      <td style="padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top">
-        <div style="font-weight:600;color:#111">${i.name}${i.form ? ', ' + i.form : ''}</div>
-        <div style="color:#555;font-size:12px;margin-top:2px">
-          ${[i.dosage, i.route, i.frequency, i.duration].filter(Boolean).join(' · ')}
-        </div>
-        ${i.instructions ? `<div style="color:#777;font-size:11px;margin-top:2px;font-style:italic">${i.instructions}</div>` : ''}
-      </td>
-    </tr>`).join('')
-  const dt = new Date(rx.issued_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-  const age = p?.birth_date ? new Date().getFullYear() - new Date(p.birth_date).getFullYear() : null
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Рецепт</title>
-  <style>
-    @page { size: A4; margin: 20mm 14mm }
-    body{font-family:Arial,sans-serif;max-width:560px;margin:24px auto;font-size:13px;color:#111}
-    h2{margin:0 0 2px;font-size:18px}
-    .sub{color:#777;font-size:12px;margin-bottom:16px;border-bottom:2px solid #111;padding-bottom:10px}
-    .info{display:flex;flex-wrap:wrap;gap:18px;margin-bottom:14px;font-size:12px;color:#444}
-    .info b{color:#111}
-    .diag{margin:12px 0 10px;font-size:13px}
-    table{width:100%;border-collapse:collapse}
-    .sig{margin-top:36px;font-size:12px;color:#555}
-    .sig-line{border-top:1px solid #999;padding-top:4px;min-width:220px;text-align:center}
-    .foot{margin-top:20px;font-size:10px;color:#aaa;border-top:1px dashed #ddd;padding-top:8px;text-align:center}
-  </style></head><body>
-  <h2>IN HEALTH — Рецепт</h2>
-  <div class="sub">Медицинский центр</div>
-  <div class="info">
-    <div><b>Пациент:</b> ${p?.full_name ?? '—'}</div>
-    ${age ? `<div><b>Возраст:</b> ${age} лет</div>` : ''}
-    ${p?.iin ? `<div><b>ИИН:</b> ${p.iin}</div>` : ''}
-    <div><b>Дата:</b> ${dt}</div>
-    ${rx.doctor ? `<div><b>Врач:</b> ${rx.doctor.last_name} ${rx.doctor.first_name}</div>` : ''}
-  </div>
-  ${rx.diagnosis ? `<div class="diag"><b>Диагноз:</b> ${rx.diagnosis}</div>` : ''}
-  <table><tbody>${rows}</tbody></table>
-  ${rx.notes ? `<p style="margin-top:12px;color:#555;font-size:12px"><b>Примечание:</b> ${rx.notes}</p>` : ''}
-  <div class="sig" style="margin-top:48px">
-    <div class="sig-line">Подпись врача</div>
-  </div>
-  <div class="foot">Сформировано: ${new Date().toLocaleString('ru-RU')} · IN HEALTH Медицинский центр</div>
-  <script>window.onload=()=>{window.print()}</script>
-  </body></html>`)
-  w.document.close()
+/* Print a single prescription via shared letterhead template */
+function printRx(clinicId: string, patientId: string, rx: Prescription) {
+  if (!rx.doctor?.id) {
+    alert('У рецепта не указан врач — печать невозможна.')
+    return
+  }
+  void printRxDoc(clinicId, patientId, rx.doctor.id, {
+    number: rx.id.slice(0, 8).toUpperCase(),
+    issued_at: rx.issued_at,
+    icd10_code: null,
+    diagnosis_text: rx.diagnosis,
+    items: rx.items.map(it => ({
+      drug_name: it.name,
+      dosage: it.dosage,
+      frequency: it.frequency,
+      duration: it.duration,
+      form: it.form,
+      route: it.route,
+      instructions: it.instructions,
+    })),
+    recommendations: rx.notes,
+  })
 }
 
 export default function PrescriptionsPage() {
@@ -307,7 +274,7 @@ export default function PrescriptionsPage() {
                   )}
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => printRx(patient, rx)}
+                  <button onClick={() => printRx(profile?.clinic_id ?? '', patientId, rx)}
                     title="Печать"
                     className="text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-colors">
                     🖨

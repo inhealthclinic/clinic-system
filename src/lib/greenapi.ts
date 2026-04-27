@@ -2,25 +2,110 @@
  * Green-API — тонкий клиент для WhatsApp.
  * Docs: https://green-api.com/docs/api/
  *
- * ENV:
- *   GREENAPI_INSTANCE_ID    — idInstance
- *   GREENAPI_API_TOKEN      — apiTokenInstance
- *   GREENAPI_WEBHOOK_TOKEN  — случайный секрет, прописывается в Green-API как
- *                             webhookUrl=https://.../api/webhooks/greenapi?t=<token>
+ * Креды берутся из БД (clinics.whatsapp_instance_id / whatsapp_api_token)
+ * и кешируются в памяти процесса на 30 секунд. Если в БД пусто — fallback
+ * на env-переменные GREENAPI_INSTANCE_ID / GREENAPI_API_TOKEN.
+ *
+ * GREENAPI_WEBHOOK_TOKEN тоже мигрирует в БД (clinics.whatsapp_webhook_token),
+ * этой функцией не пользуется — только webhook-роут.
  */
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
-const ID = process.env.GREENAPI_INSTANCE_ID
-const TOKEN = process.env.GREENAPI_API_TOKEN
-
-function assertConfigured() {
-  if (!ID || !TOKEN) {
-    throw new Error('Green-API not configured: missing GREENAPI_INSTANCE_ID or GREENAPI_API_TOKEN')
-  }
+export interface GreenApiCreds {
+  instanceId: string
+  apiToken: string
+  /**
+   * База API. Для классических инстансов — https://api.green-api.com.
+   * Для free-tier (7103/7105/7107…) — шардовый https://{prefix}.api.greenapi.com.
+   * Берётся из карточки инстанса в console.green-api.com → строка «API URL».
+   */
+  apiUrl: string
 }
 
-function base() {
-  assertConfigured()
-  return `https://api.green-api.com/waInstance${ID}`
+const DEFAULT_API_URL = 'https://api.green-api.com'
+
+/**
+ * Если apiUrl не задан, угадываем по префиксу instanceId:
+ *   7103xxxxxx → https://7103.api.greenapi.com
+ *   7105xxxxxx → https://7105.api.greenapi.com
+ *   7107xxxxxx → https://7107.api.greenapi.com
+ *   и т.д. для всех 7xxx.
+ * Для всех остальных id — старый https://api.green-api.com.
+ */
+function inferApiUrl(instanceId: string): string {
+  const prefix = instanceId.slice(0, 4)
+  if (/^7\d{3}$/.test(prefix)) return `https://${prefix}.api.greenapi.com`
+  return DEFAULT_API_URL
+}
+
+let _credsCache: { creds: GreenApiCreds | null; at: number } | null = null
+const CRED_TTL_MS = 30_000
+
+/**
+ * Сбросить кеш кредов — после изменения настроек в UI вызывайте это,
+ * чтобы следующий запрос подхватил новые значения сразу.
+ */
+export function invalidateGreenApiCredsCache() {
+  _credsCache = null
+}
+
+async function loadCreds(): Promise<GreenApiCreds | null> {
+  if (_credsCache && Date.now() - _credsCache.at < CRED_TTL_MS) {
+    return _credsCache.creds
+  }
+  let creds: GreenApiCreds | null = null
+  try {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!url || !serviceKey) throw new Error('no supabase env')
+    const admin = createSupabaseClient(url, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+    const { data } = await admin
+      .from('clinics')
+      .select('whatsapp_instance_id, whatsapp_api_token, whatsapp_api_url')
+      .not('whatsapp_instance_id', 'is', null)
+      .not('whatsapp_api_token', 'is', null)
+      .limit(1)
+      .maybeSingle()
+    if (data?.whatsapp_instance_id && data?.whatsapp_api_token) {
+      creds = {
+        instanceId: data.whatsapp_instance_id,
+        apiToken: data.whatsapp_api_token,
+        apiUrl: (data.whatsapp_api_url as string | null)?.trim() || inferApiUrl(data.whatsapp_instance_id),
+      }
+    }
+  } catch {
+    // если БД недоступна — провалимся на env
+  }
+  if (!creds) {
+    const id = process.env.GREENAPI_INSTANCE_ID
+    const token = process.env.GREENAPI_API_TOKEN
+    const url = process.env.GREENAPI_API_URL
+    if (id && token) creds = { instanceId: id, apiToken: token, apiUrl: url?.trim() || inferApiUrl(id) }
+  }
+  _credsCache = { creds, at: Date.now() }
+  return creds
+}
+
+async function requireCreds(): Promise<GreenApiCreds> {
+  const c = await loadCreds()
+  if (!c) {
+    throw new Error(
+      'Green-API not configured: задайте instanceId/apiToken в /settings/whatsapp ' +
+      'или переменные окружения GREENAPI_INSTANCE_ID / GREENAPI_API_TOKEN',
+    )
+  }
+  return c
+}
+
+async function base(): Promise<{ url: string; token: string }> {
+  const c = await requireCreds()
+  const apiUrl = c.apiUrl.replace(/\/$/, '')
+  return {
+    url: `${apiUrl}/waInstance${c.instanceId}`,
+    token: c.apiToken,
+  }
 }
 
 /** "+7 705 123-45-67" → "77051234567" */
@@ -34,7 +119,8 @@ export function toChatId(phone: string): string {
 }
 
 export async function sendWhatsAppText(phoneE164: string, text: string): Promise<{ idMessage: string }> {
-  const res = await fetch(`${base()}/sendMessage/${TOKEN}`, {
+  const { url, token } = await base()
+  const res = await fetch(`${url}/sendMessage/${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chatId: toChatId(phoneE164), message: text }),
@@ -42,6 +128,36 @@ export async function sendWhatsAppText(phoneE164: string, text: string): Promise
   if (!res.ok) {
     const body = await res.text()
     throw new Error(`GreenAPI sendMessage ${res.status}: ${body}`)
+  }
+  return res.json()
+}
+
+/**
+ * Отправить файл по публичному URL. Для голосовых сообщений (audio/ogg;codecs=opus)
+ * Green-API определит это как PTT и отрендерит как голосовое в нативном WhatsApp.
+ *
+ * Docs: https://green-api.com/docs/api/sending/SendFileByUrl/
+ */
+export async function sendWhatsAppFileByUrl(
+  phoneE164: string,
+  fileUrl: string,
+  fileName: string,
+  caption?: string,
+): Promise<{ idMessage: string }> {
+  const { url, token } = await base()
+  const res = await fetch(`${url}/sendFileByUrl/${token}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chatId: toChatId(phoneE164),
+      urlFile: fileUrl,
+      fileName,
+      caption: caption ?? '',
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`GreenAPI sendFileByUrl ${res.status}: ${body}`)
   }
   return res.json()
 }
@@ -55,14 +171,16 @@ export type InstanceState =
   | 'yellowCard'
 
 export async function getStateInstance(): Promise<{ stateInstance: InstanceState }> {
-  const res = await fetch(`${base()}/getStateInstance/${TOKEN}`, { cache: 'no-store' })
+  const { url, token } = await base()
+  const res = await fetch(`${url}/getStateInstance/${token}`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`GreenAPI getStateInstance ${res.status}: ${await res.text()}`)
   return res.json()
 }
 
 /** Base64 PNG QR-кода для привязки номера */
 export async function getQr(): Promise<{ type: 'qrCode' | 'alreadyLogged' | 'error'; message: string }> {
-  const res = await fetch(`${base()}/qr/${TOKEN}`, { cache: 'no-store' })
+  const { url, token } = await base()
+  const res = await fetch(`${url}/qr/${token}`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`GreenAPI qr ${res.status}: ${await res.text()}`)
   return res.json()
 }
@@ -72,7 +190,8 @@ export async function getQr(): Promise<{ type: 'qrCode' | 'alreadyLogged' | 'err
  * Вызывается один раз с админки, или из server-side при ротации.
  */
 export async function setWebhookSettings(webhookUrl: string) {
-  const res = await fetch(`${base()}/setSettings/${TOKEN}`, {
+  const { url, token } = await base()
+  const res = await fetch(`${url}/setSettings/${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -91,6 +210,12 @@ export async function setWebhookSettings(webhookUrl: string) {
   })
   if (!res.ok) throw new Error(`GreenAPI setSettings ${res.status}: ${await res.text()}`)
   return res.json()
+}
+
+/** Есть ли где-то заданные креды (БД или env) — для UI-индикатора. */
+export async function isGreenApiConfigured(): Promise<boolean> {
+  const c = await loadCreds()
+  return !!c
 }
 
 // ─── Парсинг webhook-событий ───────────────────────────────────────────────
@@ -112,6 +237,15 @@ export interface IncomingMessageWebhook {
     typeMessage: string
     textMessageData?: { textMessage: string }
     extendedTextMessageData?: { text: string }
+    /** Для audio/voice/image/video/document — Green-API отдаёт CDN-ссылку. */
+    fileMessageData?: {
+      downloadUrl: string
+      caption?: string
+      fileName?: string
+      mimeType?: string
+      isAnimated?: boolean
+      jpegThumbnail?: string
+    }
   }
 }
 

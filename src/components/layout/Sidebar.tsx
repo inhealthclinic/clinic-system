@@ -37,6 +37,61 @@ const NAV: NavItem[] = [
     ),
   },
   {
+    label: 'Мой день',
+    href: '/doctor',
+    roles: ['doctor'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.5"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Мои пациенты',
+    href: '/doctor/patients',
+    roles: ['doctor'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M20 21v-2a4 4 0 00-3-3.87M4 21v-2a4 4 0 013-3.87" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="1.5"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Входящие',
+    href: '/doctor/tasks',
+    roles: ['doctor'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M22 12h-6l-2 3h-4l-2-3H2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Моя статистика',
+    href: '/doctor/analytics',
+    roles: ['doctor'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M3 3v18h18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        <path d="M7 14l4-4 4 4 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Мои настройки',
+    href: '/doctor/settings',
+    roles: ['doctor'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M12 1v3M12 20v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M1 12h3M20 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+  {
     label: 'Расписание',
     href: '/schedule',
     roles: ['admin', 'doctor', 'nurse', 'manager'],
@@ -79,6 +134,17 @@ const NAV: NavItem[] = [
       <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
         <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
         <circle cx="19" cy="6" r="2" fill="currentColor"/>
+      </svg>
+    ),
+  },
+  {
+    label: 'Сообщения',
+    href: '/messages',
+    badgeKey: 'crm-unread',
+    roles: ['admin', 'manager'],
+    icon: (
+      <svg width="18" height="18" fill="none" viewBox="0 0 24 24">
+        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
       </svg>
     ),
   },
@@ -161,11 +227,19 @@ export function Sidebar({ onClose }: SidebarProps) {
   // Бейджик «новые заказы в лабораторию» на пункте Лаборатория.
   const { count: labPending } = useLabPendingOrders()
 
-  // owner видит всё; остальные — только пункты, где их роль перечислена в roles.
+  // owner видит admin-набор + пункты без роли; чисто докторские пункты
+  // (раздел /doctor — «Мой день», «Мои пациенты», «Входящие», «Моя статистика»,
+  // «Мои настройки») и /messages у owner-а скрыты — они дублируют CRM.
+  // Остальные роли — только пункты, где их роль перечислена в roles.
   const roleSlug = profile?.role?.slug
+  const HIDDEN_FOR_OWNER = new Set([
+    '/doctor', '/doctor/patients', '/doctor/tasks',
+    '/doctor/analytics', '/doctor/settings',
+    '/messages',
+  ])
   const visibleNav = NAV.filter(item => {
+    if (roleSlug === 'owner') return !HIDDEN_FOR_OWNER.has(item.href)
     if (!item.roles) return true
-    if (roleSlug === 'owner') return true
     return roleSlug ? item.roles.includes(roleSlug as NonNullable<NavItem['roles']>[number]) : false
   })
 
@@ -175,6 +249,8 @@ export function Sidebar({ onClose }: SidebarProps) {
     if (href === '/settings/clinic') {
       return pathname.startsWith('/settings')
     }
+    // /doctor root должен матчиться точно, чтобы /doctor/patients не подсвечивал оба пункта
+    if (href === '/doctor') return pathname === '/doctor'
     return pathname.startsWith(href)
   }
 

@@ -23,7 +23,13 @@ interface ClinicSettings {
   receipt_bin: string
   receipt_legal_name: string
   receipt_address: string
+  bot_enabled?: boolean
 }
+
+const DEFAULT_BOT_GREETING =
+  'Здравствуйте! Спасибо, что обратились. Я — Камилла, ассистент клиники IN HEALTH. Подскажите, пожалуйста, по какому вопросу пишете?'
+const DEFAULT_BOT_FOLLOWUP =
+  'Я отметила Ваш запрос. Скоро администратор клиники свяжется с Вами и поможет с записью. Хорошего дня!'
 
 interface ClinicData {
   id: string
@@ -86,6 +92,12 @@ export default function ClinicSettingsPage() {
   const [receiptAddress, setReceiptAddress] = useState('')
   const [workingHours, setWorkingHours] = useState<WorkingHours>({ ...DEFAULT_HOURS })
 
+  // Бот: чекбокс читает clinics.settings.bot_enabled, тексты лежат в
+  // message_templates по key='bot_greeting'/'bot_followup_no_answer'.
+  const [botEnabled, setBotEnabled] = useState(true)
+  const [botGreeting, setBotGreeting] = useState(DEFAULT_BOT_GREETING)
+  const [botFollowup, setBotFollowup] = useState(DEFAULT_BOT_FOLLOWUP)
+
   const load = useCallback(async () => {
     setLoading(true)
     const { data, error: err } = await supabase
@@ -117,9 +129,20 @@ export default function ClinicSettingsPage() {
     setReceiptLegal(s?.receipt_legal_name ?? '')
     setReceiptAddress(s?.receipt_address ?? '')
     setWorkingHours({ ...DEFAULT_HOURS, ...(s?.working_hours ?? {}) })
+    setBotEnabled(s?.bot_enabled !== false) // по умолчанию ON
+
+    // Подгружаем тела шаблонов бота отдельным запросом.
+    const { data: tmpls } = await supabase
+      .from('message_templates')
+      .select('key, body')
+      .eq('clinic_id', d.id)
+      .in('key', ['bot_greeting', 'bot_followup_no_answer'])
+    const byKey = new Map((tmpls ?? []).map(t => [t.key as string, t.body as string]))
+    setBotGreeting(byKey.get('bot_greeting') ?? DEFAULT_BOT_GREETING)
+    setBotFollowup(byKey.get('bot_followup_no_answer') ?? DEFAULT_BOT_FOLLOWUP)
 
     setLoading(false)
-  }, [])
+  }, [supabase])
 
   useEffect(() => { load() }, [load])
 
@@ -144,6 +167,7 @@ export default function ClinicSettingsPage() {
       receipt_bin:                  receiptBin.trim(),
       receipt_legal_name:           receiptLegal.trim(),
       receipt_address:              receiptAddress.trim(),
+      bot_enabled:                  botEnabled,
     }
 
     const { error: err } = await supabase
@@ -158,8 +182,37 @@ export default function ClinicSettingsPage() {
       })
       .eq('id', clinic.id)
 
+    if (err) { setSaving(false); setError(err.message); return }
+
+    // Сохраняем шаблоны бота. UPDATE по (clinic_id, key); если строки нет —
+    // вставляем. Без ON CONFLICT, потому что у нас частичный unique index.
+    for (const [key, body, title] of [
+      ['bot_greeting', botGreeting, 'Бот: приветствие'],
+      ['bot_followup_no_answer', botFollowup, 'Бот: фоллоуап без ответа'],
+    ] as const) {
+      const { data: existing } = await supabase
+        .from('message_templates')
+        .select('id')
+        .eq('clinic_id', clinic.id)
+        .eq('key', key)
+        .maybeSingle()
+      if (existing) {
+        await supabase
+          .from('message_templates')
+          .update({ body: body.trim(), is_active: true })
+          .eq('id', existing.id)
+      } else {
+        await supabase.from('message_templates').insert({
+          clinic_id: clinic.id,
+          key,
+          title,
+          body: body.trim(),
+          is_active: true,
+        })
+      }
+    }
+
     setSaving(false)
-    if (err) { setError(err.message); return }
     showToast()
   }
 
@@ -359,6 +412,54 @@ export default function ClinicSettingsPage() {
             <div className="bg-blue-50 rounded-lg px-4 py-3 text-sm text-blue-700">
               Шаблоны текстов SMS и WhatsApp настраиваются в разделе{' '}
               <a href="/settings/notifications" className="font-medium underline">Уведомления →</a>
+            </div>
+          </div>
+        </div>
+
+        {/* Section: Приветственный бот */}
+        <div className="bg-white rounded-xl border border-gray-100 p-6">
+          <h2 className={sectionHd}>Приветственный бот</h2>
+          <div className="space-y-4">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <span className="relative inline-flex items-center mt-0.5">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  checked={botEnabled}
+                  onChange={e => setBotEnabled(e.target.checked)}
+                />
+                <span className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600" />
+              </span>
+              <span>
+                <span className="block text-sm font-medium text-gray-900">
+                  Включить приветственного бота
+                </span>
+                <span className="block text-xs text-gray-500 mt-0.5">
+                  Бот работает 24/7. Отправляет приветствие сразу при создании лида,
+                  через 1 час шлёт напоминание, если клиент не ответил. Отключается
+                  автоматически, как только менеджер ответит или сделка перейдёт на
+                  другой этап.
+                </span>
+              </span>
+            </label>
+
+            <div>
+              <label className={lbl}>Текст приветствия (отправляется сразу)</label>
+              <textarea
+                className={`${inp} min-h-[90px] resize-y`}
+                value={botGreeting}
+                onChange={e => setBotGreeting(e.target.value)}
+                disabled={!botEnabled}
+              />
+            </div>
+            <div>
+              <label className={lbl}>Текст фоллоуапа (если клиент молчит 1 час)</label>
+              <textarea
+                className={`${inp} min-h-[90px] resize-y`}
+                value={botFollowup}
+                onChange={e => setBotFollowup(e.target.value)}
+                disabled={!botEnabled}
+              />
             </div>
           </div>
         </div>

@@ -1,91 +1,43 @@
 'use client'
 
 /**
- * Настройки CRM-воронок. Всё хранится в БД (pipelines, pipeline_stages,
- * deal_loss_reasons, lead_sources). Переводить сделки с localStorage нельзя.
- *
- * Возможности:
- *  • выбрать воронку → добавить/переименовать, переключить активность
- *  • стадии: добавить, переименовать, цвет, роль (normal/won/lost/closed),
- *    порядок (стрелки ↑↓), KPI-флаг, активность, удалить (если разрешено).
- *  • системные стадии блокируются от удаления; от переименования —
- *    опционально через is_editable.
- *  • справочники причин потери и источников — CRUD.
+ * Настройки CRM-воронок — единый канвас в стиле amoCRM.
+ * - Слева: источники сделок и причины потери (компактный сайдбар).
+ * - Справа: канвас воронки — этапы колонками, автоматизации карточками
+ *   внутри столбцов. Редактор стадии и триггеры в одном месте.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
-
-// ─── types ────────────────────────────────────────────────────────────────────
-
-interface Pipeline {
-  id: string
-  clinic_id: string
-  code: string
-  name: string
-  is_system: boolean
-  is_active: boolean
-  sort_order: number
-}
-
-interface Stage {
-  id: string
-  pipeline_id: string
-  code: string
-  name: string
-  color: string
-  sort_order: number
-  is_active: boolean
-  stage_role: 'normal' | 'won' | 'lost' | 'closed'
-  is_system: boolean
-  is_editable: boolean
-  is_deletable: boolean
-  counts_in_kpi: boolean
-}
+import PipelineCanvas, {
+  type Pipeline, type Stage,
+} from '@/components/automation/PipelineCanvas'
 
 interface LossReason {
-  id: string
-  clinic_id: string
-  pipeline_id: string | null
-  name: string
-  is_active: boolean
-  sort_order: number
+  id: string; clinic_id: string; pipeline_id: string | null
+  name: string; is_active: boolean; sort_order: number
 }
-
 interface LeadSource {
-  id: string
-  clinic_id: string
-  name: string
-  is_active: boolean
-  sort_order: number
+  id: string; clinic_id: string; name: string; is_active: boolean; sort_order: number
 }
-
-const ROLE_LABEL: Record<Stage['stage_role'], string> = {
-  normal: 'Обычный',
-  won:    'Успех',
-  lost:   'Потеря',
-  closed: 'Закрыт',
-}
-const ROLE_BADGE: Record<Stage['stage_role'], string> = {
-  normal: 'bg-gray-100 text-gray-700',
-  won:    'bg-green-100 text-green-700',
-  lost:   'bg-red-100 text-red-700',
-  closed: 'bg-slate-200 text-slate-700',
-}
-
-const PRESET_COLORS = [
-  '#94a3b8','#64748b','#3b82f6','#06b6d4','#14b8a6','#10b981','#16a34a','#84cc16',
-  '#f59e0b','#f97316','#ef4444','#dc2626','#a855f7','#8b5cf6','#6366f1','#ec4899',
-]
-
-// ─── page ────────────────────────────────────────────────────────────────────
 
 export default function PipelinesSettingsPage() {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id
+  const router = useRouter()
+
+  // Esc — закрыть оверлей и вернуться на канбан.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') router.push('/crm')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [router])
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
@@ -94,15 +46,8 @@ export default function PipelinesSettingsPage() {
   const [loading, setLoading] = useState(true)
   const [activePipelineId, setActivePipelineId] = useState<string>('')
 
-  // Локальные черновики полей ввода — чтобы на каждую клавишу не дёргать БД
-  // и чтобы корректно работало сохранение на blur (иначе guard
-  // `e.target.value !== s.name` всегда ложный — обновление не уходит).
-  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})
-
-  // Статус автосохранения — видимая индикация, что настройки уходят в БД.
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  // Supabase возвращает PostgrestBuilder — PromiseLike, не Promise (нет .catch/.finally).
-  // Поэтому принимаем PromiseLike и await приводит к результату корректно.
+
   async function runSave(op: () => PromiseLike<{ error: { message: string } | null }>): Promise<boolean> {
     setSaveState('saving')
     const { error } = await op()
@@ -142,13 +87,12 @@ export default function PipelinesSettingsPage() {
   useEffect(() => { load() }, [load])
 
   const activeStages = useMemo(
-    () => stages.filter(s => s.pipeline_id === activePipelineId).sort((a,b) => a.sort_order - b.sort_order),
+    () => stages.filter(s => s.pipeline_id === activePipelineId),
     [stages, activePipelineId]
   )
   const activePipeline = pipelines.find(p => p.id === activePipelineId) ?? null
 
-  // ── mutations ──────────────────────────────────────────────────────────────
-
+  // ── pipeline CRUD ──────────────────────────────────────────────────────────
   async function addPipeline() {
     if (!clinicId) return
     const name = prompt('Название воронки')?.trim()
@@ -162,55 +106,50 @@ export default function PipelinesSettingsPage() {
     setActivePipelineId(data.id)
     load()
   }
-
   async function renamePipeline(p: Pipeline) {
     const name = prompt('Новое название', p.name)?.trim()
     if (!name || name === p.name) return
     if (await runSave(() => supabase.from('pipelines').update({ name }).eq('id', p.id))) load()
   }
-
   async function togglePipelineActive(p: Pipeline) {
     if (await runSave(() => supabase.from('pipelines').update({ is_active: !p.is_active }).eq('id', p.id))) load()
   }
 
+  // ── stage CRUD ─────────────────────────────────────────────────────────────
   async function addStage() {
     if (!activePipeline) return
     const name = prompt('Название этапа')?.trim()
     if (!name) return
     const code = (prompt('Код (латиницей)', name.toLowerCase().replace(/[^a-z0-9]+/g,'_')) ?? '').trim()
     if (!code) return
-    const next = (activeStages.at(-1)?.sort_order ?? 0) + 10
+    const next = ((activeStages.at(-1)?.sort_order ?? 0) + 10)
     const { error } = await supabase.from('pipeline_stages').insert({
       pipeline_id: activePipeline.id, name, code, color: '#94a3b8', sort_order: next,
     })
     if (error) { alert(error.message); return }
     load()
   }
-
   async function updateStage(id: string, patch: Partial<Stage>) {
     if (await runSave(() => supabase.from('pipeline_stages').update(patch).eq('id', id))) load()
   }
-
   async function deleteStage(s: Stage) {
     if (!confirm(`Удалить этап «${s.name}»?`)) return
     if (await runSave(() => supabase.from('pipeline_stages').delete().eq('id', s.id))) load()
   }
-
   async function moveStage(s: Stage, dir: -1 | 1) {
-    const sorted = activeStages
+    const sorted = [...activeStages].sort((a,b) => a.sort_order - b.sort_order)
     const idx = sorted.findIndex(x => x.id === s.id)
     const other = sorted[idx + dir]
     if (!other) return
-    // swap sort_order
     const { error } = await supabase.from('pipeline_stages').upsert([
-      { id: s.id,     sort_order: other.sort_order, pipeline_id: s.pipeline_id,     name: s.name,     code: s.code,     color: s.color,     stage_role: s.stage_role,     is_active: s.is_active,     is_editable: s.is_editable,     is_system: s.is_system,     is_deletable: s.is_deletable,     counts_in_kpi: s.counts_in_kpi },
-      { id: other.id, sort_order: s.sort_order,     pipeline_id: other.pipeline_id, name: other.name, code: other.code, color: other.color, stage_role: other.stage_role, is_active: other.is_active, is_editable: other.is_editable, is_system: other.is_system, is_deletable: other.is_deletable, counts_in_kpi: other.counts_in_kpi },
+      { ...s,     sort_order: other.sort_order },
+      { ...other, sort_order: s.sort_order     },
     ])
     if (error) { alert(error.message); return }
     load()
   }
 
-  // Loss reasons
+  // ── reasons / sources CRUD ─────────────────────────────────────────────────
   async function addReason() {
     if (!clinicId) return
     const name = prompt('Причина потери')?.trim()
@@ -228,8 +167,6 @@ export default function PipelinesSettingsPage() {
     if (!confirm(`Удалить причину «${r.name}»?`)) return
     if (await runSave(() => supabase.from('deal_loss_reasons').delete().eq('id', r.id))) load()
   }
-
-  // Sources
   async function addSource() {
     if (!clinicId) return
     const name = prompt('Источник')?.trim()
@@ -253,16 +190,19 @@ export default function PipelinesSettingsPage() {
   if (loading) return <div className="p-6 text-sm text-gray-500">Загрузка…</div>
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
+    /* Fullscreen overlay поверх всего дашборда — как в amoCRM «Настроить воронку».
+       fixed inset-0 + z-50, чтобы перекрыть и сайдбар, и хедер. */
+    <div className="fixed inset-0 z-50 bg-gray-50 overflow-auto">
+      <div className="p-4 space-y-3">
+      {/* Top bar */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Воронки CRM</h1>
-          <p className="text-sm text-gray-500">
-            Изменения сохраняются автоматически и сразу применяются ко всем менеджерам клиники.
+          <h1 className="text-xl font-semibold text-gray-900">Воронки CRM</h1>
+          <p className="text-xs text-gray-500">
+            Настройка воронок, этапов и автоматизаций — на одном холсте, как в amoCRM.
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {/* Индикатор автосохранения — заменяет привычную кнопку «Сохранить» */}
           <span
             className={[
               'inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors',
@@ -271,50 +211,24 @@ export default function PipelinesSettingsPage() {
                 : saveState === 'error' ? 'bg-red-50 border-red-100 text-red-700'
                 : 'bg-gray-50 border-gray-100 text-gray-500',
             ].join(' ')}
-            aria-live="polite"
           >
-            {saveState === 'saving' && (
-              <>
-                <svg width="10" height="10" viewBox="0 0 24 24" className="animate-spin" fill="none">
-                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
-                  <path d="M21 12a9 9 0 0 1-9 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                </svg>
-                Сохраняем…
-              </>
-            )}
-            {saveState === 'saved' && (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                  <path d="M4 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                Сохранено
-              </>
-            )}
-            {saveState === 'error' && (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                  <path d="M12 8v5M12 17h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
-                </svg>
-                Ошибка сохранения
-              </>
-            )}
-            {saveState === 'idle' && (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
-                  <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-                </svg>
-                Автосохранение
-              </>
-            )}
+            {saveState === 'saving' ? 'Сохраняем…'
+             : saveState === 'saved' ? 'Сохранено'
+             : saveState === 'error' ? 'Ошибка'
+             : 'Автосохранение этапов'}
           </span>
           <Link href="/crm" className="text-sm text-blue-600 hover:underline">← К канбану</Link>
+          <Link
+            href="/crm"
+            className="ml-1 inline-flex items-center justify-center w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+            title="Закрыть (Esc)"
+            aria-label="Закрыть"
+          >✕</Link>
         </div>
       </div>
 
-      {/* Pipelines tabs */}
-      <div className="bg-white border border-gray-200 rounded-lg p-4">
+      {/* Pipeline tabs */}
+      <div className="bg-white border border-gray-200 rounded-lg p-2">
         <div className="flex items-center gap-2 flex-wrap">
           {pipelines.map(p => (
             <button
@@ -325,17 +239,14 @@ export default function PipelinesSettingsPage() {
                   ? 'bg-blue-600 text-white border-blue-600'
                   : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
               }`}
-              title={p.is_active ? '' : 'Воронка отключена'}
             >
               {p.name}
               {p.is_system && <span className="ml-1 text-xs opacity-70">· sys</span>}
               {!p.is_active && <span className="ml-1 text-xs opacity-70">· off</span>}
             </button>
           ))}
-          <button
-            onClick={addPipeline}
-            className="px-3 py-1.5 rounded-md text-sm border border-dashed border-gray-300 text-gray-500 hover:bg-gray-50"
-          >
+          <button onClick={addPipeline}
+            className="px-3 py-1.5 rounded-md text-sm border border-dashed border-gray-300 text-gray-500 hover:bg-gray-50">
             + Воронка
           </button>
           {activePipeline && (
@@ -351,172 +262,71 @@ export default function PipelinesSettingsPage() {
         </div>
       </div>
 
-      {/* Stages */}
-      {activePipeline && (
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-            <div className="font-medium text-gray-900">Этапы «{activePipeline.name}»</div>
-            <button onClick={addStage}
-              className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md">
-              + Этап
-            </button>
-          </div>
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-xs text-gray-500">
-              <tr>
-                <th className="px-3 py-2 text-left w-12"></th>
-                <th className="px-3 py-2 text-left">Название</th>
-                <th className="px-3 py-2 text-left">Код</th>
-                <th className="px-3 py-2 text-left">Цвет</th>
-                <th className="px-3 py-2 text-left">Роль</th>
-                <th className="px-3 py-2 text-center">KPI</th>
-                <th className="px-3 py-2 text-center">Активен</th>
-                <th className="px-3 py-2 text-right"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {activeStages.map((s, i) => (
-                <tr key={s.id} className="border-t border-gray-100">
-                  <td className="px-3 py-2 text-gray-400">
-                    <div className="flex flex-col">
-                      <button onClick={() => moveStage(s, -1)} disabled={i === 0}
-                        className="text-xs px-1 hover:text-gray-800 disabled:opacity-20">↑</button>
-                      <button onClick={() => moveStage(s, 1)} disabled={i === activeStages.length - 1}
-                        className="text-xs px-1 hover:text-gray-800 disabled:opacity-20">↓</button>
-                    </div>
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={nameDrafts[s.id] ?? s.name}
-                      disabled={!s.is_editable}
-                      onChange={e => setNameDrafts(d => ({ ...d, [s.id]: e.target.value }))}
-                      onBlur={e => {
-                        const v = e.target.value.trim()
-                        setNameDrafts(d => {
-                          if (!(s.id in d)) return d
-                          const n = { ...d }; delete n[s.id]; return n
-                        })
-                        if (v && v !== s.name) updateStage(s.id, { name: v })
-                      }}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                        if (e.key === 'Escape') {
-                          setNameDrafts(d => {
-                            if (!(s.id in d)) return d
-                            const n = { ...d }; delete n[s.id]; return n
-                          })
-                          ;(e.target as HTMLInputElement).blur()
-                        }
-                      }}
-                      className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-blue-500 outline-none"
-                    />
-                    {s.is_system && <div className="text-[10px] text-gray-400 mt-0.5">системный</div>}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-600">{s.code}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-1 flex-wrap">
-                      {PRESET_COLORS.map(c => (
-                        <button
-                          key={c}
-                          onClick={() => updateStage(s.id, { color: c })}
-                          className={`w-4 h-4 rounded ${s.color === c ? 'ring-2 ring-offset-1 ring-gray-400' : ''}`}
-                          style={{ background: c }}
-                          aria-label={c}
-                        />
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2">
-                    <select
-                      value={s.stage_role}
-                      disabled={s.is_system}
-                      onChange={e => updateStage(s.id, { stage_role: e.target.value as Stage['stage_role'] })}
-                      className={`text-xs px-2 py-1 rounded ${ROLE_BADGE[s.stage_role]} border-0 disabled:opacity-60`}
-                    >
-                      {(['normal','won','lost','closed'] as const).map(r => (
-                        <option key={r} value={r}>{ROLE_LABEL[r]}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <input
-                      type="checkbox"
-                      checked={s.counts_in_kpi}
-                      onChange={e => updateStage(s.id, { counts_in_kpi: e.target.checked })}
-                    />
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <input
-                      type="checkbox"
-                      checked={s.is_active}
-                      onChange={e => updateStage(s.id, { is_active: e.target.checked })}
-                    />
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <button
-                      onClick={() => deleteStage(s)}
-                      disabled={!s.is_deletable || s.is_system}
-                      className="text-xs text-red-600 hover:text-red-700 disabled:text-gray-300"
-                      title={s.is_system ? 'Системный этап — нельзя удалить' : 'Удалить'}
-                    >
-                      Удалить
+      {/* Main grid: aside + canvas */}
+      <div className="flex gap-4 items-start">
+        {/* Left aside — sources + loss reasons (как в amoCRM) */}
+        <aside className="w-56 shrink-0 space-y-3">
+          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+            <div className="px-3 py-2 border-b border-gray-200 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Источники сделок
+            </div>
+            <ul className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
+              {sources.map(s => (
+                <li key={s.id} className="px-3 py-1.5 flex items-center justify-between gap-2 text-xs">
+                  <span className={s.is_active ? 'truncate' : 'text-gray-400 line-through truncate'}>{s.name}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={() => toggleSource(s)} className="text-gray-400 hover:text-gray-700" title={s.is_active ? 'Выключить' : 'Включить'}>
+                      {s.is_active ? '⏼' : '⎘'}
                     </button>
-                  </td>
-                </tr>
+                    <button onClick={() => deleteSource(s)} className="text-red-400 hover:text-red-600" title="Удалить">×</button>
+                  </div>
+                </li>
               ))}
-              {activeStages.length === 0 && (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400">Нет этапов</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
+              {sources.length === 0 && <li className="px-3 py-3 text-center text-gray-400 text-xs">Нет источников</li>}
+            </ul>
+            <button onClick={addSource}
+              className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 border-t border-gray-100">+ Добавить</button>
+          </div>
 
-      {/* Loss reasons */}
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-          <div className="font-medium text-gray-900">Причины потери</div>
-          <button onClick={addReason}
-            className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md">+ Причина</button>
+          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+            <div className="px-3 py-2 border-b border-gray-200 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Причины потери
+            </div>
+            <ul className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
+              {reasons.map(r => (
+                <li key={r.id} className="px-3 py-1.5 flex items-center justify-between gap-2 text-xs">
+                  <span className={r.is_active ? 'truncate' : 'text-gray-400 line-through truncate'}>{r.name}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={() => toggleReason(r)} className="text-gray-400 hover:text-gray-700" title={r.is_active ? 'Выключить' : 'Включить'}>
+                      {r.is_active ? '⏼' : '⎘'}
+                    </button>
+                    <button onClick={() => deleteReason(r)} className="text-red-400 hover:text-red-600" title="Удалить">×</button>
+                  </div>
+                </li>
+              ))}
+              {reasons.length === 0 && <li className="px-3 py-3 text-center text-gray-400 text-xs">Нет причин</li>}
+            </ul>
+            <button onClick={addReason}
+              className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 border-t border-gray-100">+ Добавить</button>
+          </div>
+        </aside>
+
+        {/* Canvas */}
+        <div className="flex-1 min-w-0">
+          {activePipeline ? (
+            <PipelineCanvas
+              pipeline={activePipeline}
+              stages={activeStages}
+              onAddStage={addStage}
+              onUpdateStage={updateStage}
+              onDeleteStage={deleteStage}
+              onMoveStage={moveStage}
+            />
+          ) : (
+            <div className="text-sm text-gray-400 italic p-6">Выберите воронку</div>
+          )}
         </div>
-        <ul className="divide-y divide-gray-100">
-          {reasons.map(r => (
-            <li key={r.id} className="px-4 py-2 flex items-center justify-between text-sm">
-              <div className={r.is_active ? '' : 'text-gray-400 line-through'}>{r.name}</div>
-              <div className="flex items-center gap-3">
-                <button onClick={() => toggleReason(r)} className="text-xs text-gray-500 hover:text-gray-800">
-                  {r.is_active ? 'Выключить' : 'Включить'}
-                </button>
-                <button onClick={() => deleteReason(r)} className="text-xs text-red-600 hover:text-red-700">Удалить</button>
-              </div>
-            </li>
-          ))}
-          {reasons.length === 0 && <li className="px-4 py-6 text-center text-gray-400 text-sm">Нет причин</li>}
-        </ul>
       </div>
-
-      {/* Sources */}
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-          <div className="font-medium text-gray-900">Источники лидов</div>
-          <button onClick={addSource}
-            className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md">+ Источник</button>
-        </div>
-        <ul className="divide-y divide-gray-100">
-          {sources.map(s => (
-            <li key={s.id} className="px-4 py-2 flex items-center justify-between text-sm">
-              <div className={s.is_active ? '' : 'text-gray-400 line-through'}>{s.name}</div>
-              <div className="flex items-center gap-3">
-                <button onClick={() => toggleSource(s)} className="text-xs text-gray-500 hover:text-gray-800">
-                  {s.is_active ? 'Выключить' : 'Включить'}
-                </button>
-                <button onClick={() => deleteSource(s)} className="text-xs text-red-600 hover:text-red-700">Удалить</button>
-              </div>
-            </li>
-          ))}
-          {sources.length === 0 && <li className="px-4 py-6 text-center text-gray-400 text-sm">Нет источников</li>}
-        </ul>
       </div>
     </div>
   )

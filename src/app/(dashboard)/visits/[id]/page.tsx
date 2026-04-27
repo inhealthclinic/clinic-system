@@ -5,6 +5,10 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import {
+  printPrescription as printRxDoc,
+  printMedCertificate as printCertDoc,
+} from '@/lib/print/documents'
 
 /* ─── Types ──────────────────────────────────────────────── */
 interface Charge {
@@ -29,7 +33,7 @@ interface MedRecord {
   icd10_code: string | null; diagnosis_text: string | null
   diagnosis_type: 'preliminary' | 'final'
   prescriptions: Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>
-  recommendations: string | null; control_date: string | null
+  recommendations: string | null; treatment_plan: string | null; control_date: string | null
   is_signed: boolean; prescription_number: string | null
 }
 interface ICD10Hit { code: string; name: string }
@@ -155,78 +159,34 @@ function checkAllergy(drugName: string, allergies: { allergen: string; type: str
   return match ? match.allergen : null
 }
 
-/* ─── MedElement: нативные функции ──────────────────────── */
+/* ─── MedElement: печать ────────────────────────────────── */
 
 function printPrescription(record: MedRecord, visit: VisitFull) {
-  const date = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-  const rows = (record.prescriptions ?? []).map(p =>
-    `<tr>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${p.drug_name}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb">${p.dosage}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb">${p.frequency}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb">${p.duration}</td>
-    </tr>`
-  ).join('')
-
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
-    <title>Рецепт · ${record.prescription_number ?? ''}</title>
-    <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:32px} h2{margin:0 0 4px} table{width:100%;border-collapse:collapse;margin-top:12px} th{text-align:left;padding:6px 8px;background:#f9fafb;font-size:12px;color:#6b7280} .footer{margin-top:32px;border-top:1px solid #e5e7eb;padding-top:16px;display:flex;justify-content:space-between}</style>
-  </head><body>
-    <h2>РЕЦЕПТ</h2>
-    <p style="color:#6b7280;font-size:12px;margin:0 0 16px">№ ${record.prescription_number ?? '—'} · ${date}</p>
-    <div style="margin-bottom:12px">
-      <strong>Пациент:</strong> ${visit.patient.full_name}<br>
-      <strong>Диагноз:</strong> ${record.icd10_code ? `[${record.icd10_code}] ` : ''}${record.diagnosis_text ?? '—'}
-    </div>
-    <table>
-      <thead><tr>
-        <th>Препарат</th><th>Дозировка</th><th>Кратность</th><th>Длительность</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    ${record.recommendations ? `<p style="margin-top:16px"><strong>Рекомендации:</strong> ${record.recommendations}</p>` : ''}
-    ${record.control_date ? `<p><strong>Контроль:</strong> ${new Date(record.control_date + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</p>` : ''}
-    <div class="footer">
-      <span>Врач: ${visit.doctor.last_name} ${visit.doctor.first_name}</span>
-      <span style="border-bottom:1px solid #111;width:160px;display:inline-block;text-align:center">Подпись / печать</span>
-    </div>
-  </body></html>`
-
-  const w = window.open('', '_blank', 'width=700,height=600')
-  if (!w) return
-  w.document.write(html)
-  w.document.close()
-  w.focus()
-  w.print()
+  void printRxDoc(visit.clinic_id, visit.patient.id, visit.doctor.id, {
+    number: record.prescription_number,
+    issued_at: null,
+    icd10_code: record.icd10_code,
+    diagnosis_text: record.diagnosis_text,
+    items: (record.prescriptions ?? []).map(p => ({
+      drug_name: p.drug_name,
+      dosage: p.dosage,
+      frequency: p.frequency,
+      duration: p.duration,
+    })),
+    recommendations: record.recommendations,
+    control_date: record.control_date,
+  })
 }
 
 function printMedCertificate(record: MedRecord, visit: VisitFull) {
-  const date = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
-    <title>Справка</title>
-    <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:40px;max-width:680px;margin:auto} h2{text-align:center;margin-bottom:4px} .subtitle{text-align:center;color:#6b7280;font-size:12px;margin-bottom:24px} .field{margin-bottom:10px} .field label{color:#6b7280;font-size:11px;display:block;margin-bottom:2px} .footer{margin-top:48px;display:flex;justify-content:space-between}</style>
-  </head><body>
-    <h2>МЕДИЦИНСКАЯ СПРАВКА</h2>
-    <p class="subtitle">Дата выдачи: ${date}</p>
-    <div class="field"><label>Пациент</label><strong>${visit.patient.full_name}</strong></div>
-    <div class="field"><label>Диагноз</label>${record.icd10_code ? `<span style="font-family:monospace;font-size:11px;background:#eff6ff;color:#1d4ed8;padding:1px 6px;border-radius:4px;margin-right:8px">${record.icd10_code}</span>` : ''}${record.diagnosis_text ?? '—'}
-      <span style="font-size:11px;color:#6b7280;margin-left:8px">(${record.diagnosis_type === 'final' ? 'Окончательный' : 'Предварительный'})</span>
-    </div>
-    ${record.complaints ? `<div class="field"><label>Жалобы</label>${record.complaints}</div>` : ''}
-    ${record.recommendations ? `<div class="field"><label>Рекомендации</label>${record.recommendations}</div>` : ''}
-    ${record.control_date ? `<div class="field"><label>Контрольный осмотр</label>${new Date(record.control_date + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</div>` : ''}
-    <div class="footer">
-      <div>Врач: <strong>${visit.doctor.last_name} ${visit.doctor.first_name}</strong></div>
-      <div style="border-bottom:1px solid #111;width:180px;text-align:center;padding-top:24px;font-size:11px;color:#6b7280">Подпись / печать</div>
-    </div>
-  </body></html>`
-
-  const w = window.open('', '_blank', 'width=720,height=620')
-  if (!w) return
-  w.document.write(html)
-  w.document.close()
-  w.focus()
-  w.print()
+  void printCertDoc(visit.clinic_id, visit.patient.id, visit.doctor.id, {
+    icd10_code: record.icd10_code,
+    diagnosis_text: record.diagnosis_text,
+    diagnosis_type: record.diagnosis_type,
+    complaints: record.complaints,
+    recommendations: record.recommendations,
+    control_date: record.control_date,
+  })
 }
 
 /* ─── MedRecordSection ───────────────────────────────────── */
@@ -257,14 +217,50 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
   const [icdHits, setIcdHits]     = useState<ICD10Hit[]>([])
   const icdDebRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  /* Prescription bundles */
+  type Bundle = {
+    id: string
+    name: string
+    icd10_hint: string | null
+    prescriptions: Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>
+    use_count: number
+    doctor_id: string | null
+  }
+  const [bundles, setBundles] = useState<Bundle[]>([])
+  const [bundlesOpen, setBundlesOpen] = useState(false)
+  const [saveBundleOpen, setSaveBundleOpen] = useState(false)
+  const [newBundleName, setNewBundleName] = useState('')
+
+  /* Medical record templates */
+  type MRTemplate = {
+    id: string
+    name: string
+    icd10_code: string | null
+    icd10_name: string | null
+    complaints: string | null
+    anamnesis: string | null
+    objective: string | null
+    diagnosis_text: string | null
+    recommendations: string | null
+    prescriptions: Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>
+    use_count: number
+    doctor_id: string | null
+  }
+  const [tpls, setTpls] = useState<MRTemplate[]>([])
+  const [tplsOpen, setTplsOpen] = useState(false)
+  const [saveTplOpen, setSaveTplOpen] = useState(false)
+  const [newTplName, setNewTplName] = useState('')
+
   const [form, setForm] = useState({
     complaints: '', anamnesis: '', objective: '',
     bp: '', pulse: '', temperature: '', spo2: '', weight: '', height: '',
     icd10_code: '', icd10_name: '', diagnosis_text: '',
     diagnosis_type: 'preliminary' as 'preliminary' | 'final',
-    recommendations: '', control_date: '',
+    recommendations: '', treatment_plan: '', control_date: '',
     prescriptions: [] as Array<{ drug_name: string; dosage: string; frequency: string; duration: string }>,
   })
+  const [autosaveStatus, setAutosaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
 
   useEffect(() => {
     supabase.from('medical_records').select('*').eq('visit_id', visit.id).maybeSingle()
@@ -284,6 +280,7 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
             diagnosis_text: data.diagnosis_text ?? '',
             diagnosis_type: data.diagnosis_type ?? 'preliminary',
             recommendations: data.recommendations ?? '',
+            treatment_plan: data.treatment_plan ?? '',
             control_date: data.control_date ?? '',
             prescriptions: data.prescriptions ?? [],
           })
@@ -302,6 +299,108 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
       .maybeSingle()
       .then(({ data }) => { if (data) setLastRecord(data as typeof lastRecord) })
   }, [visit.id])
+
+  /* Load prescription bundles (doctor's own + clinic-shared) */
+  useEffect(() => {
+    if (!visit.clinic_id) return
+    supabase.from('prescription_bundles')
+      .select('id, name, icd10_hint, prescriptions, use_count, doctor_id')
+      .eq('clinic_id', visit.clinic_id)
+      .eq('is_active', true)
+      .or(`doctor_id.eq.${visit.doctor.id},doctor_id.is.null`)
+      .order('use_count', { ascending: false })
+      .limit(50)
+      .then(({ data }) => setBundles((data ?? []) as Bundle[]))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visit.clinic_id, visit.doctor.id])
+
+  const applyBundle = async (b: Bundle) => {
+    setForm(f => ({
+      ...f,
+      prescriptions: [...f.prescriptions, ...b.prescriptions.map(p => ({
+        drug_name: p.drug_name, dosage: p.dosage,
+        frequency: p.frequency, duration: p.duration ?? '',
+      }))],
+    }))
+    setBundlesOpen(false)
+    // bump use_count
+    await supabase.from('prescription_bundles')
+      .update({ use_count: b.use_count + 1 })
+      .eq('id', b.id)
+    setBundles(prev => prev.map(x => x.id === b.id ? { ...x, use_count: x.use_count + 1 } : x))
+  }
+
+  /* Load medrecord templates */
+  useEffect(() => {
+    if (!visit.clinic_id) return
+    supabase.from('medrecord_templates')
+      .select('id,name,icd10_code,icd10_name,complaints,anamnesis,objective,diagnosis_text,recommendations,prescriptions,use_count,doctor_id')
+      .eq('clinic_id', visit.clinic_id)
+      .eq('is_active', true)
+      .or(`doctor_id.eq.${visit.doctor.id},doctor_id.is.null`)
+      .order('use_count', { ascending: false })
+      .limit(50)
+      .then(({ data }) => setTpls((data ?? []) as MRTemplate[]))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visit.clinic_id, visit.doctor.id])
+
+  const applyTemplate = async (t: MRTemplate) => {
+    setForm(f => ({
+      ...f,
+      complaints:      t.complaints      ?? f.complaints,
+      anamnesis:       t.anamnesis       ?? f.anamnesis,
+      objective:       t.objective       ?? f.objective,
+      icd10_code:      t.icd10_code      ?? f.icd10_code,
+      icd10_name:      t.icd10_name      ?? f.icd10_name,
+      diagnosis_text:  t.diagnosis_text  ?? f.diagnosis_text,
+      recommendations: t.recommendations ?? f.recommendations,
+      prescriptions: [...f.prescriptions, ...(t.prescriptions ?? []).map(p => ({
+        drug_name: p.drug_name, dosage: p.dosage,
+        frequency: p.frequency, duration: p.duration ?? '',
+      }))],
+    }))
+    if (t.icd10_code) setIcdQuery(`${t.icd10_code} — ${t.icd10_name ?? ''}`)
+    setTplsOpen(false)
+    await supabase.from('medrecord_templates')
+      .update({ use_count: t.use_count + 1 }).eq('id', t.id)
+    setTpls(prev => prev.map(x => x.id === t.id ? { ...x, use_count: x.use_count + 1 } : x))
+  }
+
+  const saveCurrentAsTemplate = async () => {
+    if (!newTplName.trim()) return
+    const { data } = await supabase.from('medrecord_templates').insert({
+      clinic_id: visit.clinic_id,
+      doctor_id: visit.doctor.id,
+      name: newTplName.trim(),
+      icd10_code: form.icd10_code || null,
+      icd10_name: form.icd10_name || null,
+      complaints: form.complaints || null,
+      anamnesis: form.anamnesis || null,
+      objective: form.objective || null,
+      diagnosis_text: form.diagnosis_text || null,
+      recommendations: form.recommendations || null,
+      prescriptions: form.prescriptions.filter(p => p.drug_name.trim()),
+    }).select().single()
+    if (data) setTpls(prev => [data as MRTemplate, ...prev])
+    setNewTplName('')
+    setSaveTplOpen(false)
+  }
+
+  const saveCurrentAsBundle = async () => {
+    if (!newBundleName.trim() || form.prescriptions.length === 0) return
+    const { data } = await supabase.from('prescription_bundles').insert({
+      clinic_id: visit.clinic_id,
+      doctor_id: visit.doctor.id,
+      name: newBundleName.trim(),
+      icd10_hint: form.icd10_code || null,
+      prescriptions: form.prescriptions.filter(p => p.drug_name.trim()),
+    }).select().single()
+    if (data) {
+      setBundles(prev => [data as Bundle, ...prev])
+    }
+    setNewBundleName('')
+    setSaveBundleOpen(false)
+  }
 
   const searchICD = (q: string) => {
     setIcdQuery(q)
@@ -433,6 +532,7 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
       diagnosis_type: form.diagnosis_type,
       prescriptions: form.prescriptions.filter(p => p.drug_name.trim()),
       recommendations: form.recommendations || null,
+      treatment_plan: form.treatment_plan || null,
       control_date: form.control_date || null,
       is_signed: sign,
     }
@@ -445,17 +545,84 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
     }
     setSaving(false)
     setEditing(false)
+    setLastSavedAt(new Date())
+    setAutosaveStatus('saved')
   }
+
+  /* ── Autosave by debounce ───────────────────────────────── */
+  const formRef = useRef(form)
+  formRef.current = form
+  const recordRef = useRef(record)
+  recordRef.current = record
+  const savingRef = useRef(saving)
+  savingRef.current = saving
+  const firstLoadRef = useRef(true)
+
+  useEffect(() => {
+    // Skip initial form load
+    if (firstLoadRef.current) { firstLoadRef.current = false; return }
+    // Don't autosave signed records
+    if (record?.is_signed) return
+    // Don't autosave if nothing to save
+    const f = form
+    const hasContent =
+      f.complaints.trim() || f.anamnesis.trim() || f.objective.trim() ||
+      f.diagnosis_text.trim() || f.icd10_code ||
+      f.recommendations.trim() || f.treatment_plan.trim() ||
+      f.prescriptions.length > 0
+    if (!hasContent) return
+
+    const timer = setTimeout(async () => {
+      if (savingRef.current) return
+      const cur = formRef.current
+      const rec = recordRef.current
+      setAutosaveStatus('saving')
+      const payload = {
+        clinic_id: visit.clinic_id, visit_id: visit.id,
+        patient_id: visit.patient.id, doctor_id: visit.doctor.id,
+        complaints: cur.complaints || null,
+        anamnesis: cur.anamnesis || null,
+        objective: cur.objective || null,
+        vitals: buildVitals(),
+        icd10_code: cur.icd10_code || null,
+        diagnosis_text: cur.diagnosis_text || null,
+        diagnosis_type: cur.diagnosis_type,
+        prescriptions: cur.prescriptions.filter(p => p.drug_name.trim()),
+        recommendations: cur.recommendations || null,
+        treatment_plan: cur.treatment_plan || null,
+        control_date: cur.control_date || null,
+        is_signed: false,
+      }
+      try {
+        if (rec) {
+          const { data, error } = await supabase.from('medical_records').update(payload).eq('id', rec.id).select().single()
+          if (error) throw error
+          if (data) setRecord(data as MedRecord)
+        } else {
+          const { data, error } = await supabase.from('medical_records').insert(payload).select().single()
+          if (error) throw error
+          if (data) setRecord(data as MedRecord)
+        }
+        setLastSavedAt(new Date())
+        setAutosaveStatus('saved')
+      } catch {
+        setAutosaveStatus('error')
+      }
+    }, 1500)
+    return () => clearTimeout(timer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form])
 
   if (loading) return (
     <div className="bg-white rounded-xl border border-gray-100 p-6 mt-4 text-sm text-gray-400 text-center">Загрузка медзаписи...</div>
   )
 
-  /* ── Last visit collapsible panel ── */
+  /* ── Last visit: inline-бейдж + sticky-панель справа при раскрытии ── */
   const LastVisitPanel = () => lastRecord ? (
-    <div className="mb-4 border border-blue-100 rounded-xl overflow-hidden">
+    <>
+      {/* Inline-бейдж (виден всегда, чтобы было на что жать) */}
       <button onClick={() => setShowLastVisit(v => !v)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-blue-50 hover:bg-blue-100 transition-colors text-left">
+        className="mb-4 w-full flex items-center justify-between px-4 py-3 bg-blue-50 hover:bg-blue-100 border border-blue-100 rounded-xl transition-colors text-left">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-blue-700">📋 Последний визит</span>
           <span className="text-xs text-blue-500">
@@ -464,39 +631,88 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
           {lastRecord.icd10_code && (
             <span className="text-xs font-mono bg-blue-200 text-blue-800 px-1.5 rounded">{lastRecord.icd10_code}</span>
           )}
+          <span className="text-xs text-blue-400 ml-2">{showLastVisit ? '· скрыть боковую панель' : '· открыть рядом →'}</span>
         </div>
-        <svg width="14" height="14" className={`text-blue-400 transition-transform ${showLastVisit ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24">
-          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
       </button>
+      {/* Sticky side panel */}
       {showLastVisit && (
-        <div className="px-4 py-3 bg-white space-y-2">
-          {lastRecord.diagnosis_text && (
-            <p className="text-sm text-gray-700"><span className="text-xs text-gray-400 mr-2">Диагноз:</span>{lastRecord.diagnosis_text}</p>
-          )}
-          {lastRecord.prescriptions?.length > 0 && (
-            <div>
-              <p className="text-xs text-gray-400 mb-1">Назначения:</p>
-              <div className="flex flex-wrap gap-1">
-                {lastRecord.prescriptions.map((p, i) => (
-                  <span key={i} className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{p.drug_name} {p.dosage}</span>
-                ))}
+        <div className="hidden xl:block fixed right-4 top-24 w-80 max-h-[calc(100vh-7rem)] overflow-auto z-30 bg-white border border-blue-200 rounded-xl shadow-lg">
+          <div className="sticky top-0 bg-blue-50 border-b border-blue-100 px-4 py-3 flex items-center justify-between">
+            <span className="text-xs font-semibold text-blue-700">📋 Прошлый визит</span>
+            <button onClick={() => setShowLastVisit(false)} className="text-blue-400 hover:text-blue-700 text-sm">×</button>
+          </div>
+          <div className="px-4 py-3 space-y-3 text-sm">
+            <p className="text-xs text-gray-500">
+              {new Date(lastRecord.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
+              {lastRecord.icd10_code && <span className="ml-2 font-mono bg-blue-50 text-blue-700 px-1.5 rounded">{lastRecord.icd10_code}</span>}
+            </p>
+            {lastRecord.diagnosis_text && (
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Диагноз</p>
+                <p className="text-gray-800">{lastRecord.diagnosis_text}</p>
               </div>
-              <button onClick={() => {
-                setForm(f => ({ ...f, prescriptions: [...f.prescriptions, ...lastRecord.prescriptions.map(p => ({
-                  drug_name: p.drug_name, dosage: p.dosage, frequency: p.frequency, duration: ''
-                }))] }))
-              }} className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">
-                + Скопировать назначения
-              </button>
-            </div>
-          )}
-          {lastRecord.recommendations && (
-            <p className="text-sm text-gray-600"><span className="text-xs text-gray-400 mr-2">Рекомендации:</span>{lastRecord.recommendations}</p>
-          )}
+            )}
+            {lastRecord.prescriptions?.length > 0 && (
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Назначения</p>
+                <div className="space-y-1">
+                  {lastRecord.prescriptions.map((p, i) => (
+                    <div key={i} className="text-xs bg-gray-50 rounded px-2 py-1">
+                      <span className="font-medium text-gray-800">{p.drug_name}</span>
+                      {p.dosage && <span className="text-gray-600 ml-1">{p.dosage}</span>}
+                      {p.frequency && <span className="text-gray-400 ml-1">· {p.frequency}</span>}
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => {
+                  setForm(f => ({ ...f, prescriptions: [...f.prescriptions, ...lastRecord.prescriptions.map(p => ({
+                    drug_name: p.drug_name, dosage: p.dosage, frequency: p.frequency, duration: ''
+                  }))] }))
+                }} className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                  + Скопировать всё
+                </button>
+              </div>
+            )}
+            {lastRecord.recommendations && (
+              <div>
+                <p className="text-xs text-gray-400 mb-0.5">Рекомендации</p>
+                <p className="text-gray-700 text-xs">{lastRecord.recommendations}</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
-    </div>
+      {/* Mobile/tablet fallback — старый раскрывающийся блок */}
+      {showLastVisit && (
+        <div className="xl:hidden mb-4 border border-blue-100 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 bg-white space-y-2">
+            {lastRecord.diagnosis_text && (
+              <p className="text-sm text-gray-700"><span className="text-xs text-gray-400 mr-2">Диагноз:</span>{lastRecord.diagnosis_text}</p>
+            )}
+            {lastRecord.prescriptions?.length > 0 && (
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Назначения:</p>
+                <div className="flex flex-wrap gap-1">
+                  {lastRecord.prescriptions.map((p, i) => (
+                    <span key={i} className="text-xs bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{p.drug_name} {p.dosage}</span>
+                  ))}
+                </div>
+                <button onClick={() => {
+                  setForm(f => ({ ...f, prescriptions: [...f.prescriptions, ...lastRecord.prescriptions.map(p => ({
+                    drug_name: p.drug_name, dosage: p.dosage, frequency: p.frequency, duration: ''
+                  }))] }))
+                }} className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                  + Скопировать назначения
+                </button>
+              </div>
+            )}
+            {lastRecord.recommendations && (
+              <p className="text-sm text-gray-600"><span className="text-xs text-gray-400 mr-2">Рекомендации:</span>{lastRecord.recommendations}</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   ) : null
 
   /* ── View mode ── */
@@ -597,13 +813,71 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
   /* ── Edit / Create mode ── */
   return (
     <div className="bg-white rounded-xl border border-gray-100 overflow-hidden mt-4">
-      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between relative">
         <h3 className="text-sm font-semibold text-gray-900">
           {record ? 'Редактировать запись' : 'Медицинская запись'}
         </h3>
-        {record && (
-          <button onClick={() => setEditing(false)} className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
-        )}
+        <div className="flex items-center gap-2 relative">
+          <button type="button" onClick={() => setTplsOpen(v => !v)}
+            className="text-xs text-purple-600 hover:text-purple-700 border border-purple-200 hover:border-purple-400 rounded px-2 py-1">
+            📝 Шаблон {tpls.length > 0 && `(${tpls.length})`}
+          </button>
+          {tplsOpen && (
+            <div className="absolute right-0 top-8 z-30 w-96 bg-white border border-gray-200 rounded-lg shadow-lg max-h-96 overflow-auto">
+              <div className="sticky top-0 bg-gray-50 px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-600">Шаблоны медзаписи</span>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => { setSaveTplOpen(true); setTplsOpen(false) }}
+                    className="text-xs text-purple-600 hover:text-purple-700">+ Сохранить текущую</button>
+                  <button type="button" onClick={() => setTplsOpen(false)} className="text-gray-400 hover:text-gray-600">×</button>
+                </div>
+              </div>
+              {tpls.length === 0 ? (
+                <p className="px-3 py-4 text-xs text-gray-400 text-center">
+                  Пусто. Нажмите «Сохранить текущую», чтобы создать первый шаблон из заполненной записи.
+                </p>
+              ) : tpls.map(t => (
+                <button key={t.id} type="button" onClick={() => applyTemplate(t)}
+                  className="w-full text-left px-3 py-2 hover:bg-purple-50 border-b border-gray-50">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-gray-900 truncate">{t.name}</span>
+                    {t.icd10_code && (
+                      <span className="text-[10px] font-mono bg-blue-50 text-blue-700 px-1 rounded">{t.icd10_code}</span>
+                    )}
+                  </div>
+                  {t.diagnosis_text && (
+                    <p className="text-xs text-gray-500 truncate mt-0.5">{t.diagnosis_text}</p>
+                  )}
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    {t.doctor_id ? '👤 мой' : '🏥 клиника'} · {t.use_count}×
+                    {t.prescriptions?.length > 0 && ` · ${t.prescriptions.length} назнач.`}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+          {saveTplOpen && (
+            <div className="absolute right-0 top-8 z-30 w-80 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+              <p className="text-xs font-semibold text-gray-600 mb-2">Сохранить медзапись как шаблон</p>
+              <input value={newTplName} onChange={e => setNewTplName(e.target.value)}
+                placeholder="Напр. «ОРВИ — стандарт»" className={inp + ' mb-2'} />
+              <p className="text-[10px] text-gray-400 mb-2">
+                Сохранится: жалобы, анамнез, объективно, диагноз (+ICD-10), рекомендации, все назначения.
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button type="button" onClick={() => { setSaveTplOpen(false); setNewTplName('') }}
+                  className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
+                <button type="button" onClick={saveCurrentAsTemplate} disabled={!newTplName.trim()}
+                  className="text-xs bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-3 py-1 rounded">
+                  Сохранить
+                </button>
+              </div>
+            </div>
+          )}
+          {record && (
+            <button onClick={() => setEditing(false)} className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
+          )}
+        </div>
       </div>
       <div className="p-5 space-y-5">
 
@@ -611,7 +885,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
 
         {/* Vitals */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Объективные данные</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold flex items-center justify-center">O</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Объективно — витальные и осмотр</p>
+          </div>
           <div className="grid grid-cols-3 gap-3">
             {[
               { key: 'bp', label: 'АД (сист/диаст)', placeholder: '120/80' },
@@ -633,7 +910,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
 
         {/* Subjective */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Субъективно</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center">S</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Субъективно — жалобы и анамнез</p>
+          </div>
           <div className="space-y-3">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Жалобы</label>
@@ -655,7 +935,10 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
 
         {/* Diagnosis */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Диагноз</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex items-center justify-center">A</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Оценка — диагноз</p>
+          </div>
           <div className="space-y-3">
             <div className="relative">
               <label className="block text-xs text-gray-500 mb-1">МКБ-10 (поиск по коду или названию)</label>
@@ -697,11 +980,73 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
         {/* Prescriptions */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Назначения</p>
-            <button type="button" onClick={addPrescription}
-              className="text-xs text-blue-600 hover:text-blue-700 font-medium">
-              + Добавить
-            </button>
+            <div className="flex items-center gap-2">
+              <span className="w-6 h-6 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">P</span>
+              <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">План — назначения</p>
+            </div>
+            <div className="flex items-center gap-2 relative">
+              {bundles.length > 0 && (
+                <>
+                  <button type="button" onClick={() => setBundlesOpen(v => !v)}
+                    className="text-xs text-purple-600 hover:text-purple-700 font-medium border border-purple-200 hover:border-purple-400 rounded px-2 py-1">
+                    ⭐ Шаблоны ({bundles.length})
+                  </button>
+                  {bundlesOpen && (
+                    <div className="absolute right-0 top-8 z-20 w-80 bg-white border border-gray-200 rounded-lg shadow-lg max-h-80 overflow-auto">
+                      <div className="sticky top-0 bg-gray-50 px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-gray-600">Выбрать шаблон</span>
+                        <button type="button" onClick={() => setBundlesOpen(false)} className="text-gray-400 hover:text-gray-600 text-sm">×</button>
+                      </div>
+                      {bundles.map(b => (
+                        <button key={b.id} type="button" onClick={() => applyBundle(b)}
+                          className="w-full text-left px-3 py-2 hover:bg-purple-50 border-b border-gray-50">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-medium text-gray-900 truncate">{b.name}</span>
+                            {b.icd10_hint && (
+                              <span className="text-[10px] font-mono bg-blue-50 text-blue-700 px-1 rounded">{b.icd10_hint}</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-gray-500 truncate mt-0.5">
+                            {b.prescriptions.map(p => p.drug_name).filter(Boolean).join(', ')}
+                          </p>
+                          <p className="text-[10px] text-gray-400 mt-0.5">
+                            {b.doctor_id ? '👤 мой' : '🏥 клиника'} · использован {b.use_count}×
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {form.prescriptions.length > 0 && (
+                <>
+                  <button type="button" onClick={() => setSaveBundleOpen(v => !v)}
+                    className="text-xs text-gray-500 hover:text-gray-700 font-medium border border-gray-200 hover:border-gray-400 rounded px-2 py-1"
+                    title="Сохранить текущие назначения как шаблон">
+                    💾
+                  </button>
+                  {saveBundleOpen && (
+                    <div className="absolute right-0 top-8 z-20 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+                      <p className="text-xs font-semibold text-gray-600 mb-2">Сохранить как шаблон</p>
+                      <input value={newBundleName} onChange={e => setNewBundleName(e.target.value)}
+                        placeholder="Напр. «Гипертония I ст.»" className={inp + ' mb-2'} />
+                      <div className="flex gap-2 justify-end">
+                        <button type="button" onClick={() => { setSaveBundleOpen(false); setNewBundleName('') }}
+                          className="text-xs text-gray-400 hover:text-gray-600">Отмена</button>
+                        <button type="button" onClick={saveCurrentAsBundle} disabled={!newBundleName.trim()}
+                          className="text-xs bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-3 py-1 rounded">
+                          Сохранить
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              <button type="button" onClick={addPrescription}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+                + Добавить
+              </button>
+            </div>
           </div>
           {form.prescriptions.length === 0 && (
             <p className="text-sm text-gray-400">Нет назначений</p>
@@ -741,13 +1086,26 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
           </div>
         </div>
 
-        {/* Recommendations */}
+        {/* Recommendations + Treatment plan */}
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Рекомендации</p>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-6 h-6 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">P</span>
+            <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">План лечения и рекомендации</p>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <textarea className={inp + ' resize-none'} rows={2} placeholder="Режим, диета, активность…"
-                value={form.recommendations} onChange={e => setForm(f => ({ ...f, recommendations: e.target.value }))} />
+              <label className="block text-xs text-gray-500 mb-1">План лечения</label>
+              <textarea className={inp + ' resize-none'} rows={3}
+                placeholder="Медикаментозная терапия, процедуры, этапы…"
+                value={form.treatment_plan}
+                onChange={e => setForm(f => ({ ...f, treatment_plan: e.target.value }))} />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Рекомендации</label>
+              <textarea className={inp + ' resize-none'} rows={2}
+                placeholder="Режим, диета, активность…"
+                value={form.recommendations}
+                onChange={e => setForm(f => ({ ...f, recommendations: e.target.value }))} />
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Дата контроля</label>
@@ -755,6 +1113,17 @@ function MedRecordSection({ visit, allergies }: { visit: VisitFull; allergies: A
                 onChange={e => setForm(f => ({ ...f, control_date: e.target.value }))} />
             </div>
           </div>
+        </div>
+
+        {/* Autosave status */}
+        <div className="flex items-center justify-end text-xs -mb-1">
+          {autosaveStatus === 'saving' && <span className="text-gray-400">💾 Автосохранение…</span>}
+          {autosaveStatus === 'saved' && lastSavedAt && (
+            <span className="text-green-600">
+              ✓ Сохранено {lastSavedAt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+          {autosaveStatus === 'error' && <span className="text-red-500">⚠ Ошибка автосохранения</span>}
         </div>
 
         {/* Actions */}

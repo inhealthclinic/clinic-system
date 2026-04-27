@@ -25,10 +25,10 @@ export function Header({ onMenuClick }: HeaderProps) {
     path === '/' ? pathname === '/' : pathname.startsWith(path)
   )?.[1] ?? ''
 
-  // На /crm заголовок убран — в амоCRM-верстке он мешает, а тулбар
-  // живёт прямо в теле страницы. На десктопе шапка сжимается до нуля
-  // (сайдбар и так виден), на мобильных остаётся только бургер-кнопка.
-  const isCrm = pathname.startsWith('/crm')
+  // На /crm и /tasks заголовок убран — в амоCRM-верстке он мешает,
+  // а тулбар живёт прямо в теле страницы. На десктопе шапка сжимается
+  // до нуля (сайдбар и так виден), на мобильных остаётся только бургер-кнопка.
+  const isCrm = pathname.startsWith('/crm') || pathname.startsWith('/tasks')
 
   return (
     <header

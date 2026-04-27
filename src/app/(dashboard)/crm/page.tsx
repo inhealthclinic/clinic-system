@@ -11,8 +11,10 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { notify, confirmAction } from '@/lib/ui/notify'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
+import { VoiceBubble } from '@/components/crm/VoiceBubble'
 import {
   type DealFieldConfig,
   DEFAULT_FIELD_CONFIGS,
@@ -64,10 +66,18 @@ interface DealRow {
   loss_reason_id: string | null
   contact_phone: string | null
   contact_city: string | null
+  birth_date: string | null  // ISO YYYY-MM-DD; для лидов без пациента
   notes: string | null
   tags: string[]
   // Кастомные поля (мигр. 057): { [field_key]: value }
   custom_fields: Record<string, unknown> | null
+  // Состояние приветственного бота (мигр. 083):
+  //   bot_active=true     — бот ещё может что-то прислать (cron подхватит)
+  //   bot_state='greeted' — приветствие отправлено, ждём 1ч ответа
+  //   bot_state='followup_sent' — фоллоуап ушёл, бот завершён
+  //   bot_state='done'    — клиент ответил / менеджер взял сделку
+  bot_active?: boolean
+  bot_state?: string | null
   //
   stage_entered_at: string
   created_at: string
@@ -158,6 +168,12 @@ export default function CRMKanbanPage() {
     window.localStorage.setItem('crm.showTerminalStages', showTerminal ? '1' : '0')
   }, [showTerminal])
 
+  // Видимая диагностика загрузки сделок: HTTP-статус /api/crm/deals,
+  // сколько сделок вернул сервер, текст ошибки. Показываем баннер, только
+  // когда что-то явно сломано — чтобы причина пустого канбана была видна
+  // без DevTools.
+  const [dealsDiag, setDealsDiag] = useState<{ status: number; error: string | null } | null>(null)
+
   // Режим просмотра: канбан (этапы-колонки) или таблица (плоский список).
   // Персистим выбор, чтобы менеджер возвращался к привычному виду.
   const [viewMode, setViewMode] = useState<'kanban' | 'table'>('kanban')
@@ -172,7 +188,30 @@ export default function CRMKanbanPage() {
   }, [viewMode])
 
   // Поиск по воронке: имя сделки / пациента / телефон / тег / город / заметка.
+  // Инпут контролируется listSearch (мгновенный отклик при вводе), а тяжёлый
+  // фильтр по списку сделок читает debouncedSearch — обновляется через 300мс
+  // после последнего нажатия, чтобы не пересчитывать фильтр на каждую букву.
   const [listSearch, setListSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(listSearch), 300)
+    return () => window.clearTimeout(t)
+  }, [listSearch])
+
+  // Фильтр «Только мои / Все сделки». По умолчанию все сотрудники видят все сделки.
+  const roleSlug = profile?.role?.slug ?? ''
+  const [ownerFilter, setOwnerFilter] = useState<'mine' | 'all'>('all')
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const v = window.localStorage.getItem('crm.ownerFilter')
+    if (v === 'mine' || v === 'all') setOwnerFilter(v)
+    else setOwnerFilter('all')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roleSlug])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('crm.ownerFilter', ownerFilter)
+  }, [ownerFilter])
 
   // Сортировка карточек внутри этапа и в таблице. Как в амоCRM — список
   // опций + направление ↑/↓. Выбор запоминаем в localStorage.
@@ -212,6 +251,17 @@ export default function CRMKanbanPage() {
   // Массовые действия — множественный выбор строк в таблице.
   const [bulkMode, setBulkMode] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
+  // Подтверждение массового удаления — отдельная модалка с typed-confirm
+  // ('УДАЛИТЬ'), чтобы случайный клик не сносил пол-воронки. Реальный кейс:
+  // менеджер выделил 278 сделок и нажал «Удалить» → потеряли всю CRM.
+  const [bulkDeletePending, setBulkDeletePending] = useState(false)
+  // Быстрое создание сделки — мини-модалка имя+телефон, чтобы не открывать
+  // большой DealModal на каждый входящий звонок.
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false)
+  // Глобальный поиск по телефону: ищет ПО ВСЕМ сделкам клиники (не только
+  // загруженные 1000), потому что менеджеру звонят, а сделка может лежать
+  // в другой воронке или ниже в очереди.
+  const [phoneSearchOpen, setPhoneSearchOpen] = useState(false)
 
   // drag state
   const [dragging, setDragging] = useState<DealRow | null>(null)
@@ -220,45 +270,210 @@ export default function CRMKanbanPage() {
   // pending loss prompt
   const [lossPending, setLossPending] = useState<{ deal: DealRow; stageId: string } | null>(null)
 
-  // selected deal — persisted in ?deal=<id> query param
+  // Счётчики непрочитанных входящих сообщений по каждой сделке — для бейджей
+  // на карточках канбана. Обновляем каждые 8 сек + подписываемся на realtime,
+  // чтобы новое WhatsApp/SMS сообщение мгновенно поднимало цифру.
+  const [unreadByDeal, setUnreadByDeal] = useState<Record<string, number>>({})
+  useEffect(() => {
+    if (!clinicId) return
+    let cancelled = false
+    const fetchUnread = async () => {
+      // Загружаем входящие и исходящие-человека (author_id != null = не бот).
+      // Значок стоит пока нет ответа живого менеджера после последнего входящего.
+      const { data } = await supabase
+        .from('deal_messages')
+        .select('deal_id, direction, author_id, created_at')
+        .eq('clinic_id', clinicId)
+        .in('channel', ['whatsapp', 'sms', 'telegram'])
+        .order('created_at', { ascending: true })
+        .limit(5000)
+      if (cancelled) return
+      // Группируем по сделке, вычисляем нужен ли ответ менеджера
+      const byDeal = new Map<string, { lastInbound: string | null; lastHumanOut: string | null; pending: number }>()
+      for (const m of (data ?? []) as { deal_id: string; direction: string; author_id: string | null; created_at: string }[]) {
+        if (!byDeal.has(m.deal_id)) byDeal.set(m.deal_id, { lastInbound: null, lastHumanOut: null, pending: 0 })
+        const s = byDeal.get(m.deal_id)!
+        if (m.direction === 'in') {
+          s.lastInbound = m.created_at
+          s.pending++
+        } else if (m.direction === 'out' && m.author_id != null) {
+          // человек ответил — сбрасываем счётчик
+          s.lastHumanOut = m.created_at
+          s.pending = 0
+        }
+        // бот (direction='out', author_id=null) — игнорируем
+      }
+      const map: Record<string, number> = {}
+      for (const [dealId, s] of byDeal) {
+        const needsReply = s.lastInbound != null && (s.lastHumanOut == null || s.lastInbound > s.lastHumanOut)
+        if (needsReply) map[dealId] = s.pending
+      }
+      setUnreadByDeal(map)
+    }
+    fetchUnread()
+    const interval = setInterval(fetchUnread, 8000)
+    const ch = supabase.channel(`crm-unread:${clinicId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'deal_messages', filter: `clinic_id=eq.${clinicId}` },
+        () => { fetchUnread() })
+      .subscribe()
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      supabase.removeChannel(ch)
+    }
+  }, [clinicId, supabase])
+
+  // selected deal — local state only, не пишем в URL чтобы перезагрузка
+  // страницы не открывала автоматически последнюю сделку.
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null)
-  const pendingDealId = useRef<string | null>(searchParams.get('deal'))
+
+  // Сохраняем открытую сделку в sessionStorage (живёт пока открыта вкладка,
+  // не утекает в URL, не делится между вкладками). Закрытие — стираем.
+  // Это ЕДИНСТВЕННОЕ место, где состояние модалки переживает рефреш.
+  // Заодно чистим устаревший ?deal= из URL, если остался от прошлых версий.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (searchParams.get('deal')) {
+      const sp = new URLSearchParams(searchParams.toString())
+      sp.delete('deal')
+      const qs = sp.toString()
+      router.replace(qs ? `${window.location.pathname}?${qs}` : window.location.pathname, { scroll: false })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // На старте: восстанавливаем открытую сделку ДО того, как эффект «сохранить»
+  // успеет затереть ключ при selectedDeal=null. Поэтому save-эффект гейтим
+  // флагом restoredFromStorageRef.
+  const restoredFromStorageRef = useRef(false)
+  useEffect(() => {
+    if (restoredFromStorageRef.current) return
+    if (typeof window === 'undefined') return
+    const id = window.sessionStorage.getItem('crm.openDeal')
+    if (!id) { restoredFromStorageRef.current = true; return }
+    if (selectedDeal?.id === id) { restoredFromStorageRef.current = true; return }
+    const inList = deals.find(d => d.id === id)
+    if (inList) {
+      setSelectedDeal(inList)
+      restoredFromStorageRef.current = true
+      return
+    }
+    if (deals.length === 0) return  // подождём загрузки
+    ;(async () => {
+      const { data } = await supabase.from('deals').select('*').eq('id', id).maybeSingle()
+      if (data) setSelectedDeal(data as unknown as DealRow)
+      else window.sessionStorage.removeItem('crm.openDeal')
+      restoredFromStorageRef.current = true
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deals])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!restoredFromStorageRef.current) return  // не трогаем хранилище до восстановления
+    if (selectedDeal) {
+      window.sessionStorage.setItem('crm.openDeal', selectedDeal.id)
+    } else {
+      window.sessionStorage.removeItem('crm.openDeal')
+    }
+  }, [selectedDeal?.id])
 
   const openDeal = useCallback((d: DealRow) => {
     setSelectedDeal(d)
-    if (d.id) router.replace(`?deal=${d.id}`, { scroll: false })
-  }, [router])
+  }, [])
 
   const closeDeal = useCallback(() => {
     setSelectedDeal(null)
-    router.replace('?', { scroll: false })
-  }, [router])
+  }, [])
 
-  // On initial load, restore selected deal from URL
+  // Если в URL остался старый ?deal=<id> (от прошлой версии) — чистим
+  // его при первой загрузке, не открывая сделку.
+  // Если пришёл одноразовый ?openDeal=<id> (permalink из /crm/[id] или
+  // уведомления) — открываем сделку и сразу зачищаем URL, чтобы F5 её
+  // не переоткрывал.
   useEffect(() => {
-    if (!pendingDealId.current || deals.length === 0) return
-    const d = deals.find(x => x.id === pendingDealId.current)
-    if (d) {
-      setSelectedDeal(d)
-      pendingDealId.current = null
+    const stale = searchParams.get('deal')
+    const intent = searchParams.get('openDeal')
+    if (!stale && !intent) return
+
+    if (intent && clinicId) {
+      // Сначала пробуем найти в текущем стейте; если нет — тянем из БД.
+      // (Запрашиваем те же поля, что и основная выборка, чтобы DealCard
+      // / DealModal не падали на отсутствующих джойнах.)
+      ;(async () => {
+        let row: DealRow | null = deals.find(d => d.id === intent) || null
+        if (!row) {
+          const { data } = await supabase.from('deals').select(`
+              id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
+              responsible_user_id, source_id, amount,
+              preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes, tags,
+              custom_fields, bot_active, bot_state,
+              stage_entered_at, created_at, updated_at,
+              patient:patients(id, full_name, phones, birth_date, city),
+              responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
+              doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
+            `)
+            .eq('id', intent)
+            .eq('clinic_id', clinicId)
+            .maybeSingle()
+          row = (data as unknown as DealRow) || null
+        }
+        if (row) setSelectedDeal(row)
+      })()
     }
-  }, [deals])
+    router.replace('/crm', { scroll: false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clinicId])
+
+  // Чанкованный bulk-UPDATE для массовых операций. PostgREST падает с 400,
+  // когда .in('id', [...uuids]) укладывается в URL длиннее ~16k. На 1k+
+  // выделенных сделок это происходит легко, поэтому режем по 200.
+  const bulkUpdateDeals = useCallback(async (ids: string[], patch: Record<string, unknown>): Promise<string | null> => {
+    if (ids.length === 0) return null
+    for (let i = 0; i < ids.length; i += 200) {
+      const slice = ids.slice(i, i + 200)
+      const { error } = await supabase.from('deals').update(patch).in('id', slice)
+      if (error) return error.message
+    }
+    return null
+  }, [supabase])
 
   const load = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
-    const [p, d, r, ls, up, doc, cl] = await Promise.all([
+    // ── Сделки тянем через server-side роут (service role, обход RLS) ────
+    // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
+    // например при просроченном refresh-токене или когда auth.uid() не
+    // совпадает с user_profiles.id. RLS-политика deals при этом режет
+    // выборку в 0 строк, хотя view v_pipeline_stage_counts (owned by
+    // postgres → bypassRLS) корректно показывает счётчики. Симптом —
+    // «бейджи 1283/283, карточек 0».
+    //
+    // /api/crm/deals сам валидирует Bearer-токен, резолвит clinic_id из
+    // user_profiles и тянет сделки + пациентов service-role клиентом.
+    // Безопасно: клиника берётся из БД, тело запроса не влияет на
+    // фильтрацию.
+    const { data: { session } } = await supabase.auth.getSession()
+    const accessToken = session?.access_token ?? ''
+    const ownerParam = ownerFilter === 'mine' ? 'mine' : 'all'
+    const dealsResp = await fetch(`/api/crm/deals?owner=${ownerParam}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: 'no-store',
+    })
+    type DealsApiPayload = {
+      clinic_id?: string
+      deals?: DealRow[]
+      patients?: { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }[]
+      error?: string
+      global_deals_count?: number | null
+    }
+    const dealsJson = (await dealsResp.json().catch(() => ({}))) as DealsApiPayload
+    if (!dealsResp.ok) console.error('[crm] /api/crm/deals failed:', dealsJson?.error)
+    setDealsDiag({ status: dealsResp.status, error: dealsJson?.error ?? null })
+
+    const [p, r, ls, up, doc, cl] = await Promise.all([
       supabase.from('pipelines').select('*').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
-      supabase.from('deals').select(`
-        id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel, status,
-        responsible_user_id, source_id, amount,
-        preferred_doctor_id, appointment_type, loss_reason_id, contact_phone, contact_city, notes, tags,
-        custom_fields,
-        stage_entered_at, created_at, updated_at,
-        patient:patients(id, full_name, phones, birth_date, city),
-        responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name),
-        doctor:doctors!deals_preferred_doctor_id_fkey(id, first_name, last_name)
-      `).eq('clinic_id', clinicId).is('deleted_at', null).order('stage_entered_at', { ascending: false }).limit(1000),
       supabase.from('deal_loss_reasons').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('lead_sources').select('id,name,is_active').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
       supabase.from('user_profiles').select('id,first_name,last_name').eq('clinic_id', clinicId).eq('is_active', true).order('first_name'),
@@ -266,12 +481,29 @@ export default function CRMKanbanPage() {
       supabase.from('clinics').select('settings').eq('id', clinicId).maybeSingle(),
     ])
     const ps = (p.data ?? []) as Pipeline[]
+    const usersList = (up.data ?? []) as UserLite[]
+    const doctorsList = (doc.data ?? []) as DoctorLite[]
     setPipelines(ps)
-    setDeals((d.data ?? []) as unknown as DealRow[])
+    setUsers(usersList)
+    setDoctors(doctorsList)
     setReasons((r.data ?? []) as LossReason[])
     setSources((ls.data ?? []) as LeadSource[])
-    setUsers((up.data ?? []) as UserLite[])
-    setDoctors((doc.data ?? []) as DoctorLite[])
+
+    // Сшиваем deals с patients/users/doctors в памяти.
+    type PatientLite = { id: string; full_name: string; phones: string[]; birth_date?: string | null; city?: string | null }
+    const dealRows = (dealsJson?.deals ?? []) as DealRow[]
+    const patientsById = new Map<string, PatientLite>(
+      ((dealsJson?.patients ?? []) as PatientLite[]).map(p0 => [p0.id, p0])
+    )
+    const usersById = new Map(usersList.map(u => [u.id, u]))
+    const doctorsById = new Map(doctorsList.map(x => [x.id, x]))
+    const enriched: DealRow[] = dealRows.map(d0 => ({
+      ...d0,
+      patient: d0.patient_id ? (patientsById.get(d0.patient_id) ?? null) : null,
+      responsible: d0.responsible_user_id ? (usersById.get(d0.responsible_user_id) ?? null) : null,
+      doctor: d0.preferred_doctor_id ? (doctorsById.get(d0.preferred_doctor_id) ?? null) : null,
+    }))
+    setDeals(enriched)
     const at = (cl.data?.settings as { appt_types?: ApptType[] } | null)?.appt_types
     setApptTypes(Array.isArray(at) ? at : [])
 
@@ -289,7 +521,7 @@ export default function CRMKanbanPage() {
 
     if (!activePipelineId && ps.length > 0) setActivePipelineId(ps[0].id)
     setLoading(false)
-  }, [clinicId, supabase, activePipelineId])
+  }, [clinicId, supabase, activePipelineId, ownerFilter, profile?.id])
 
   useEffect(() => { load() }, [load])
 
@@ -308,7 +540,7 @@ export default function CRMKanbanPage() {
     if (n.includes('запис')) return false // Записан/Записана/… — всегда видимо
     return s.stage_role === 'won' || s.stage_role === 'closed'
   }
-  const isListCrmAdmin = profile?.role?.slug === 'admin'
+  const isListCrmAdmin = profile?.role?.slug === 'admin' || profile?.role?.slug === 'owner'
   const hiddenTerminalCount = useMemo(
     () => allActiveStages.filter(isHiddenTerminal).length,
     [allActiveStages]
@@ -364,30 +596,31 @@ export default function CRMKanbanPage() {
   }, [sortField, sortDir])
 
   const dealsByStage = useMemo(() => {
-    const q = listSearch.trim().toLowerCase()
+    const q = debouncedSearch.trim().toLowerCase()
     const map = new Map<string, DealRow[]>()
     for (const s of activeStages) map.set(s.id, [])
+    // Фильтруем по принадлежности этапа активной воронке, а не по deal.pipeline_id —
+    // у импортированных сделок pipeline_id может быть пустым/устаревшим, тогда как
+    // server-view v_pipeline_stage_counts тоже джойнит только по stage_id.
     for (const d of deals) {
-      if (d.pipeline_id !== activePipelineId) continue
       if (!d.stage_id) continue
+      if (!map.has(d.stage_id)) continue
       if (!matchesSearch(d, q)) continue
-      const arr = map.get(d.stage_id)
-      if (arr) arr.push(d)
+      map.get(d.stage_id)!.push(d)
     }
     for (const arr of map.values()) arr.sort(compareDeals)
     return map
-  }, [deals, activeStages, activePipelineId, listSearch, matchesSearch, compareDeals])
+  }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
   // Плоский список для табличного вида.
   const tableDeals = useMemo(() => {
-    const q = listSearch.trim().toLowerCase()
+    const q = debouncedSearch.trim().toLowerCase()
     const activeStageIds = new Set(activeStages.map(s => s.id))
     return deals
-      .filter(d => d.pipeline_id === activePipelineId)
       .filter(d => d.stage_id != null && activeStageIds.has(d.stage_id))
       .filter(d => matchesSearch(d, q))
       .sort(compareDeals)
-  }, [deals, activePipelineId, activeStages, listSearch, matchesSearch, compareDeals])
+  }, [deals, activeStages, debouncedSearch, matchesSearch, compareDeals])
 
   // Автообновление — тихо перезагружаем список сделок раз в 30 секунд.
   useEffect(() => {
@@ -434,7 +667,7 @@ export default function CRMKanbanPage() {
 
   async function moveDeal(dealId: string, stageId: string) {
     const { error } = await supabase.from('deals').update({ stage_id: stageId }).eq('id', dealId)
-    if (error) { alert('Не удалось сохранить: ' + error.message); load(); return }
+    if (error) { notify.error('Не удалось сохранить: ' + error.message); load(); return }
     load()
   }
 
@@ -497,7 +730,7 @@ export default function CRMKanbanPage() {
     const { deal, stageId } = lossPending
     // Переводим стадию → триггер сам выставит status='lost'
     const { error: upErr } = await supabase.from('deals').update({ stage_id: stageId }).eq('id', deal.id)
-    if (upErr) { alert('Не удалось перевести: ' + upErr.message); setLossPending(null); load(); return }
+    if (upErr) { notify.error('Не удалось перевести: ' + upErr.message); setLossPending(null); load(); return }
     // Пишем лог причины
     const { error: logErr } = await supabase.from('deal_loss_logs').insert({
       deal_id: deal.id,
@@ -506,14 +739,17 @@ export default function CRMKanbanPage() {
       comment: comment || null,
       created_by: profile?.id ?? null,
     })
-    if (logErr) { alert('Этап переведён, но причина не записана: ' + logErr.message) }
+    if (logErr) { notify.warning('Этап переведён, но причина не записана: ' + logErr.message) }
     setLossPending(null)
     load()
   }
 
   // ── UI ─────────────────────────────────────────────────────────────────────
 
-  if (loading) return <div className="p-6 text-sm text-gray-500">Загрузка…</div>
+  // Полноэкранный лоадер показываем только при первом монтировании.
+  // На последующих перезагрузках (после DnD/импорта/Realtime) оставляем канбан
+  // на месте, чтобы UI не моргал. Точечный спиннер можно дорисовать в шапке.
+  if (loading && pipelines.length === 0) return <div className="p-6 text-sm text-gray-500">Загрузка…</div>
   if (pipelines.length === 0) {
     return (
       <div className="p-6">
@@ -525,13 +761,29 @@ export default function CRMKanbanPage() {
 
   return (
     <div className="min-h-screen">
+      {/* Баннер показываем только при реальной поломке загрузки сделок:
+          HTTP не 200 либо вернулась ошибка. Тихий путь (200 + got>=0)
+          ничем не мешает. */}
+      {dealsDiag && (dealsDiag.status !== 200 || dealsDiag.error) && (
+        <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <div className="font-medium">Не удалось загрузить сделки</div>
+          <div className="text-xs mt-0.5">
+            /api/crm/deals → HTTP {dealsDiag.status}
+            {dealsDiag.error ? ` · ${dealsDiag.error}` : ''}
+          </div>
+        </div>
+      )}
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
           Аналитика
         </Link>
-        <Link href="/settings/pipelines" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
-          Настройка этапов
+        <Link
+          href="/settings/pipelines"
+          className="text-sm px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
+          title="Этапы, причины потери, источники, автоматизации (бот / касания / задачи)"
+        >
+          ⚙ Настроить воронку
         </Link>
 
         {/* Кнопка «…» — меню сортировки, автообновления, импорта/экспорта и т. п. */}
@@ -586,6 +838,11 @@ export default function CRMKanbanPage() {
                   setMoreMenuOpen(false)
                 }}
               />
+              <MoreMenuItem
+                label="Корзина"
+                icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                onClick={() => { router.push('/crm/trash'); setMoreMenuOpen(false) }}
+              />
 
               <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wider text-gray-400 border-t border-gray-100 mt-1">
                 Сортировка
@@ -634,14 +891,59 @@ export default function CRMKanbanPage() {
           )}
         </div>
 
+        {/* Фильтр «Только мои / Все сделки». По умолчанию manager видит
+            только свои; admin/owner — все. Сегментированный toggle, стиль
+            как у других контролов в хедере. */}
+        <div
+          role="group"
+          aria-label="Фильтр сделок по ответственному"
+          className="inline-flex rounded-md border border-gray-200 bg-white p-0.5 text-sm"
+        >
+          <button
+            type="button"
+            onClick={() => setOwnerFilter('mine')}
+            className={`px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'mine'
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+            aria-pressed={ownerFilter === 'mine'}
+            title="Показывать только сделки, где я ответственный"
+          >
+            Только мои
+          </button>
+          <button
+            type="button"
+            onClick={() => setOwnerFilter('all')}
+            className={`px-3 py-1 rounded-[5px] transition-colors ${
+              ownerFilter === 'all'
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+            aria-pressed={ownerFilter === 'all'}
+            title="Показывать все сделки клиники"
+          >
+            Все сделки
+          </button>
+        </div>
+
+        <button
+          onClick={() => setQuickCreateOpen(true)}
+          className="text-sm px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white"
+          title="Быстрая сделка: имя + телефон"
+        >
+          ⚡ Быстро
+        </button>
         <button
           onClick={() => openDeal({
             id: '', clinic_id: clinicId ?? '', name: '', patient_id: null,
             pipeline_id: activePipelineId, stage_id: activeStages[0]?.id ?? null,
             stage: activeStages[0]?.code ?? null, funnel: activePipeline?.code ?? 'leads',
-            status: 'open', responsible_user_id: null, source_id: null, amount: null,
+            status: 'open',
+            responsible_user_id: ownerFilter === 'mine' ? (profile?.id ?? null) : null,
+            source_id: null, amount: null,
             preferred_doctor_id: null, appointment_type: null, loss_reason_id: null,
-            contact_phone: null, contact_city: null, notes: null, tags: [],
+            contact_phone: null, contact_city: null, birth_date: null, notes: null, tags: [],
             custom_fields: {},
             stage_entered_at: new Date().toISOString(),
             created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
@@ -686,8 +988,16 @@ export default function CRMKanbanPage() {
               value={listSearch}
               onChange={e => setListSearch(e.target.value)}
               placeholder="Поиск по сделкам: имя, телефон, тег, город…"
-              className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
+              className="w-full pl-9 pr-24 py-2 text-sm rounded-md border border-gray-200 bg-white hover:border-gray-300 focus:border-blue-400 outline-none"
             />
+            <button
+              type="button"
+              onClick={() => setPhoneSearchOpen(true)}
+              title="Поиск по телефону по всем сделкам клиники (горячая клавиша: /)"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-1 text-[11px] rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
+            >
+              📞 Глобально
+            </button>
           </div>
         </div>
 
@@ -765,42 +1075,54 @@ export default function CRMKanbanPage() {
         </div>
       </div>
 
-      {/* Kanban / сетка — колонки по этапам с drag&drop */}
+      {/* Kanban / сетка — колонки по этапам с drag&drop.
+          Контейнер занимает всю оставшуюся высоту вьюпорта, чтобы
+          горизонтальная полоса прокрутки прижималась к низу экрана и
+          не перекрывала карточки в верхней части рабочей зоны. */}
       {viewMode === 'kanban' && (
-        <div className="flex gap-3 overflow-x-auto pb-4">
-          {activeStages.map(stage => {
-            const cards = dealsByStage.get(stage.id) ?? []
-            const count = counts.find(c => c.stage_id === stage.id)
-            const isOver = overStage === stage.id
-            return (
-              <div
-                key={stage.id}
-                className={`min-w-[280px] w-[280px] bg-gray-50 border rounded-lg transition-colors ${
-                  isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
-                }`}
-                onDragOver={(e) => onDragOver(e, stage.id)}
-                onDragLeave={() => onDragLeave(stage.id)}
-                onDrop={(e) => onDrop(e, stage.id)}
-              >
-                <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
-                  <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
-                  <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
+        <div className="overflow-auto h-[calc(100vh-220px)] pb-2">
+          <div className="flex gap-3 items-start min-w-max">
+            {activeStages.map(stage => {
+              const cards = dealsByStage.get(stage.id) ?? []
+              const count = counts.find(c => c.stage_id === stage.id)
+              const isOver = overStage === stage.id
+              const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
+              return (
+                <div
+                  key={stage.id}
+                  className={`min-w-[280px] w-[280px] flex flex-col bg-gray-50 border rounded-lg transition-colors ${
+                    isOver ? 'border-blue-400 bg-blue-50/60' : 'border-gray-200'
+                  }`}
+                  onDragOver={(e) => onDragOver(e, stage.id)}
+                  onDragLeave={() => onDragLeave(stage.id)}
+                  onDrop={(e) => onDrop(e, stage.id)}
+                >
+                  <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
+                    <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
+                    <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
+                    {stageUnread > 0 && (
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold leading-none">
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                        {stageUnread}
+                      </span>
+                    )}
+                    <span className="text-xs text-gray-500">{count?.open_count ?? cards.length}</span>
+                  </div>
+                  <div className="p-2 space-y-2 min-h-[40px]">
+                    {cards.map(d => (
+                      <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+                    ))}
+                    {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
+                  </div>
                 </div>
-                <div className="p-2 space-y-2 min-h-[40px] max-h-[calc(100vh-240px)] overflow-y-auto">
-                  {cards.map(d => (
-                    <DealCard key={d.id} deal={d} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
-                  ))}
-                  {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
-                </div>
+              )
+            })}
+            {activeStages.length === 0 && (
+              <div className="text-sm text-gray-500 p-6">
+                В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
               </div>
-            )
-          })}
-          {activeStages.length === 0 && (
-            <div className="text-sm text-gray-500 p-6">
-              В воронке нет активных этапов. <Link href="/settings/pipelines" className="text-blue-600 hover:underline">Настроить →</Link>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
 
@@ -895,7 +1217,7 @@ export default function CRMKanbanPage() {
                 {tableDeals.length === 0 && (
                   <tr>
                     <td colSpan={bulkMode ? 8 : 7} className="px-3 py-8 text-center text-sm text-gray-400">
-                      {listSearch ? 'Ничего не найдено' : 'Нет сделок в этой воронке'}
+                      {debouncedSearch ? 'Ничего не найдено' : 'Нет сделок в этой воронке'}
                     </td>
                   </tr>
                 )}
@@ -905,34 +1227,160 @@ export default function CRMKanbanPage() {
         </div>
       )}
 
-      {/* Плавающая панель действий для массового режима */}
-      {bulkMode && bulkSelected.size > 0 && (
+      {/* Плавающая панель действий для массового режима.
+          Показываем её ВСЕГДА пока режим включён — так видно, что
+          массовый режим активен даже без выбранных сделок; кнопки
+          внутри сами дизейблятся при count=0. */}
+      {bulkMode && (
         <BulkActionBar
           count={bulkSelected.size}
           stages={activeStages}
+          allStages={stages}
+          pipelines={pipelines}
           users={users}
           onCancel={() => { setBulkMode(false); setBulkSelected(new Set()) }}
           onMoveStage={async (stageId) => {
             const ids = Array.from(bulkSelected)
-            const { error } = await supabase.from('deals').update({ stage_id: stageId }).in('id', ids)
-            if (error) { alert(error.message); return }
+            // Этап мог быть из другой воронки — обязательно проставляем
+            // консистентный pipeline_id, иначе сделки выпадут из канбана
+            // (фильтрация в kanban идёт по паре pipeline_id+stage_id).
+            const target = stages.find(s => s.id === stageId)
+            const patch: Record<string, unknown> = { stage_id: stageId }
+            if (target?.pipeline_id) patch.pipeline_id = target.pipeline_id
+            if (target?.code) patch.stage = target.code
+            const err = await bulkUpdateDeals(ids, patch)
+            if (err) { notify.error(err); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onMovePipeline={async (pipelineId) => {
+            // Перенос пачки в первый этап выбранной воронки.
+            const targetStage = stages
+              .filter(s => s.pipeline_id === pipelineId && s.is_active)
+              .sort((a, b) => a.sort_order - b.sort_order)[0]
+            if (!targetStage) { notify.error('В воронке нет активных этапов'); return }
+            const ids = Array.from(bulkSelected)
+            const err = await bulkUpdateDeals(ids, {
+              pipeline_id: pipelineId,
+              stage_id: targetStage.id,
+              stage: targetStage.code,
+            })
+            if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
           }}
           onAssign={async (userId) => {
             const ids = Array.from(bulkSelected)
-            const { error } = await supabase.from('deals').update({ responsible_user_id: userId }).in('id', ids)
-            if (error) { alert(error.message); return }
+            const err = await bulkUpdateDeals(ids, { responsible_user_id: userId })
+            if (err) { notify.error(err); return }
             setBulkSelected(new Set())
             load()
           }}
-          onDelete={async () => {
+          onDelete={() => {
+            // Не удаляем сразу. Открываем модалку с typed-confirm —
+            // см. BulkDeleteConfirmModal ниже.
+            if (bulkSelected.size === 0) return
+            setBulkDeletePending(true)
+          }}
+          onAddTask={async ({ title, dueAt, assignedTo }) => {
+            // Одна задача на каждую выбранную сделку. patient_id копируем
+            // из сделки, чтобы задача показывалась и в карточке пациента.
             const ids = Array.from(bulkSelected)
-            if (!confirm(`Удалить ${ids.length} сделок? Они пропадут из канбана, но останутся в истории (soft delete).`)) return
-            const { error } = await supabase.from('deals')
-              .update({ deleted_at: new Date().toISOString() })
-              .in('id', ids)
-            if (error) { alert(error.message); return }
+            const selectedDeals = deals.filter(d => ids.includes(d.id))
+            const payload = selectedDeals.map(d => ({
+              clinic_id: clinicId,
+              title,
+              due_at: dueAt,
+              assigned_to: assignedTo ?? d.responsible_user_id ?? profile?.id ?? null,
+              created_by: profile?.id ?? null,
+              deal_id: d.id,
+              patient_id: d.patient_id ?? null,
+              type: 'follow_up',
+              priority: 'normal',
+              status: 'new',
+            }))
+            const { error } = await supabase.from('tasks').insert(payload)
+            if (error) { notify.error(error.message); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onEditTags={async ({ addList, removeList, replaceList }) => {
+            const ids = Array.from(bulkSelected)
+            const selectedDeals = deals.filter(d => ids.includes(d.id))
+            // Обновляем каждую сделку отдельно — у каждой свой текущий
+            // набор tags, простого UPDATE массовым SQL не сделать.
+            for (const d of selectedDeals) {
+              let next: string[]
+              if (replaceList) {
+                next = replaceList
+              } else {
+                const cur = new Set(d.tags ?? [])
+                for (const t of addList ?? []) cur.add(t)
+                for (const t of removeList ?? []) cur.delete(t)
+                next = Array.from(cur)
+              }
+              const { error } = await supabase.from('deals').update({ tags: next }).eq('id', d.id)
+              if (error) { notify.error(error.message); return }
+            }
+            setBulkSelected(new Set())
+            load()
+          }}
+          onEditField={async ({ field, value }) => {
+            const ids = Array.from(bulkSelected)
+            const patch: Record<string, unknown> = {}
+            if (field === 'amount') {
+              const num = value === '' || value == null ? null : Number(value)
+              if (value !== '' && value != null && Number.isNaN(num)) { notify.error('Сумма должна быть числом'); return }
+              patch.amount = num
+            } else if (field === 'source_id') {
+              patch.source_id = value || null
+            } else if (field === 'city') {
+              patch.contact_city = value || null
+            } else {
+              notify.error('Неизвестное поле'); return
+            }
+            const err = await bulkUpdateDeals(ids, patch)
+            if (err) { notify.error(err); return }
+            setBulkSelected(new Set())
+            load()
+          }}
+          sources={sources}
+        />
+      )}
+
+      {/* Глобальный поиск по телефону — по всем сделкам клиники. */}
+      {phoneSearchOpen && (
+        <PhoneSearchModal
+          clinicId={clinicId ?? ''}
+          onCancel={() => setPhoneSearchOpen(false)}
+          onPick={(d) => { setPhoneSearchOpen(false); openDeal(d) }}
+        />
+      )}
+
+      {/* Быстрое создание сделки — мини-модалка имя+телефон. */}
+      {quickCreateOpen && (
+        <QuickCreateDealModal
+          clinicId={clinicId ?? ''}
+          pipelineId={activePipelineId}
+          stageId={activeStages[0]?.id ?? null}
+          stageCode={activeStages[0]?.code ?? null}
+          funnelCode={activePipeline?.code ?? 'leads'}
+          responsibleId={profile?.id ?? null}
+          onCancel={() => setQuickCreateOpen(false)}
+          onCreated={() => { setQuickCreateOpen(false); load() }}
+        />
+      )}
+
+      {/* Подтверждение массового удаления (typed-confirm). */}
+      {bulkDeletePending && (
+        <BulkDeleteConfirmModal
+          count={bulkSelected.size}
+          onCancel={() => setBulkDeletePending(false)}
+          onConfirm={async () => {
+            const ids = Array.from(bulkSelected)
+            const err = await bulkUpdateDeals(ids, { deleted_at: new Date().toISOString() })
+            if (err) { notify.error(err); return }
+            setBulkDeletePending(false)
             setBulkSelected(new Set())
             load()
           }}
@@ -981,6 +1429,7 @@ export default function CRMKanbanPage() {
           clinicId={clinicId}
           pipelineId={activePipelineId}
           defaultStageId={activeStages[0]?.id ?? null}
+          stages={activeStages}
           onClose={() => setShowImportModal(false)}
           onDone={() => { setShowImportModal(false); load() }}
         />
@@ -1028,8 +1477,9 @@ function MoreMenuItem({ label, icon, onClick }: { label: string; icon: React.Rea
 
 // ─── DealCard ─────────────────────────────────────────────────────────────────
 
-function DealCard({ deal, onDragStart, onClick }: {
+function DealCard({ deal, unread = 0, onDragStart, onClick }: {
   deal: DealRow
+  unread?: number
   onDragStart: (e: React.DragEvent) => void
   onClick: () => void
 }) {
@@ -1039,9 +1489,35 @@ function DealCard({ deal, onDragStart, onClick }: {
       draggable
       onDragStart={onDragStart}
       onClick={onClick}
-      className="bg-white border border-gray-200 rounded-md p-2 cursor-grab active:cursor-grabbing hover:shadow-sm"
+      className={`bg-white border rounded-md p-2 cursor-grab active:cursor-grabbing hover:shadow-sm ${unread > 0 ? 'border-green-300 ring-1 ring-green-100' : 'border-gray-200'}`}
     >
-      <div className="text-sm font-medium text-gray-900 truncate">{title}</div>
+      <div className="flex items-start gap-2">
+        <div className="text-sm font-medium text-gray-900 truncate flex-1">{title}</div>
+        {/* Бейдж бота: зелёный — активен, серый — фоллоуап уже отправлен */}
+        {deal.bot_active && (
+          <span
+            title="Приветственный бот сейчас работает по этой сделке"
+            className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-semibold leading-none"
+          >🤖</span>
+        )}
+        {!deal.bot_active && deal.bot_state === 'followup_sent' && (
+          <span
+            title="Бот отправил фоллоуап — клиент не ответил за час"
+            className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 text-[10px] font-semibold leading-none"
+          >🤖</span>
+        )}
+        {unread > 0 && (
+          <span
+            title={`${unread} непрочитанных сообщений`}
+            className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-semibold leading-none"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            {unread > 99 ? '99+' : unread}
+          </span>
+        )}
+      </div>
       {deal.patient?.phones?.[0] && (
         <div className="text-xs text-gray-500 truncate">{deal.patient.phones[0]}</div>
       )}
@@ -1071,10 +1547,14 @@ function LossReasonModal({
 }) {
   const [rid, setRid] = useState<string>(reasons[0]?.id ?? '')
   const [comment, setComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   function submit() {
+    if (submitting) return
     const r = reasons.find(x => x.id === rid)
-    if (!r) { alert('Выберите причину'); return }
+    if (!r) { notify.error('Выберите причину'); return }
+    setSubmitting(true)
+    // onConfirm закроет модалку — флаг сбрасывать не нужно.
     onConfirm(r.id, r.name, comment)
   }
 
@@ -1105,9 +1585,9 @@ function LossReasonModal({
           <button onClick={onCancel} className="px-3 py-1.5 text-sm border border-gray-300 rounded-md">
             Отмена
           </button>
-          <button onClick={submit} disabled={!rid}
+          <button onClick={submit} disabled={!rid || submitting}
             className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 disabled:bg-gray-300 text-white rounded-md">
-            Подтвердить
+            {submitting ? 'Сохранение…' : 'Подтвердить'}
           </button>
         </div>
       </div>
@@ -1167,6 +1647,8 @@ interface MessageRow {
   created_at: string
   status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed' | null
   error_text?: string | null
+  /** 'bot' — отправил приветственный/фоллоуап-бот; null — менеджер/клиент. */
+  sender_type?: 'bot' | null
   author?: { first_name: string; last_name: string | null } | null
 }
 
@@ -1204,6 +1686,7 @@ const EVENT_LABEL: Record<string, string> = {
   deal_lost:          'Сделка потеряна',
   message_in:         'Входящее',
   message_out:        'Исходящее',
+  call_logged:        'Звонок',
 }
 
 // ── Шаблон сообщения «Получить предоплату» ───────────────────────────────
@@ -1233,6 +1716,7 @@ const EVENT_COLOR: Record<string, string> = {
   deal_lost:          '#dc2626',
   message_in:         '#0ea5e9',
   message_out:        '#22c55e',
+  call_logged:        '#f59e0b',
 }
 
 function DealModal({
@@ -1313,7 +1797,7 @@ function DealModal({
   const DIRTY_KEYS: (keyof DealRow)[] = [
     'name','patient_id','pipeline_id','stage_id','responsible_user_id',
     'source_id','amount','preferred_doctor_id','appointment_type',
-    'loss_reason_id','contact_phone','contact_city','notes','tags','custom_fields',
+    'loss_reason_id','contact_phone','contact_city','birth_date','notes','tags','custom_fields',
   ]
   const isDirty = isNew || DIRTY_KEYS.some(k => {
     const a = form[k], b = deal[k]
@@ -1339,14 +1823,31 @@ function DealModal({
   const [search, setSearch] = useState('')
   const [msgDraft, setMsgDraft] = useState('')
   const msgChannel: MessageRow['channel'] = 'whatsapp'
-  const [composerMode, setComposerMode] = useState<'chat'|'note'|'task'>('chat')
+  const [composerMode, setComposerMode] = useState<'chat'|'note'|'task'|'call'>('chat')
   const [composerTaskDue, setComposerTaskDue] = useState('')
   const [composerTaskAssignee, setComposerTaskAssignee] = useState('')
+  // Параметры режима «Звонок»: входящий/исходящий + длительность (мм:сс).
+  const [callDirection, setCallDirection] = useState<'inbound' | 'outbound'>('outbound')
+  const [callDurationMin, setCallDurationMin] = useState<string>('')
   // «Записать на приём» — модалка из /schedule, переиспользованная.
   const [showBookingModal, setShowBookingModal] = useState(false)
   // «Получить предоплату» — отправка шаблона с Kaspi-ссылкой в WhatsApp.
   const [sendingPrepay, setSendingPrepay] = useState(false)
   const [sending, setSending] = useState(false)
+  // Голосовое сообщение: MediaRecorder + UI-таймер.
+  // Хранится в ref, чтобы не пересоздавать рекордер на каждый ререндер.
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const recordStartRef = useRef<number>(0)
+  const [recording, setRecording] = useState(false)
+  const [recordSecs, setRecordSecs] = useState(0)
+  const [sendingVoice, setSendingVoice] = useState(false)
+  // Превью записанного голосового перед отправкой: можно прослушать,
+  // потом нажать «Отправить» или «✕». blob храним отдельно, url — для <audio>.
+  const [pendingVoice, setPendingVoice] = useState<{ blob: Blob; url: string; duration_s: number } | null>(null)
+  // Защита кнопок «добавить» от двойного клика → дубликаты в БД.
+  const [addingComment, setAddingComment] = useState(false)
+  const [addingTask, setAddingTask] = useState(false)
   // Статус WhatsApp-интеграции (Green API). null = ещё не проверяли.
   const [waConnected, setWaConnected] = useState<boolean | null>(null)
   // amoCRM-стиль: меню «…» в шапке карточки (удаление и т.п.).
@@ -1581,6 +2082,7 @@ function DealModal({
       .select('id,title,body,is_favorite,sort_order')
       .eq('clinic_id', profile.clinic_id)
       .eq('is_active', true)
+      .eq('kind', 'quick_reply')
       .order('sort_order')
       .then(({ data }) => {
         if (!alive) return
@@ -1629,10 +2131,10 @@ function DealModal({
   const isLostStage = currentStage?.stage_role === 'lost'
 
   async function save() {
-    if (!form.pipeline_id || !form.stage_id) { alert('Выберите воронку и этап'); return }
+    if (!form.pipeline_id || !form.stage_id) { notify.error('Выберите воронку и этап'); return }
     // If stage is 'lost' and no reason — prompt
     if (isLostStage && !form.loss_reason_id) {
-      alert('Укажите причину отказа — этап помечен как «потеря».')
+      notify.error('Укажите причину отказа — этап помечен как «потеря».')
       return
     }
 
@@ -1643,18 +2145,18 @@ function DealModal({
       fieldConfigs, formAsRecord, customFieldsObj, form.stage_id,
     )
     if (blocking.length > 0) {
-      alert(
+      notify.error(
         'Нельзя сохранить: не заполнены обязательные поля с блокировкой — '
         + blocking.map(c => fieldDisplayLabel(c)).join(', ')
       )
       return
     }
     if (missing.length > 0) {
-      const ok = confirm(
-        'Не заполнены обязательные поля: '
-        + missing.map(c => fieldDisplayLabel(c)).join(', ')
-        + '\n\nСохранить всё равно?'
-      )
+      const ok = await confirmAction({
+        title: 'Не заполнены обязательные поля',
+        message: missing.map(c => fieldDisplayLabel(c)).join(', ') + '\n\nСохранить всё равно?',
+        confirmText: 'Сохранить',
+      })
       if (!ok) return
     }
 
@@ -1675,6 +2177,7 @@ function DealModal({
       loss_reason_id: form.loss_reason_id,
       contact_phone: form.contact_phone?.trim() || null,
       contact_city: form.contact_city?.trim() || null,
+      birth_date: form.birth_date || null,
       notes: form.notes?.trim() || null,
       tags: form.tags ?? [],
       custom_fields: form.custom_fields ?? {},
@@ -1683,30 +2186,40 @@ function DealModal({
       ? await supabase.from('deals').insert(payload)
       : await supabase.from('deals').update(payload).eq('id', form.id)
     setSaving(false)
-    if (error) { alert('Ошибка: ' + error.message); return }
+    if (error) { notify.error('Ошибка: ' + error.message); return }
     onSaved(isNew)
   }
 
   async function removeDeal() {
     if (isNew) return
-    if (!confirm('Удалить сделку? Она будет помечена удалённой (deleted_at).')) return
+    if (!(await confirmAction({
+      title: 'Удалить сделку?',
+      message: 'Она будет помечена удалённой (deleted_at) и попадёт в корзину.',
+      confirmText: 'Удалить',
+      danger: true,
+    }))) return
     const { error } = await supabase.from('deals').update({ deleted_at: new Date().toISOString() }).eq('id', form.id)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
     onSaved(true) // удаление — закрываем модалку
   }
 
   async function addComment() {
     const body = commentDraft.trim()
-    if (!body || isNew) return
-    const { error } = await supabase.from('deal_comments').insert({
-      deal_id: form.id,
-      clinic_id: form.clinic_id,
-      body,
-      author_id: profile?.id ?? null,
-    })
-    if (error) { alert(error.message); return }
-    setCommentDraft('')
-    loadRelated()
+    if (!body || isNew || addingComment) return
+    setAddingComment(true)
+    try {
+      const { error } = await supabase.from('deal_comments').insert({
+        deal_id: form.id,
+        clinic_id: form.clinic_id,
+        body,
+        author_id: profile?.id ?? null,
+      })
+      if (error) { notify.error(error.message); return }
+      setCommentDraft('')
+      loadRelated()
+    } finally {
+      setAddingComment(false)
+    }
   }
 
   async function sendMessage() {
@@ -1723,7 +2236,7 @@ function DealModal({
         body: JSON.stringify({ body, channel: msgChannel }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); setMsgDraft(body); return }
+      if (!res.ok) { notify.error(json.error ?? 'Не удалось отправить'); setMsgDraft(body); return }
       // Дедуп по id: если Realtime позже принесёт ту же строку, выкинет её.
       const m = json.message as MessageRow | undefined
       if (m) {
@@ -1734,9 +2247,114 @@ function DealModal({
     }
   }
 
+  // ─── Voice recording ────────────────────────────────────────────────
+  // Алгоритм: getUserMedia → MediaRecorder (opus) → onstop собирает Blob →
+  // POST FormData в /api/deals/:id/voice. Таймер тикает каждую секунду из
+  // setInterval, чтобы UI не зависел от MediaRecorder.requestData().
+  async function startRecording() {
+    if (recording || sendingVoice || isNew) return
+    // Проверяем поддержку — Safari < 14.1 не умеет MediaRecorder, в iOS < 17 нет ogg.
+    if (typeof window === 'undefined' || !navigator.mediaDevices || !window.MediaRecorder) {
+      notify.error('Браузер не поддерживает запись звука')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Предпочитаем audio/ogg;codecs=opus (нативный WhatsApp PTT).
+      // Fallback — webm/opus (Chrome старее), внутри тот же opus, файл переименуется в .ogg на сервере.
+      const mime = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : ''
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
+      audioChunksRef.current = []
+      rec.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        // Останавливаем дорожки микрофона — иначе у юзера светится индикатор «идёт запись» в браузере.
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || 'audio/ogg' })
+        const duration_s = Math.round((Date.now() - recordStartRef.current) / 1000)
+        if (blob.size < 1024 || duration_s < 1) {
+          // Слишком короткая запись — скорее всего случайный клик.
+          notify.error('Слишком короткая запись')
+          return
+        }
+        // Не отправляем сразу — даём прослушать в превью.
+        const url = URL.createObjectURL(blob)
+        setPendingVoice({ blob, url, duration_s })
+      }
+      mediaRecorderRef.current = rec
+      recordStartRef.current = Date.now()
+      setRecordSecs(0)
+      rec.start()
+      setRecording(true)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'mic error'
+      notify.error(`Не удалось включить микрофон: ${msg}`)
+    }
+  }
+
+  function stopRecording(send: boolean) {
+    const rec = mediaRecorderRef.current
+    if (!rec) { setRecording(false); return }
+    if (!send) {
+      // Отмена: подменяем onstop на чистильщик.
+      rec.onstop = () => {
+        rec.stream.getTracks().forEach(t => t.stop())
+        audioChunksRef.current = []
+      }
+    }
+    if (rec.state !== 'inactive') rec.stop()
+    setRecording(false)
+    mediaRecorderRef.current = null
+  }
+
+  function discardPendingVoice() {
+    if (pendingVoice) URL.revokeObjectURL(pendingVoice.url)
+    setPendingVoice(null)
+  }
+
+  async function sendPendingVoice() {
+    if (!pendingVoice) return
+    const { blob, url, duration_s } = pendingVoice
+    setPendingVoice(null)
+    URL.revokeObjectURL(url)
+    await uploadVoice(blob, duration_s)
+  }
+
+  async function uploadVoice(blob: Blob, duration_s: number) {
+    if (isNew) return
+    setSendingVoice(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', blob, 'voice.ogg')
+      fd.append('duration_s', String(duration_s))
+      const res = await fetch(`/api/deals/${form.id}/voice`, { method: 'POST', body: fd })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { notify.error(json.error ?? 'Не удалось отправить'); return }
+      const m = json.message as MessageRow | undefined
+      if (m) setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
+    } finally {
+      setSendingVoice(false)
+    }
+  }
+
+  // Таймер UI: каждую секунду пока идёт запись.
+  useEffect(() => {
+    if (!recording) return
+    const t = setInterval(() => {
+      setRecordSecs(Math.round((Date.now() - recordStartRef.current) / 1000))
+    }, 250)
+    return () => clearInterval(t)
+  }, [recording])
+
   async function sendPrepayRequest() {
     if (isNew || sendingPrepay) return
-    const ok = confirm('Отправить клиенту ссылку на предоплату в WhatsApp?')
+    const ok = await confirmAction({
+      message: 'Отправить клиенту ссылку на предоплату в WhatsApp?',
+      confirmText: 'Отправить',
+    })
     if (!ok) return
     setSendingPrepay(true)
     try {
@@ -1746,7 +2364,7 @@ function DealModal({
         body: JSON.stringify({ body: PREPAY_REQUEST_MESSAGE, channel: 'whatsapp' }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) { alert(json.error ?? 'Не удалось отправить'); return }
+      if (!res.ok) { notify.error(json.error ?? 'Не удалось отправить'); return }
       const m = json.message as MessageRow | undefined
       if (m) {
         setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
@@ -1775,24 +2393,62 @@ function DealModal({
           body: JSON.stringify({ body, channel: 'internal' }),
         })
         const json = await res.json().catch(() => ({}))
-        if (!res.ok) { alert(json.error ?? 'Не удалось сохранить примечание'); setMsgDraft(body); return }
+        if (!res.ok) { notify.error(json.error ?? 'Не удалось сохранить примечание'); setMsgDraft(body); return }
         const m = json.message as MessageRow | undefined
         if (m) {
           setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
         }
         return
       }
+      if (composerMode === 'call') {
+        // Звонок: запись в crm_interactions + событие в timeline.
+        const summary = body
+        setMsgDraft('')
+        const durMin = callDurationMin.trim() ? Number(callDurationMin) : null
+        const duration_s = durMin != null && !Number.isNaN(durMin) && durMin >= 0
+          ? Math.round(durMin * 60)
+          : null
+        const { error: iErr } = await supabase.from('crm_interactions').insert({
+          clinic_id: form.clinic_id,
+          deal_id: form.id,
+          patient_id: form.patient_id,
+          type: 'call',
+          direction: callDirection,
+          summary,
+          duration_s,
+          created_by: profile?.id ?? null,
+        })
+        if (iErr) { notify.error(iErr.message); setMsgDraft(body); return }
+        // Событие в timeline. payload содержит то, что покажет таб «Хронология».
+        await supabase.from('deal_events').insert({
+          deal_id: form.id,
+          clinic_id: form.clinic_id,
+          kind: 'call_logged',
+          actor_id: profile?.id ?? null,
+          ref_table: 'crm_interactions',
+          payload: { direction: callDirection, summary, duration_s },
+        })
+        setCallDurationMin('')
+        loadRelated()
+        return
+      }
       if (composerMode === 'task') {
         setMsgDraft('')
-        const { error } = await supabase.from('deal_tasks').insert({
+        const assignee = composerTaskAssignee || profile?.id || null
+        const { data: inserted, error } = await supabase.from('deal_tasks').insert({
           deal_id: form.id,
           clinic_id: form.clinic_id,
           title: body,
           due_at: composerTaskDue ? new Date(composerTaskDue).toISOString() : null,
-          assignee_id: composerTaskAssignee || profile?.id || null,
+          assignee_id: assignee,
           created_by: profile?.id ?? null,
-        })
-        if (error) { alert(error.message); setMsgDraft(body); return }
+        }).select('id, title, assignee_id, status').single()
+        if (error) { notify.error(error.message); setMsgDraft(body); return }
+        // Same-tab fallback: если Realtime-публикация не подцепилась, всё
+        // равно звеним в текущем браузере. TaskNotifier слушает это событие.
+        if (typeof window !== 'undefined' && inserted) {
+          window.dispatchEvent(new CustomEvent('task:assigned', { detail: inserted }))
+        }
         setComposerTaskDue(''); setComposerTaskAssignee('')
         loadRelated()
         return
@@ -1804,18 +2460,27 @@ function DealModal({
 
   async function addTask() {
     const title = newTaskTitle.trim()
-    if (!title || isNew) return
-    const { error } = await supabase.from('deal_tasks').insert({
-      deal_id: form.id,
-      clinic_id: form.clinic_id,
-      title,
-      due_at: newTaskDue ? new Date(newTaskDue).toISOString() : null,
-      assignee_id: newTaskAssignee || null,
-      created_by: profile?.id ?? null,
-    })
-    if (error) { alert(error.message); return }
-    setNewTaskTitle(''); setNewTaskDue(''); setNewTaskAssignee('')
-    loadRelated()
+    if (!title || isNew || addingTask) return
+    setAddingTask(true)
+    try {
+      const { data: inserted, error } = await supabase.from('deal_tasks').insert({
+        deal_id: form.id,
+        clinic_id: form.clinic_id,
+        title,
+        due_at: newTaskDue ? new Date(newTaskDue).toISOString() : null,
+        assignee_id: newTaskAssignee || null,
+        created_by: profile?.id ?? null,
+      }).select('id, title, assignee_id, status').single()
+      if (error) { notify.error(error.message); return }
+      if (typeof window !== 'undefined' && inserted) {
+        // Same-tab fallback — независимо от того, подцепилась ли Realtime-публикация.
+        window.dispatchEvent(new CustomEvent('task:assigned', { detail: inserted }))
+      }
+      setNewTaskTitle(''); setNewTaskDue(''); setNewTaskAssignee('')
+      loadRelated()
+    } finally {
+      setAddingTask(false)
+    }
   }
 
   async function toggleTask(t: TaskRow) {
@@ -1825,14 +2490,18 @@ function DealModal({
       completed_at: next === 'done' ? new Date().toISOString() : null,
       completed_by: next === 'done' ? profile?.id ?? null : null,
     }).eq('id', t.id)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
     loadRelated()
   }
 
   async function deleteTask(t: TaskRow) {
-    if (!confirm(`Удалить задачу «${t.title}»?`)) return
+    if (!(await confirmAction({
+      message: `Удалить задачу «${t.title}»?`,
+      confirmText: 'Удалить',
+      danger: true,
+    }))) return
     const { error } = await supabase.from('deal_tasks').delete().eq('id', t.id)
-    if (error) { alert(error.message); return }
+    if (error) { notify.error(error.message); return }
     loadRelated()
   }
 
@@ -1846,7 +2515,7 @@ function DealModal({
     const { blocking } = validateRequiredFields(fieldConfigs, formAsRecord, customFields, stageId)
     if (blocking.length > 0) {
       const names = blocking.map(c => fieldDisplayLabel(c)).join(', ')
-      alert(
+      notify.error(
         `Нельзя перейти в этап «${target.name}»: не заполнены обязательные поля — ${names}.`
       )
       return
@@ -1891,6 +2560,14 @@ function DealModal({
         const preview = String(p.preview ?? '')
         return `${ch ? `[${ch}] ` : ''}${preview}`
       }
+      case 'call_logged': {
+        const dir = String(p.direction ?? '') === 'inbound' ? '📥 входящий' : '📤 исходящий'
+        const dur = p.duration_s != null
+          ? ` · ${Math.round(Number(p.duration_s) / 60)} мин`
+          : ''
+        const summary = String(p.summary ?? '')
+        return `${dir}${dur}${summary ? ` · ${summary}` : ''}`
+      }
       default:
         return ''
     }
@@ -1901,7 +2578,7 @@ function DealModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch" onClick={onClose}>
       <div
-        className="bg-gray-50 shadow-2xl w-full max-w-6xl ml-auto flex flex-col h-full overflow-hidden relative"
+        className="bg-gray-50 shadow-2xl w-full max-w-[1600px] ml-auto flex flex-col h-full overflow-hidden relative"
         onClick={e => e.stopPropagation()}
       >
         {/* Боковая панель непрочитанных — выезжает слева */}
@@ -1993,7 +2670,11 @@ function DealModal({
                   <button
                     disabled={unreadSelected.size === 0}
                     onClick={async () => {
-                      if (!confirm(`Удалить ${unreadSelected.size} сообщений?`)) return
+                      if (!(await confirmAction({
+                        message: `Удалить ${unreadSelected.size} сообщений?`,
+                        confirmText: 'Удалить',
+                        danger: true,
+                      }))) return
                       await supabase.from('deal_messages')
                         .delete()
                         .in('id', Array.from(unreadSelected))
@@ -2398,6 +3079,19 @@ function DealModal({
                       </Field>
                     ) : null
                   ),
+                  birth_date: () => (
+                    <Field label={fieldDisplayLabel(fieldConfigs.find(c => c.field_key === 'birth_date')!) || 'День рождения'} required={reqFor('birth_date')}>
+                      <input
+                        type="date"
+                        value={form.birth_date ?? ''}
+                        onChange={e => setForm({ ...form, birth_date: e.target.value || null })}
+                        className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+                      />
+                      {form.patient?.birth_date && form.birth_date == null && (
+                        <p className="text-[11px] text-gray-400 mt-1">У пациента: {form.patient.birth_date}</p>
+                      )}
+                    </Field>
+                  ),
                 }
 
                 function renderCustom(cfg: DealFieldConfig) {
@@ -2596,6 +3290,78 @@ function DealModal({
 
                   {activeTab === 'chat' && (
                     <div className="flex flex-col flex-1 min-h-0">
+                      {/* Sticky банер с активными задачами сделки — висит сверху
+                          чата, пока задача не будет закрыта (amoCRM-стиль).
+                          Клик по зелёному кружку-чеку отмечает задачу выполненной. */}
+                      {tasks.filter(t => t.status === 'open').length > 0 && (
+                        <div className="flex-shrink-0 border-b border-gray-100 bg-white">
+                          {tasks
+                            .filter(t => t.status === 'open')
+                            .sort((a, b) => {
+                              // nulls last, раньше — выше
+                              if (!a.due_at && !b.due_at) return 0
+                              if (!a.due_at) return 1
+                              if (!b.due_at) return -1
+                              return a.due_at.localeCompare(b.due_at)
+                            })
+                            .map(t => {
+                              // «Сегодня 11:30-12:00 для <пациента> · <title>»
+                              const fmtWhen = (iso: string | null): string => {
+                                if (!iso) return 'Без срока'
+                                const d = new Date(iso)
+                                const now = new Date()
+                                const startOfDay = (x: Date) => {
+                                  const c = new Date(x); c.setHours(0,0,0,0); return c
+                                }
+                                const dayDiff = Math.round(
+                                  (startOfDay(d).getTime() - startOfDay(now).getTime()) / 86_400_000
+                                )
+                                const hhmm = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+                                const end = new Date(d.getTime() + 30 * 60_000)
+                                const hhmm2 = end.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+                                const slot = `${hhmm}-${hhmm2}`
+                                if (dayDiff === 0)      return `Сегодня ${slot}`
+                                if (dayDiff === 1)      return `Завтра ${slot}`
+                                if (dayDiff === -1)     return `Вчера ${slot}`
+                                if (dayDiff < 0)        return `Просрочено · ${d.toLocaleDateString('ru-RU', { day:'2-digit', month:'2-digit' })} ${hhmm}`
+                                return `${d.toLocaleDateString('ru-RU', { day:'2-digit', month:'short' })} ${slot}`
+                              }
+                              const patientFirst = deal.patient?.full_name?.split(/\s+/)[1]
+                                ?? deal.patient?.full_name?.split(/\s+/)[0]
+                                ?? null
+                              const isOverdue = t.due_at && new Date(t.due_at) < new Date()
+                              return (
+                                <div key={t.id}
+                                  className={`flex items-center gap-3 px-4 py-2.5 border-l-4 ${
+                                    isOverdue ? 'border-red-400 bg-red-50/40' : 'border-pink-400 bg-pink-50/30'
+                                  }`}>
+                                  {/* Clock icon */}
+                                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                                    className={isOverdue ? 'text-red-500 shrink-0' : 'text-pink-500 shrink-0'}>
+                                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8"/>
+                                    <path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                                  </svg>
+                                  <div className="flex-1 text-sm text-gray-800">
+                                    <span>{fmtWhen(t.due_at)}</span>
+                                    {patientFirst && <span> для {patientFirst}</span>}
+                                  </div>
+                                  {/* Complete button — «зелёный кружок с галочкой» как в амо */}
+                                  <button onClick={() => toggleTask(t)}
+                                    title="Выполнить задачу"
+                                    className="shrink-0 w-6 h-6 rounded-full border-2 border-green-500 text-green-600 hover:bg-green-500 hover:text-white transition-colors flex items-center justify-center">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                      <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                  </button>
+                                  <span className="text-sm font-semibold text-gray-900 truncate max-w-[40%]">
+                                    {t.title}
+                                  </span>
+                                </div>
+                              )
+                            })}
+                        </div>
+                      )}
+
                       {/* Messages list */}
                       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
                         {(() => {
@@ -2657,24 +3423,59 @@ function DealModal({
                                 </div>
                               )
                             }
-                            // Обычное сообщение — входящее (серое) / исходящее (синее)
+                            // Обычное сообщение — входящее (серое) / исходящее (синее).
+                            // Сообщения от приветственного бота (sender_type='bot') —
+                            // отдельный фиолетовый стиль + иконка 🤖, чтобы менеджер
+                            // сразу видел, где ответил автомат, а где он сам.
+                            const isBot = m.sender_type === 'bot'
                             return (
                               <div key={`msg-${m.id}`} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
-                                  m.direction === 'out'
+                                  isBot
+                                    ? 'bg-violet-50 border border-violet-200 text-gray-700 font-light'
+                                    : m.direction === 'out'
                                     ? 'bg-blue-600 text-white'
                                     : 'bg-slate-100 text-gray-900'
                                 }`}>
-                                  <div className={`flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
-                                    <span>{CHANNEL_LABEL[m.channel]}</span>
-                                    {m.author && (
+                                  <div className={`flex items-center gap-1.5 mb-0.5 text-[10px] uppercase tracking-wider ${
+                                    isBot ? 'text-violet-600' :
+                                    m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'
+                                  }`}>
+                                    {isBot && <span aria-label="Сообщение от бота">🤖</span>}
+                                    {/* Для входящих показываем имя контакта из карточки (form.name).
+                                        Если имени нет (только что созданная сделка) — fallback на external_sender/телефон. */}
+                                    <span>
+                                      {isBot
+                                        ? 'Бот'
+                                        : m.direction === 'in'
+                                          ? (form.name?.trim() || m.external_sender || CHANNEL_LABEL[m.channel])
+                                          : CHANNEL_LABEL[m.channel]}
+                                    </span>
+                                    {!isBot && m.direction === 'in' && form.contact_phone && (
+                                      <span>· {form.contact_phone}</span>
+                                    )}
+                                    {m.author && !isBot && m.direction === 'out' && (
                                       <span>· {m.author.first_name} {m.author.last_name?.[0] ?? ''}</span>
                                     )}
-                                    {m.external_sender && (
+                                    {m.external_sender && !isBot && m.direction === 'out' && (
                                       <span>· {m.external_sender}</span>
                                     )}
                                   </div>
-                                  <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                  {/* Голосовое: рендерим <audio>, если в attachments[0].kind==='voice'.
+                                      Иначе — обычный текст. */}
+                                  {(() => {
+                                    const att = (m.attachments?.[0] as { kind?: string; url?: string; duration_s?: number | null } | undefined)
+                                    if (att?.kind === 'voice' && att.url) {
+                                      return (
+                                        <VoiceBubble
+                                          url={att.url}
+                                          duration_s={att.duration_s ?? null}
+                                          direction={m.direction as 'in' | 'out'}
+                                        />
+                                      )
+                                    }
+                                    return <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                                  })()}
                                   <div className={`text-[10px] mt-1 flex items-center gap-1 ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
                                     <span>{new Date(m.created_at).toLocaleString('ru-RU')}</span>
                                     {m.direction === 'out' && (
@@ -2909,34 +3710,155 @@ function DealModal({
                           </div>
                         )}
 
+                        {composerMode === 'call' && (
+                          <div className="px-3 pt-2 space-y-2 bg-amber-50 border-t border-amber-200">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="text-gray-500">направление:</span>
+                              <button
+                                type="button"
+                                onClick={() => setCallDirection('outbound')}
+                                className={`px-2 py-0.5 rounded-full border ${
+                                  callDirection === 'outbound'
+                                    ? 'bg-amber-600 text-white border-amber-600'
+                                    : 'bg-white border-amber-200 text-gray-700'
+                                }`}
+                              >📤 исходящий</button>
+                              <button
+                                type="button"
+                                onClick={() => setCallDirection('inbound')}
+                                className={`px-2 py-0.5 rounded-full border ${
+                                  callDirection === 'inbound'
+                                    ? 'bg-amber-600 text-white border-amber-600'
+                                    : 'bg-white border-amber-200 text-gray-700'
+                                }`}
+                              >📥 входящий</button>
+                              <span className="text-gray-500 ml-2">длит., мин:</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={callDurationMin}
+                                onChange={e => setCallDurationMin(e.target.value)}
+                                placeholder="—"
+                                className="w-16 border border-amber-200 rounded px-2 py-0.5 bg-white"
+                              />
+                            </div>
+                          </div>
+                        )}
+
                         {/* Input + send */}
                         <div className="flex gap-2 p-3">
-                          <textarea
-                            value={msgDraft}
-                            onChange={e => setMsgDraft(e.target.value)}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                                e.preventDefault(); submitComposer()
+                          {recording ? (
+                            // Режим записи: бегущий «эквалайзер» — наглядно, что мик активен.
+                            <div className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50">
+                              <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+                              <span className="text-sm text-red-700 font-mono tabular-nums">
+                                {String(Math.floor(recordSecs / 60)).padStart(2, '0')}:{String(recordSecs % 60).padStart(2, '0')}
+                              </span>
+                              <span className="flex items-end gap-[3px] h-5 flex-1 min-w-0">
+                                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(i => (
+                                  <span
+                                    key={i}
+                                    className="w-[3px] bg-red-500/80 rounded-full animate-voice-bar"
+                                    style={{
+                                      animationDelay: `${(i % 7) * 0.09}s`,
+                                      animationDuration: `${0.7 + (i % 5) * 0.12}s`,
+                                    }}
+                                  />
+                                ))}
+                              </span>
+                              <span className="text-xs text-red-600/70 shrink-0">запись…</span>
+                            </div>
+                          ) : pendingVoice ? (
+                            // Превью записанного голосового — можно прослушать перед отправкой.
+                            <div className="flex-1 flex items-center gap-2 border border-blue-200 rounded px-3 py-1.5 bg-blue-50">
+                              <audio controls src={pendingVoice.url} className="flex-1 h-8" />
+                              <span className="text-xs text-blue-700/70 font-mono tabular-nums">
+                                {String(Math.floor(pendingVoice.duration_s / 60)).padStart(2, '0')}:{String(pendingVoice.duration_s % 60).padStart(2, '0')}
+                              </span>
+                            </div>
+                          ) : (
+                            <textarea
+                              value={msgDraft}
+                              onChange={e => setMsgDraft(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                                  e.preventDefault(); submitComposer()
+                                }
+                              }}
+                              placeholder={
+                                composerMode === 'chat' ? 'Сообщение клиенту…  (⌘+Enter — отправить)' :
+                                composerMode === 'note' ? 'Внутреннее примечание — видно только команде' :
+                                composerMode === 'call' ? 'О чём говорили: итог звонка, договорённости…' :
+                                'Название задачи…'
                               }
-                            }}
-                            placeholder={
-                              composerMode === 'chat' ? 'Сообщение клиенту…  (⌘+Enter — отправить)' :
-                              composerMode === 'note' ? 'Внутреннее примечание — видно только команде' :
-                              'Название задачи…'
-                            }
-                            rows={composerMode === 'task' ? 1 : 2}
-                            className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
-                          />
-                          <button
-                            onClick={submitComposer}
-                            disabled={!msgDraft.trim() || sending}
-                            className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
-                          >
-                            {sending ? '…' :
-                             composerMode === 'chat' ? 'Отправить' :
-                             composerMode === 'note' ? 'Сохранить' :
-                             'Поставить'}
-                          </button>
+                              rows={composerMode === 'task' ? 1 : 2}
+                              className="flex-1 border border-gray-200 rounded px-2 py-1.5 text-sm resize-none focus:border-blue-400 outline-none"
+                            />
+                          )}
+
+                          {/* Микрофон — только в режиме чата (whatsapp). */}
+                          {composerMode === 'chat' && (
+                            recording ? (
+                              <>
+                                <button
+                                  onClick={() => stopRecording(false)}
+                                  title="Отменить запись"
+                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                                >
+                                  ✕
+                                </button>
+                                <button
+                                  onClick={() => stopRecording(true)}
+                                  title="Остановить запись (можно будет прослушать)"
+                                  className="self-end px-4 py-1.5 text-sm rounded bg-red-600 hover:bg-red-700 text-white"
+                                >
+                                  ⏹ Стоп
+                                </button>
+                              </>
+                            ) : pendingVoice ? (
+                              <>
+                                <button
+                                  onClick={discardPendingVoice}
+                                  title="Удалить и записать заново"
+                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                                >
+                                  ✕
+                                </button>
+                                <button
+                                  onClick={sendPendingVoice}
+                                  disabled={sendingVoice}
+                                  title="Отправить голосовое"
+                                  className="self-end px-4 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
+                                >
+                                  {sendingVoice ? '…' : '▶ Отправить'}
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={startRecording}
+                                disabled={sendingVoice || sending || !!msgDraft.trim()}
+                                title={msgDraft.trim() ? 'Очистите текст, чтобы записать голосовое' : 'Записать голосовое'}
+                                className="self-end px-3 py-1.5 text-base rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {sendingVoice ? '…' : '🎙'}
+                              </button>
+                            )
+                          )}
+
+                          {!recording && !pendingVoice && (
+                            <button
+                              onClick={submitComposer}
+                              disabled={!msgDraft.trim() || sending}
+                              className="self-end px-4 py-1.5 text-sm text-white rounded bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-gray-400"
+                            >
+                              {sending ? '…' :
+                               composerMode === 'chat' ? 'Отправить' :
+                               composerMode === 'note' ? 'Сохранить' :
+                               composerMode === 'call' ? 'Записать звонок' :
+                               'Поставить'}
+                            </button>
+                          )}
                         </div>
 
                         {composerMode === 'chat' && waConnected === false && (
@@ -2961,10 +3883,10 @@ function DealModal({
                         />
                         <button
                           onClick={addComment}
-                          disabled={!commentDraft.trim()}
+                          disabled={!commentDraft.trim() || addingComment}
                           className="self-start px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
                         >
-                          Отправить
+                          {addingComment ? '…' : 'Отправить'}
                         </button>
                       </div>
 
@@ -3039,10 +3961,10 @@ function DealModal({
                           </select>
                           <button
                             onClick={addTask}
-                            disabled={!newTaskTitle.trim()}
+                            disabled={!newTaskTitle.trim() || addingTask}
                             className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded"
                           >
-                            +
+                            {addingTask ? '…' : '+'}
                           </button>
                         </div>
                       </div>
@@ -3211,18 +4133,20 @@ function formatTaskDueHint(iso: string): string {
   return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
-const COMPOSER_MODES: { value: 'chat'|'note'|'task'; label: string; icon: string }[] = [
+type ComposerMode = 'chat' | 'note' | 'task' | 'call'
+const COMPOSER_MODES: { value: ComposerMode; label: string; icon: string }[] = [
   { value: 'chat', label: 'Чат',        icon: '💬' },
   { value: 'note', label: 'Примечание', icon: '📝' },
   { value: 'task', label: 'Задача',     icon: '✅' },
+  { value: 'call', label: 'Звонок',     icon: '📞' },
 ]
 
 function ComposerModeDropdown({
   value,
   onChange,
 }: {
-  value: 'chat'|'note'|'task'
-  onChange: (m: 'chat'|'note'|'task') => void
+  value: ComposerMode
+  onChange: (m: ComposerMode) => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement | null>(null)
@@ -3559,78 +4483,833 @@ function TemplatesDropdown({
 function BulkActionBar({
   count,
   stages,
+  allStages,
+  pipelines,
   users,
+  sources,
   onMoveStage,
+  onMovePipeline,
   onAssign,
   onDelete,
+  onAddTask,
+  onEditTags,
+  onEditField,
   onCancel,
 }: {
   count: number
   stages: Stage[]
+  // Все этапы клиники — для смены воронки в одной операции.
+  allStages: Stage[]
+  pipelines: Pipeline[]
   users: UserLite[]
+  sources: Array<{ id: string; name: string }>
   onMoveStage: (stageId: string) => Promise<void>
+  onMovePipeline: (pipelineId: string) => Promise<void>
   onAssign: (userId: string) => Promise<void>
-  onDelete: () => Promise<void>
+  onDelete: () => void | Promise<void>
+  onAddTask: (p: { title: string; dueAt: string | null; assignedTo: string | null }) => Promise<void>
+  onEditTags: (p: { addList?: string[]; removeList?: string[]; replaceList?: string[] }) => Promise<void>
+  onEditField: (p: { field: 'amount' | 'source_id' | 'city'; value: string | null }) => Promise<void>
   onCancel: () => void
 }) {
   const [busy, setBusy] = useState(false)
-  async function wrap(fn: () => Promise<void>) {
+  // Локальный стейт для модалок внутри панели — всё inline, без
+  // отдельного компонента, чтобы не тащить props через три уровня.
+  const [openMenu, setOpenMenu] = useState<null | 'task' | 'tags' | 'field'>(null)
+  // Пока не отмечена ни одна сделка — все action-кнопки неактивны.
+  // Режим уже виден (сама плашка), а в подписи — подсказка.
+  const empty = count === 0
+  const noop = busy || empty
+  async function wrap(fn: () => void | Promise<void>) {
     if (busy) return
     setBusy(true)
     try { await fn() } finally { setBusy(false) }
   }
+
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 bg-gray-900 text-white rounded-xl shadow-2xl flex items-center gap-2 px-3 py-2">
-      <span className="text-sm font-medium px-1">Выбрано: {count}</span>
-      <div className="w-px h-5 bg-white/20 mx-1" />
+    <>
+      <div className="fixed left-1/2 -translate-x-1/2 bottom-4 z-50 bg-gray-900 text-white rounded-xl shadow-2xl flex items-center gap-2 px-3 py-2">
+        <span className="text-sm font-medium px-1">
+          {empty ? 'Отметьте сделки галочками' : `Выбрано: ${count}`}
+        </span>
+        <div className="w-px h-5 bg-white/20 mx-1" />
 
-      <select
-        disabled={busy}
-        defaultValue=""
-        onChange={e => {
-          const v = e.target.value
-          e.currentTarget.value = ''
-          if (v) wrap(() => onMoveStage(v))
-        }}
-        className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
-      >
-        <option value="" disabled>→ В этап</option>
-        {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-      </select>
+        <button
+          type="button"
+          disabled={noop}
+          onClick={() => setOpenMenu('task')}
+          className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
+        >
+          + Задача
+        </button>
 
-      <select
-        disabled={busy}
-        defaultValue=""
-        onChange={e => {
-          const v = e.target.value
-          e.currentTarget.value = ''
-          if (v) wrap(() => onAssign(v))
-        }}
-        className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
-      >
-        <option value="" disabled>Ответственный</option>
-        {users.map(u => (
-          <option key={u.id} value={u.id}>{`${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()}</option>
-        ))}
-      </select>
+        <select
+          disabled={noop}
+          defaultValue=""
+          onChange={e => {
+            const v = e.target.value
+            e.currentTarget.value = ''
+            if (v) wrap(() => onMoveStage(v))
+          }}
+          className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+          title="Перенести в этап (любой воронки)"
+        >
+          <option value="" disabled>Изм. этап</option>
+          {/* Группируем по воронкам, чтобы можно было переносить
+              между воронками одним действием. pipeline_id обновится
+              автоматически (см. onMoveStage в page-level). */}
+          {pipelines.filter(p => p.is_active).map(p => {
+            const stagesInPipe = allStages
+              .filter(s => s.pipeline_id === p.id && s.is_active)
+              .sort((a, b) => a.sort_order - b.sort_order)
+            if (stagesInPipe.length === 0) return null
+            return (
+              <optgroup key={p.id} label={p.name}>
+                {stagesInPipe.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </optgroup>
+            )
+          })}
+        </select>
 
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => wrap(onDelete)}
-        className="text-xs px-2.5 py-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-60"
-      >
-        Удалить
-      </button>
+        <select
+          disabled={noop}
+          defaultValue=""
+          onChange={e => {
+            const v = e.target.value
+            e.currentTarget.value = ''
+            if (v) wrap(() => onMovePipeline(v))
+          }}
+          className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+          title="Перенести в воронку (на её первый этап)"
+        >
+          <option value="" disabled>Изм. воронку</option>
+          {pipelines.filter(p => p.is_active).map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
 
-      <div className="w-px h-5 bg-white/20 mx-1" />
-      <button
-        type="button"
-        onClick={onCancel}
-        className="text-xs px-2 py-1.5 rounded hover:bg-white/10"
-      >
-        Отмена
-      </button>
+        <button
+          type="button"
+          disabled={noop}
+          onClick={() => setOpenMenu('field')}
+          className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
+        >
+          Изм. поле
+        </button>
+
+        <button
+          type="button"
+          disabled={noop}
+          onClick={() => setOpenMenu('tags')}
+          className="text-xs px-2.5 py-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-white/10 disabled:opacity-60"
+        >
+          Ред. теги
+        </button>
+
+        <select
+          disabled={noop}
+          defaultValue=""
+          onChange={e => {
+            const v = e.target.value
+            e.currentTarget.value = ''
+            if (v) wrap(() => onAssign(v))
+          }}
+          className="bg-gray-800 text-white text-xs rounded px-2 py-1.5 border border-white/10 disabled:opacity-60"
+        >
+          <option value="" disabled>Ответственный</option>
+          {users.map(u => (
+            <option key={u.id} value={u.id}>{`${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()}</option>
+          ))}
+        </select>
+
+        <button
+          type="button"
+          disabled={noop}
+          onClick={() => wrap(onDelete)}
+          className="text-xs px-2.5 py-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-60"
+        >
+          Удалить
+        </button>
+
+        <div className="w-px h-5 bg-white/20 mx-1" />
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs px-2 py-1.5 rounded hover:bg-white/10"
+        >
+          Отмена
+        </button>
+      </div>
+
+      {openMenu === 'task' && (
+        <BulkAddTaskModal
+          count={count}
+          users={users}
+          onCancel={() => setOpenMenu(null)}
+          onConfirm={async (p) => { setOpenMenu(null); await wrap(() => onAddTask(p)) }}
+        />
+      )}
+      {openMenu === 'tags' && (
+        <BulkEditTagsModal
+          count={count}
+          onCancel={() => setOpenMenu(null)}
+          onConfirm={async (p) => { setOpenMenu(null); await wrap(() => onEditTags(p)) }}
+        />
+      )}
+      {openMenu === 'field' && (
+        <BulkEditFieldModal
+          count={count}
+          sources={sources}
+          onCancel={() => setOpenMenu(null)}
+          onConfirm={async (p) => { setOpenMenu(null); await wrap(() => onEditField(p)) }}
+        />
+      )}
+    </>
+  )
+}
+
+// ─── Модалки массовых действий ────────────────────────────────────────────────
+
+/**
+ * Подтверждение массового soft-delete сделок.
+ *
+ * Зачем typed-confirm, а не обычный confirm():
+ * - реальный кейс: менеджер случайно выделил всю воронку (278 сделок)
+ *   и снёс одним кликом, восстанавливать пришлось через SQL;
+ * - native confirm() слишком легко проскочить «по инерции» (Enter).
+ *
+ * Кнопка «Удалить» активна только когда юзер ввёл «УДАЛИТЬ» строго
+ * заглавными — это даёт паузу подумать.
+ */
+function BulkDeleteConfirmModal({
+  count, onCancel, onConfirm,
+}: {
+  count: number
+  onCancel: () => void
+  onConfirm: () => void | Promise<void>
+}) {
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ok = typed === 'УДАЛИТЬ'
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4"
+      onMouseDown={e => { if (e.target === e.currentTarget && !busy) onCancel() }}
+    >
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-red-700">
+            Удалить {count} сделок?
+          </h3>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none disabled:opacity-50"
+          >×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <p className="text-gray-700">
+            Сделки пропадут из канбана и таблицы. Они останутся в БД (soft-delete) —
+            восстановить можно из «Корзины».
+          </p>
+          <p className="text-gray-700">
+            Чтобы подтвердить, введите{' '}
+            <code className="px-1 py-0.5 bg-gray-100 rounded font-mono text-xs">УДАЛИТЬ</code>:
+          </p>
+          <input
+            autoFocus
+            value={typed}
+            onChange={e => setTyped(e.target.value)}
+            disabled={busy}
+            placeholder="УДАЛИТЬ"
+            className="w-full border border-gray-200 rounded px-2 py-1.5 font-mono uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500"
+          />
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 text-sm text-gray-700 disabled:opacity-50"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            disabled={!ok || busy}
+            onClick={async () => {
+              setBusy(true)
+              try { await onConfirm() } finally { setBusy(false) }
+            }}
+            className="px-4 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:bg-red-300 disabled:cursor-not-allowed"
+          >
+            {busy ? 'Удаляю…' : `Удалить ${count}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Глобальный поиск сделки по телефону.
+ *
+ * Сценарий: менеджеру звонит клиент, надо за секунду найти его карточку.
+ * Стандартный поиск на /crm работает только по уже загруженным 1000
+ * сделкам и в рамках активной воронки — этого мало. Здесь идём прямо в
+ * БД по контакт-телефону сделки И по массиву телефонов пациента.
+ */
+function PhoneSearchModal({
+  clinicId,
+  onCancel,
+  onPick,
+}: {
+  clinicId: string
+  onCancel: () => void
+  onPick: (d: DealRow) => void
+}) {
+  const supabase = useMemo(() => createClient(), [])
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<DealRow[]>([])
+  const [loading, setLoading] = useState(false)
+
+  // Цифры из ввода — для сравнения. Работаем только с phoneNorm длиной >= 4.
+  const digits = query.replace(/\D+/g, '').replace(/^8/, '7')
+
+  useEffect(() => {
+    if (digits.length < 4) { setResults([]); return }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      setLoading(true)
+      // 1. По contact_phone сделки.
+      const { data: byContact } = await supabase
+        .from('deals')
+        .select(`
+          id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel,
+          status, responsible_user_id, source_id, amount, preferred_doctor_id,
+          appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes,
+          tags, custom_fields, stage_entered_at, created_at, updated_at,
+          patient:patients(id, full_name, phones, birth_date, city),
+          responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name)
+        `)
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .ilike('contact_phone', `%${digits}%`)
+        .order('updated_at', { ascending: false })
+        .limit(20)
+
+      // 2. По phones пациента (если совпало с пациентом — берём все его сделки).
+      const { data: patients } = await supabase
+        .from('patients')
+        .select('id')
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .contains('phones', [digits])
+        .limit(20)
+      const patientIds = (patients ?? []).map(p => p.id)
+      let byPatient: DealRow[] = []
+      if (patientIds.length > 0) {
+        const { data: dealsByPat } = await supabase
+          .from('deals')
+          .select(`
+            id, clinic_id, name, patient_id, pipeline_id, stage_id, stage, funnel,
+            status, responsible_user_id, source_id, amount, preferred_doctor_id,
+            appointment_type, loss_reason_id, contact_phone, contact_city, birth_date, notes,
+            tags, custom_fields, stage_entered_at, created_at, updated_at,
+            patient:patients(id, full_name, phones, birth_date, city),
+            responsible:user_profiles!deals_responsible_user_id_fkey(id, first_name, last_name)
+          `)
+          .eq('clinic_id', clinicId)
+          .is('deleted_at', null)
+          .in('patient_id', patientIds)
+          .order('updated_at', { ascending: false })
+          .limit(40)
+        byPatient = (dealsByPat ?? []) as unknown as DealRow[]
+      }
+
+      if (cancelled) return
+      // Дедуп по id.
+      const merged = new Map<string, DealRow>()
+      for (const d of (byContact ?? []) as unknown as DealRow[]) merged.set(d.id, d)
+      for (const d of byPatient) merged.set(d.id, d)
+      setResults(Array.from(merged.values()).slice(0, 30))
+      setLoading(false)
+    }, 250)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [supabase, clinicId, digits])
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/40 flex items-start justify-center p-4 pt-24"
+      onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}
+    >
+      <div className="bg-white rounded-xl w-full max-w-xl shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">📞 Поиск по телефону</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-4">
+          <input
+            autoFocus
+            type="tel"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="+7 ..."
+            className="w-full border border-gray-200 rounded px-3 py-2 font-mono text-base focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          <p className="mt-2 text-xs text-gray-500">
+            Ищет среди ВСЕХ сделок клиники, во всех воронках. Включая совпадения по телефонам пациента.
+          </p>
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto border-t border-gray-100">
+          {digits.length < 4 && (
+            <div className="px-5 py-6 text-center text-sm text-gray-400">
+              Введите минимум 4 цифры.
+            </div>
+          )}
+          {digits.length >= 4 && loading && (
+            <div className="px-5 py-6 text-center text-sm text-gray-400">Ищу…</div>
+          )}
+          {digits.length >= 4 && !loading && results.length === 0 && (
+            <div className="px-5 py-6 text-center text-sm text-gray-400">
+              Ничего не найдено.
+            </div>
+          )}
+          {results.map(d => (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => onPick(d)}
+              className="w-full text-left px-5 py-2.5 hover:bg-emerald-50 border-b border-gray-100 last:border-b-0"
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-medium text-gray-900 truncate">
+                  {d.name ?? d.patient?.full_name ?? '(без имени)'}
+                </span>
+                <span className="text-xs text-gray-500 font-mono shrink-0">
+                  {d.contact_phone ?? d.patient?.phones?.[0] ?? '—'}
+                </span>
+              </div>
+              <div className="mt-0.5 text-xs text-gray-500 truncate">
+                {d.patient?.full_name ?? '—'}
+                {d.responsible && ` · ${d.responsible.first_name} ${d.responsible.last_name ?? ''}`}
+                {d.amount != null && ` · ${d.amount.toLocaleString('ru-RU')} ₸`}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Быстрое создание сделки: имя + телефон → готово.
+ *
+ * Логика:
+ * - нормализуем телефон (только цифры, 8 → 7),
+ * - ищем пациента по phone в массиве phones; если есть — линкуем,
+ * - если нет — создаём пациента с full_name = «имя» из формы,
+ * - создаём сделку в первом активном этапе текущей воронки,
+ *   ответственный — текущий пользователь.
+ *
+ * Для повседневной работы менеджера: входящий звонок → 5 секунд
+ * на ввод → сделка в работе. Полный DealModal — для деталей.
+ */
+function QuickCreateDealModal({
+  clinicId,
+  pipelineId,
+  stageId,
+  stageCode,
+  funnelCode,
+  responsibleId,
+  onCancel,
+  onCreated,
+}: {
+  clinicId: string
+  pipelineId: string | null
+  stageId: string | null
+  stageCode: string | null
+  funnelCode: string
+  responsibleId: string | null
+  onCancel: () => void
+  onCreated: () => void
+}) {
+  const supabase = useMemo(() => createClient(), [])
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  function normalizePhone(raw: string): string {
+    const digits = (raw ?? '').replace(/\D+/g, '')
+    if (digits.length < 7) return ''
+    return digits.replace(/^8/, '7')
+  }
+
+  async function submit() {
+    setErr(null)
+    const cleanName = name.trim()
+    const phoneNorm = normalizePhone(phone)
+    if (!cleanName) { setErr('Введите имя.'); return }
+    if (!phoneNorm) { setErr('Введите телефон (минимум 7 цифр).'); return }
+    if (!stageId || !pipelineId) { setErr('В воронке нет этапов.'); return }
+
+    setBusy(true)
+    try {
+      // 1. Ищем пациента по телефону.
+      const { data: existing, error: selErr } = await supabase
+        .from('patients')
+        .select('id, full_name, phones')
+        .eq('clinic_id', clinicId)
+        .contains('phones', [phoneNorm])
+        .is('deleted_at', null)
+        .limit(1)
+        .maybeSingle()
+      if (selErr && selErr.code !== 'PGRST116') throw selErr
+
+      let patientId: string
+      if (existing) {
+        patientId = existing.id
+      } else {
+        // 2. Создаём пациента.
+        const { data: created, error: insErr } = await supabase
+          .from('patients')
+          .insert({
+            clinic_id: clinicId,
+            full_name: cleanName,
+            phones: [phoneNorm],
+          })
+          .select('id')
+          .single()
+        if (insErr) throw insErr
+        patientId = created.id
+      }
+
+      // 3. Создаём сделку.
+      const { error: dealErr } = await supabase.from('deals').insert({
+        clinic_id: clinicId,
+        name: cleanName,
+        patient_id: patientId,
+        pipeline_id: pipelineId,
+        stage_id: stageId,
+        stage: stageCode,
+        funnel: funnelCode,
+        status: 'open',
+        responsible_user_id: responsibleId,
+        contact_phone: phoneNorm,
+      })
+      if (dealErr) throw dealErr
+
+      onCreated()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setErr(msg)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-4"
+      onMouseDown={e => { if (e.target === e.currentTarget && !busy) onCancel() }}
+    >
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">⚡ Быстрая сделка</h3>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none disabled:opacity-50"
+          >×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <label className="block">
+            <span className="text-gray-600">Имя пациента *</span>
+            <input
+              autoFocus
+              value={name}
+              onChange={e => setName(e.target.value)}
+              disabled={busy}
+              placeholder="Иванов Иван"
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+              onKeyDown={e => { if (e.key === 'Enter') submit() }}
+            />
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Телефон *</span>
+            <input
+              type="tel"
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+              disabled={busy}
+              placeholder="+7 ..."
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5 font-mono"
+              onKeyDown={e => { if (e.key === 'Enter') submit() }}
+            />
+          </label>
+          <p className="text-xs text-gray-500">
+            Если пациент с таким телефоном уже есть — сделка прилинкуется к нему.
+            Иначе создастся новый пациент.
+          </p>
+          {err && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+              {err}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50 text-sm text-gray-700 disabled:opacity-50"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={submit}
+            className="px-4 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50"
+          >
+            {busy ? 'Создаю…' : 'Создать сделку'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BulkAddTaskModal({
+  count, users, onCancel, onConfirm,
+}: {
+  count: number
+  users: UserLite[]
+  onCancel: () => void
+  onConfirm: (p: { title: string; dueAt: string | null; assignedTo: string | null }) => void
+}) {
+  const [title, setTitle] = useState('')
+  const [due, setDue] = useState('')
+  const [assignedTo, setAssignedTo] = useState<string>('')
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Добавить задачу в {count} сделок</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <label className="block">
+            <span className="text-gray-600">Название</span>
+            <input
+              autoFocus
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+              placeholder="Например: Перезвонить"
+            />
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Срок (необязательно)</span>
+            <input
+              type="datetime-local"
+              value={due}
+              onChange={e => setDue(e.target.value)}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+            />
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Ответственный за задачу</span>
+            <select
+              value={assignedTo}
+              onChange={e => setAssignedTo(e.target.value)}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+            >
+              <option value="">— как у сделки —</option>
+              {users.map(u => (
+                <option key={u.id} value={u.id}>
+                  {`${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded border border-gray-200 text-gray-600 hover:bg-gray-50">Отмена</button>
+          <button
+            disabled={!title.trim()}
+            onClick={() => onConfirm({
+              title: title.trim(),
+              dueAt: due ? new Date(due).toISOString() : null,
+              assignedTo: assignedTo || null,
+            })}
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
+          >
+            Создать {count} задач
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BulkEditTagsModal({
+  count, onCancel, onConfirm,
+}: {
+  count: number
+  onCancel: () => void
+  onConfirm: (p: { addList?: string[]; removeList?: string[]; replaceList?: string[] }) => void
+}) {
+  const [mode, setMode] = useState<'merge' | 'replace'>('merge')
+  const [addRaw, setAddRaw] = useState('')
+  const [removeRaw, setRemoveRaw] = useState('')
+  const [replaceRaw, setReplaceRaw] = useState('')
+  const parse = (s: string) => s.split(/[,;]/).map(t => t.trim()).filter(Boolean)
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Теги для {count} сделок</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <div className="flex items-center gap-4 text-xs">
+            <label className="flex items-center gap-1">
+              <input type="radio" checked={mode === 'merge'} onChange={() => setMode('merge')} />
+              Добавить / удалить
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} />
+              Заменить целиком
+            </label>
+          </div>
+          {mode === 'merge' ? (
+            <>
+              <label className="block">
+                <span className="text-gray-600">Добавить теги (через запятую)</span>
+                <input
+                  value={addRaw}
+                  onChange={e => setAddRaw(e.target.value)}
+                  className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                  placeholder="vip, повторный"
+                />
+              </label>
+              <label className="block">
+                <span className="text-gray-600">Удалить теги (через запятую)</span>
+                <input
+                  value={removeRaw}
+                  onChange={e => setRemoveRaw(e.target.value)}
+                  className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                  placeholder="холодный"
+                />
+              </label>
+            </>
+          ) : (
+            <label className="block">
+              <span className="text-gray-600">Новый набор тегов (через запятую)</span>
+              <input
+                value={replaceRaw}
+                onChange={e => setReplaceRaw(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                placeholder="vip, чекап"
+              />
+            </label>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded border border-gray-200 text-gray-600 hover:bg-gray-50">Отмена</button>
+          <button
+            onClick={() => {
+              if (mode === 'replace') onConfirm({ replaceList: parse(replaceRaw) })
+              else onConfirm({ addList: parse(addRaw), removeList: parse(removeRaw) })
+            }}
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            Применить
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BulkEditFieldModal({
+  count, sources, onCancel, onConfirm,
+}: {
+  count: number
+  sources: Array<{ id: string; name: string }>
+  onCancel: () => void
+  onConfirm: (p: { field: 'amount' | 'source_id' | 'city'; value: string | null }) => void
+}) {
+  const [field, setField] = useState<'amount' | 'source_id' | 'city'>('amount')
+  const [value, setValue] = useState('')
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4"
+         onMouseDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Изменить поле в {count} сделках</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <label className="block">
+            <span className="text-gray-600">Поле</span>
+            <select
+              value={field}
+              onChange={e => { setField(e.target.value as typeof field); setValue('') }}
+              className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+            >
+              <option value="amount">Сумма</option>
+              <option value="source_id">Источник</option>
+              <option value="city">Город</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-gray-600">Новое значение</span>
+            {field === 'source_id' ? (
+              <select
+                value={value}
+                onChange={e => setValue(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+              >
+                <option value="">— очистить —</option>
+                {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            ) : field === 'amount' ? (
+              <input
+                type="number"
+                step="0.01"
+                value={value}
+                onChange={e => setValue(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                placeholder="Пусто = очистить"
+              />
+            ) : (
+              <input
+                value={value}
+                onChange={e => setValue(e.target.value)}
+                className="mt-1 w-full border border-gray-200 rounded px-2 py-1.5"
+                placeholder="Пусто = очистить"
+              />
+            )}
+          </label>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded border border-gray-200 text-gray-600 hover:bg-gray-50">Отмена</button>
+          <button
+            onClick={() => onConfirm({ field, value: value || null })}
+            className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            Применить
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -3643,71 +5322,380 @@ function ImportDealsModal({
   clinicId,
   pipelineId,
   defaultStageId,
+  stages,
   onClose,
   onDone,
 }: {
   clinicId: string
   pipelineId: string
   defaultStageId: string | null
+  stages: Stage[]
   onClose: () => void
   onDone: () => void
 }) {
   const supabase = useMemo(() => createClient(), [])
   const [rows, setRows] = useState<Record<string, string>[]>([])
   const [fileName, setFileName] = useState<string>('')
+  const [detectedHeaders, setDetectedHeaders] = useState<
+    { raw: string; mapped: string }[]
+  >([])
   const [busy, setBusy] = useState(false)
-  const [report, setReport] = useState<{ created: number; skipped: number; errors: string[] } | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  // Все воронки и этапы клиники — нужны для ручного маппинга этапов из CSV
+  // на реальные этапы выбранной воронки (автоматический матч по имени
+  // не работает, если в CRM названия сокращены, напр. «Назн 1 конс»
+  // vs «НАЗНАЧЕНО ПЕРВИЧНАЯ КОНСУЛЬТАЦИЯ»).
+  const [allPipelines, setAllPipelines] = useState<{ id: string; name: string }[]>([])
+  const [allStagesState, setAllStagesState] = useState<
+    { id: string; name: string; pipeline_id: string }[]
+  >(stages.map(s => ({ id: s.id, name: s.name, pipeline_id: s.pipeline_id })))
+  const [targetPipelineId, setTargetPipelineId] = useState<string>(pipelineId)
+  // Ручной маппинг: CSV-имя этапа → stageId в targetPipelineId
+  // (null = «в первый этап воронки»).
+  const [stageMap, setStageMap] = useState<Record<string, string | null>>({})
+  const [report, setReport] = useState<{
+    total: number
+    foundByPhone: number
+    foundByName: number
+    patientsCreated: number
+    dealsCreated: number
+    dealsUpdated: number
+    dealsSkippedDeleted: number
+    stageMatched: number
+    stageFallback: number
+    responsibleMatched: number
+    skipped: number
+    unrecognizedHeaders: string[]
+    unknownStages: string[]
+    unknownResponsibles: string[]
+    unknownPipelines: string[]
+    errors: string[]
+    dbDistribution: { pipeline: string; count: number }[]
+  } | null>(null)
+
+  // Если родитель сменил активную воронку (пользователь кликнул другую
+  // вкладку прямо во время открытой модалки) — синхронизируем выбор
+  // воронки импорта с UI. useState<>(pipelineId) ловит только initial,
+  // поэтому без эффекта state «застывает» на первом значении.
+  useEffect(() => {
+    setTargetPipelineId(pipelineId)
+  }, [pipelineId])
+
+  // Один раз подгружаем воронки и все этапы клиники, чтобы UI мог
+  // предложить ручной маппинг CSV-этапов.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const [{ data: pls }, { data: sts }] = await Promise.all([
+        supabase.from('pipelines').select('id, name').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
+        supabase.from('pipeline_stages').select('id, name, pipeline_id').eq('is_active', true).order('sort_order'),
+      ])
+      if (cancelled) return
+      if (pls) setAllPipelines(pls)
+      if (sts) setAllStagesState(sts)
+    })()
+    return () => { cancelled = true }
+  }, [supabase, clinicId])
+
+  // Уникальные имена этапов, встретившиеся в CSV (в исходном регистре).
+  const uniqueCsvStages = useMemo(() => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const r of rows) {
+      const s = (r['stage'] ?? '').trim()
+      if (!s || seen.has(s)) continue
+      seen.add(s)
+      out.push(s)
+    }
+    return out
+  }, [rows])
+
+  // Инициализируем/пересчитываем stageMap при смене файла или воронки:
+  // пытаемся автоматически сопоставить по имени, иначе — null (первый этап).
+  useEffect(() => {
+    if (uniqueCsvStages.length === 0) { setStageMap({}); return }
+    const pipelineStages = allStagesState.filter(s => s.pipeline_id === targetPipelineId)
+    const byNorm = new Map(pipelineStages.map(s => [normalizeName(s.name), s.id]))
+    const next: Record<string, string | null> = {}
+    for (const raw of uniqueCsvStages) {
+      const needle = normalizeName(raw)
+      const auto = byNorm.get(needle)
+        ?? allStagesState.find(s => normalizeName(s.name) === needle && s.pipeline_id === targetPipelineId)?.id
+      next[raw] = auto ?? null
+    }
+    setStageMap(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uniqueCsvStages, targetPipelineId, allStagesState])
 
   // Нормализация заголовков столбцов: кириллица/пробелы/регистр → канонические ключи.
+  // AmoCRM экспортирует с развёрнутыми названиями («Название сделки», «Основной
+  // контакт», «Рабочий телефон» и т.д.) — поддерживаем все распространённые
+  // варианты, чтобы менеджер не правил файл вручную перед импортом.
   const ALIASES: Record<string, string> = {
-    'название': 'name', 'сделка': 'name', 'name': 'name',
-    'пациент': 'patient', 'фио': 'patient', 'patient': 'patient',
-    'телефон': 'phone', 'phone': 'phone', 'tel': 'phone',
+    // name — название сделки
+    'название': 'name', 'название сделки': 'name', 'сделка': 'name', 'name': 'name',
+    // patient — ФИО контакта
+    'пациент': 'patient', 'фио': 'patient', 'полное имя': 'patient',
+    'контакт': 'patient', 'основной контакт': 'patient', 'patient': 'patient',
+    'полное имя контакта': 'patient', 'фио контакта': 'patient',
+    // phone — любой из телефонов amoCRM
+    'телефон': 'phone', 'рабочий телефон': 'phone', 'мобильный': 'phone',
+    'мобильный телефон': 'phone', 'контактный телефон': 'phone',
+    'основной телефон': 'phone', 'phone': 'phone', 'tel': 'phone',
+    // city
     'город': 'city', 'city': 'city',
-    'сумма': 'amount', 'amount': 'amount', 'budget': 'amount',
-    'заметка': 'notes', 'комментарий': 'notes', 'notes': 'notes',
+    // amount — сумма/бюджет сделки
+    'сумма': 'amount', 'сумма сделки': 'amount', 'бюджет': 'amount',
+    'стоимость': 'amount', 'amount': 'amount', 'budget': 'amount',
+    // notes — заметка/комментарий/описание
+    'заметка': 'notes', 'примечание': 'notes', 'комментарий': 'notes',
+    'описание': 'notes', 'notes': 'notes',
+    // tags
     'теги': 'tags', 'tags': 'tags',
+    // birth_date — дата рождения пациента (формат DD.MM.YYYY)
+    'дата рождения': 'birth_date', 'др': 'birth_date',
+    'birth date': 'birth_date', 'birthday': 'birth_date', 'birth_date': 'birth_date',
+    // created_at — дата создания сделки в amoCRM
+    'date': 'created_at', 'дата создания сделки': 'created_at',
+    'дата создания': 'created_at', 'created at': 'created_at',
+    'created_at': 'created_at', 'created': 'created_at',
+    // external_id — ID сделки во внешней системе, для upsert при повторном импорте.
+    'id': 'external_id', 'id сделки': 'external_id',
+    'id amocrm': 'external_id', 'id амо': 'external_id', 'id амокрм': 'external_id',
+    'внешний id': 'external_id', 'external_id': 'external_id', 'external id': 'external_id',
+    // stage — этап сделки, мапим на существующий pipeline_stage по названию
+    'этап': 'stage', 'этап сделки': 'stage', 'стадия': 'stage',
+    'статус': 'stage', 'stage': 'stage', 'status': 'stage',
+    // pipeline — воронка, ищем по имени среди пайплайнов клиники
+    'воронка': 'pipeline', 'pipeline': 'pipeline',
+    // responsible — ответственный менеджер (попытаемся найти user_profile)
+    'ответственный': 'responsible', 'ответственный за сделку': 'responsible',
+    'менеджер': 'responsible', 'responsible': 'responsible', 'owner': 'responsible',
   }
 
-  function parseCsv(text: string): Record<string, string>[] {
-    // Простой CSV parser: ; или , как разделитель, двойные кавычки.
-    const firstLine = text.split(/\r?\n/, 1)[0] ?? ''
-    const delim = (firstLine.match(/;/g)?.length ?? 0) >= (firstLine.match(/,/g)?.length ?? 0) ? ';' : ','
-    const lines: string[][] = []
-    let cur: string[] = []
-    let cell = ''
-    let inQ = false
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i]
-      if (inQ) {
-        if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++ }
-        else if (ch === '"') { inQ = false }
-        else { cell += ch }
-      } else {
-        if (ch === '"') inQ = true
-        else if (ch === delim) { cur.push(cell); cell = '' }
-        else if (ch === '\n') { cur.push(cell); lines.push(cur); cur = []; cell = '' }
-        else if (ch === '\r') { /* skip */ }
-        else cell += ch
-      }
-    }
-    if (cell.length || cur.length) { cur.push(cell); lines.push(cur) }
-    if (lines.length === 0) return []
-    const headers = (lines.shift() ?? []).map(h =>
-      ALIASES[h.trim().toLowerCase().replace(/^\uFEFF/, '')] ?? h.trim().toLowerCase()
+  // Нормализация телефона: цифры, ведущая 8 → 7, убираем + и спецсимволы.
+  // Результат — строка из цифр, например '77071234567'. Пустую строку
+  // возвращаем, если нет хотя бы 7 цифр (значит это не телефон).
+  function normalizePhone(raw: string): string {
+    const digits = (raw ?? '').replace(/\D+/g, '')
+    if (digits.length < 7) return ''
+    return digits.replace(/^8/, '7')
+  }
+
+  function normalizeName(raw: string): string {
+    // Толерантная нормализация: lowercase + убираем пунктуацию
+    // (двоеточия, тире, скобки, точки, кавычки, emoji и т.п.) +
+    // схлопываем пробелы. Нужно, чтобы «Назначено: первичная
+    // консультация» и «НАЗНАЧЕНО ПЕРВИЧНАЯ КОНСУЛЬТАЦИЯ» матчились
+    // на один и тот же этап. Оставляем только буквы (включая
+    // кириллицу) и цифры.
+    return (raw ?? '')
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+      .replace(/\s+/g, ' ')
+  }
+
+  // Парсинг даты рождения из формата DD.MM.YYYY (как экспортирует amoCRM /
+  // Google Sheets) в ISO YYYY-MM-DD для колонки patients.birth_date (DATE).
+  // Также принимаем DD/MM/YYYY и DD-MM-YYYY. Невалидная/пустая → null.
+  function parseBirthDate(raw: string): string | null {
+    const s = (raw ?? '').trim()
+    if (!s) return null
+    const m = s.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$/)
+    if (!m) return null
+    const [, d, mo, y] = m
+    const dd = d.padStart(2, '0')
+    const mm = mo.padStart(2, '0')
+    const yy = Number(y)
+    const di = Number(dd), mi = Number(mm)
+    if (yy < 1900 || yy > 2100) return null
+    if (mi < 1 || mi > 12) return null
+    if (di < 1 || di > 31) return null
+    return `${y}-${mm}-${dd}`
+  }
+
+  // Парсинг даты-времени создания сделки из amoCRM / Google Sheets.
+  // Принимаем DD.MM.YYYY [HH:MM[:SS]] (а также через «/» или «-»),
+  // и уже готовые ISO-строки. Возвращаем ISO с таймзоной +05:00
+  // (Казахстан), чтобы Postgres сохранил правильный момент времени.
+  function parseCreatedAt(raw: string): string | null {
+    const s = (raw ?? '').trim()
+    if (!s) return null
+    // Уже ISO? Оставляем как есть — Postgres разберёт.
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s
+    const m = s.match(
+      /^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/,
     )
-    return lines
+    if (!m) return null
+    const [, d, mo, y, hh, mm2, ss] = m
+    const yy = Number(y)
+    const mi = Number(mo)
+    const di = Number(d)
+    if (yy < 1900 || yy > 2100) return null
+    if (mi < 1 || mi > 12) return null
+    if (di < 1 || di > 31) return null
+    const H = (hh ?? '00').padStart(2, '0')
+    const M = (mm2 ?? '00').padStart(2, '0')
+    const S = (ss ?? '00').padStart(2, '0')
+    return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}T${H}:${M}:${S}+05:00`
+  }
+
+  function parseCsv(text: string): {
+    rows: Record<string, string>[]
+    headers: { raw: string; mapped: string }[]
+  } {
+    // Простой CSV parser: ; или , как разделитель, двойные кавычки.
+    // AmoCRM/Google Sheets умудряется класть РАЗНЫЕ разделители в
+    // заголовок и в тело (заголовок через «,», данные через «;» — или
+    // наоборот). Поэтому сначала режем текст на логические строки с
+    // учётом кавычек, потом детектим разделитель ОТДЕЛЬНО для заголовка
+    // и для данных, и каждую строку парсим своим разделителем.
+    const rawLines: string[] = []
+    {
+      let buf = ''
+      let inQ = false
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i]
+        if (ch === '"') {
+          if (inQ && text[i + 1] === '"') { buf += '""'; i++ }
+          else { inQ = !inQ; buf += '"' }
+        } else if (!inQ && ch === '\n') {
+          rawLines.push(buf)
+          buf = ''
+        } else if (ch === '\r' && !inQ) {
+          // skip
+        } else {
+          buf += ch
+        }
+      }
+      if (buf.length) rawLines.push(buf)
+    }
+    const nonEmpty = rawLines.filter(l => l.trim().length > 0)
+    if (nonEmpty.length === 0) return { rows: [], headers: [] }
+
+    const pickDelim = (s: string): ',' | ';' => {
+      const stripped = s.replace(/"[^"]*"/g, '')
+      const semi = (stripped.match(/;/g)?.length ?? 0)
+      const comma = (stripped.match(/,/g)?.length ?? 0)
+      return semi > comma ? ';' : ','
+    }
+    const headerDelim = pickDelim(nonEmpty[0])
+    const dataDelim = pickDelim(nonEmpty.slice(1, 21).join('\n'))
+
+    const splitLine = (line: string, delim: string): string[] => {
+      const out: string[] = []
+      let cell = ''
+      let inQ = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (inQ) {
+          if (ch === '"' && line[i + 1] === '"') { cell += '"'; i++ }
+          else if (ch === '"') { inQ = false }
+          else { cell += ch }
+        } else {
+          if (ch === '"') inQ = true
+          else if (ch === delim) { out.push(cell); cell = '' }
+          else { cell += ch }
+        }
+      }
+      out.push(cell)
+      return out
+    }
+
+    const headerRow = splitLine(nonEmpty[0], headerDelim)
+    const lines: string[][] = nonEmpty.slice(1).map(l => splitLine(l, dataDelim))
+    // Нормализация заголовка: BOM → _ в пробел → пробелы → lowercase → collapse.
+    // Подчёркивание в `_` → пробел, чтобы `id_amoCRM` и `дата_рождения`
+    // (формат Google Sheets export) ловились теми же alias'ами, что
+    // `id amoCRM` и `дата рождения`.
+    const rawHeaders = headerRow.map(h =>
+      h.replace(/^\uFEFF/, '').trim().replace(/_/g, ' ').replace(/\s+/g, ' ').toLowerCase()
+    )
+    const headers = rawHeaders.map(resolveHeader)
+    const parsed = lines
       .filter(r => r.some(c => c.trim().length > 0))
       .map(r => {
         const obj: Record<string, string> = {}
-        headers.forEach((h, i) => { obj[h] = (r[i] ?? '').trim() })
+        headers.forEach((h, i) => {
+          const val = (r[i] ?? '').trim()
+          if (!val) return
+          if (!obj[h]) { obj[h] = val; return }
+          // Несколько CSV-колонок на один канонический ключ:
+          //   phone — БЕРЁМ ПЕРВЫЙ непустой (иначе normalizePhone склеит
+          //     цифры двух разных номеров в мусор).
+          //   notes — несколько «Примечание N» склеиваем через " | ".
+          //   patient — «Имя» + «Фамилия» склеиваем через пробел.
+          //   прочее — первое значение побеждает.
+          if (h === 'phone') return
+          if (h === 'notes') obj[h] = `${obj[h]} | ${val}`
+          else if (h === 'patient') obj[h] = `${obj[h]} ${val}`
+          // остальные каноны — оставляем первое (не перетираем)
+        })
         return obj
       })
+    const mapping = rawHeaders.map((raw, i) => ({ raw, mapped: headers[i] }))
+    return { rows: parsed, headers: mapping }
+  }
+
+  // Определяем канонический ключ колонки. Сначала точное совпадение по
+  // ALIASES, потом — нечёткий матчинг по подстроке, чтобы поймать
+  // развёрнутые заголовки amoCRM вида «Рабочий телефон контакта» или
+  // «Контакт. Имя».
+  function resolveHeader(h: string): string {
+    if (ALIASES[h]) return ALIASES[h]
+    // Сначала отсекаем явно ненужные колонки amoCRM, чтобы они не
+    // ловились по случайной подстроке («Компания контакта» → не patient,
+    // «Дата создания сделки» → не name, «Sendapi телефон» → не phone).
+    // birth_date — раньше других (чтобы «дата рождения» не утекла в общий
+    // `^дата` exclude ниже).
+    if (/^дата рожд|день рожд|^др$|birth/i.test(h)) return 'birth_date'
+    // created_at — дата создания сделки amoCRM (колонка «date», «Дата создания сделки»)
+    if (/^date$|^дата создания|^created/i.test(h)) return 'created_at'
+    if (/^(дата|кем |источник|utm_|roistat|компан|должност|возраст|email|факс|sendapi|instagram|tiktok|telegram|vkontakte|\bref\b|ref source|from$|gcl|_ym|yclid|fbclid|openstat|referrer|тип записи|анкета|причина|врач|соглашение|пол\b)/i.test(h)) {
+      return h
+    }
+    // external_id — первым, чтобы "ID" ушёл сюда, а не в patient через «имя»
+    if (/^id$|id.*сделк|id.*amo|amocrm|external/i.test(h)) return 'external_id'
+    if (/телефон|^phone|phone number|мобильн/i.test(h)) return 'phone'
+    if (/полное имя|\bфио\b|имя контакт|контакт.*имя|фамили|\bклиент\b|\bпациент\b/i.test(h)) return 'patient'
+    if (/назван|^сделка$|^title$|^name$/i.test(h)) return 'name'
+    if (/бюджет|^сумма|стоимост|^budget$|^amount$|^price$/i.test(h)) return 'amount'
+    if (/^город$|^city$/i.test(h)) return 'city'
+    if (/примечан|коммент|заметк|описани|^notes$/i.test(h)) return 'notes'
+    if (/^тег|^tags?$/i.test(h)) return 'tags'
+    // stage / responsible — в самом конце, чтобы не перетягивать phone/patient.
+    // «Ответственный за контакт» уже ушёл в exclude через `контакт` ниже —
+    // но точнее: проверяем стоп-слово `контакт` внутри значения.
+    if (/^этап|^стади|^статус$|^stage$|^status$/i.test(h)) return 'stage'
+    if (/^воронк|^pipeline$/i.test(h)) return 'pipeline'
+    if (/контакт/i.test(h)) return h // "ответственный за контакт" и пр. — игнор
+    if (/^ответствен|^менеджер$|^responsible$|^owner$/i.test(h)) return 'responsible'
+    return h
+  }
+
+  // AmoCRM экспортирует CSV в Windows-1251 без BOM — `file.text()` читает
+  // его как UTF-8 и превращает кириллицу в мусор. Определяем кодировку
+  // по BOM / валидности UTF-8 и падаем на cp1251, если UTF-8 невалиден.
+  async function readFileSmart(file: File): Promise<string> {
+    const buf = await file.arrayBuffer()
+    const bytes = new Uint8Array(buf)
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+      return new TextDecoder('utf-8').decode(bytes.subarray(3))
+    }
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      return new TextDecoder('windows-1251').decode(bytes)
+    }
   }
 
   async function onFile(file: File) {
-    const text = await file.text()
-    setRows(parseCsv(text))
+    const text = await readFileSmart(file)
+    const parsed = parseCsv(text)
+    setRows(parsed.rows)
+    setDetectedHeaders(parsed.headers)
     setFileName(file.name)
     setReport(null)
   }
@@ -3715,37 +5703,371 @@ function ImportDealsModal({
   async function runImport() {
     if (busy || rows.length === 0) return
     setBusy(true)
-    let created = 0, skipped = 0
+    setProgress({ done: 0, total: rows.length })
+    let foundByPhone = 0
+    let foundByName = 0
+    let patientsCreated = 0
+    let dealsCreated = 0
+    let dealsUpdated = 0
+    let dealsSkippedDeleted = 0
+    let stageMatched = 0
+    let stageFallback = 0
+    let responsibleMatched = 0
+    let skipped = 0
     const errors: string[] = []
-    for (const r of rows) {
+    const unknownStages = new Set<string>()
+    const unknownResponsibles = new Set<string>()
+    const unknownPipelines = new Set<string>()
+    // Собираем external_id всех импортированных сделок — после прохода
+    // делаем sanity-check: сколько фактически в каждой воронке. Помогает
+    // отлавливать кейсы, когда update вроде прошёл без ошибки, но
+    // pipeline_id в БД остался старый (триггеры, RLS, FK и т.п.).
+    const importedExternalIds: string[] = []
+
+    // Предзагружаем список пользователей клиники — нужен для маппинга
+    // «ответственный» из CSV на user_profile.id. Дёшево один раз, чем
+    // запрос на каждую строку.
+    let clinicUsers: { id: string; full_name: string | null }[] = []
+    if (detectedHeaders.some(h => h.mapped === 'responsible')) {
+      const { data: us } = await supabase
+        .from('user_profiles')
+        .select('id, full_name')
+        .eq('clinic_id', clinicId)
+      clinicUsers = us ?? []
+    }
+
+    // Предзагружаем воронки + все их этапы, если в CSV есть колонка
+    // «воронка» — нужно уметь переключить сделку в другой pipeline.
+    // Иначе ограничиваемся уже переданным `stages` активной воронки.
+    let pipelines: { id: string; name: string }[] = []
+    let allStages: { id: string; name: string; pipeline_id: string }[] = stages.map(s => ({
+      id: s.id, name: s.name, pipeline_id: s.pipeline_id,
+    }))
+    // Загружаем воронки/этапы ВСЕГДА (а не только если в CSV есть колонка
+    // «воронка»): нужно, чтобы этап из CSV, совпавший с этапом другой
+    // воронки клиники, автоматически уводил сделку туда. Иначе все
+    // строки уходят в активную воронку UI, и stage из другой воронки
+    // улетает в fallback.
+    {
+      const [{ data: pls }, { data: sts }] = await Promise.all([
+        supabase.from('pipelines').select('id, name').eq('clinic_id', clinicId).eq('is_active', true).order('sort_order'),
+        supabase.from('pipeline_stages').select('id, name, pipeline_id').eq('is_active', true).order('sort_order'),
+      ])
+      pipelines = pls ?? []
+      if (sts) allStages = sts
+    }
+    // Первая активная воронка клиники — fallback, если в CSV указана
+    // воронка, которой нет в системе.
+    const firstPipelineId = pipelines[0]?.id ?? pipelineId
+
+    // Список нераспознанных колонок — для отчёта.
+    const unrecognizedHeaders = detectedHeaders
+      .filter(h => !['name','patient','phone','amount','external_id','city','notes','tags','stage','pipeline','responsible','birth_date','created_at'].includes(h.mapped))
+      .map(h => h.raw)
+
+    for (let idx = 0; idx < rows.length; idx++) {
+      const r = rows[idx]
+      // Даём браузеру перерисовать UI каждые 10 строк — иначе всё
+      // выглядит как «зависание» (278 строк × ~3 запроса ≈ минута
+      // сетевых round-trip'ов в однопоточной JS-нитке).
+      if (idx > 0 && idx % 10 === 0) {
+        setProgress({ done: idx, total: rows.length })
+        await new Promise(res => setTimeout(res, 0))
+      }
       try {
-        const name = r['name']?.trim() || r['patient']?.trim() || ''
-        if (!name && !r['phone']) { skipped++; continue }
+        const dealName = (r['name'] ?? '').trim()
+        const patientNameRaw = (r['patient'] ?? '').trim()
+        const phoneNorm = normalizePhone(r['phone'] ?? '')
+        const externalId = (r['external_id'] ?? '').trim()
+        if (externalId) importedExternalIds.push(externalId)
+        const birthIso = parseBirthDate(r['birth_date'] ?? '')
+        const createdAtIso = parseCreatedAt(r['created_at'] ?? '')
+        const cityRaw = (r['city'] ?? '').trim()
+
+        // Правило: нужна хотя бы какая-то идентификация — ФИО пациента
+        // или телефон или название сделки. Иначе пустая строка.
+        if (!dealName && !patientNameRaw && !phoneNorm) {
+          skipped++
+          errors.push(`Строка без ФИО/телефона/названия — пропущена`)
+          continue
+        }
+
+        // ── 1. Ищем пациента по нормализованному телефону ──────────────
+        let patientId: string | null = null
+        if (phoneNorm) {
+          const { data: byPhone, error: pErr } = await supabase
+            .from('patients')
+            .select('id')
+            .eq('clinic_id', clinicId)
+            .contains('phones', [phoneNorm])
+            .is('deleted_at', null)
+            .limit(1)
+            .maybeSingle()
+          if (pErr && pErr.code !== 'PGRST116') {
+            throw new Error(`поиск по телефону: ${pErr.message}`)
+          }
+          if (byPhone) { patientId = byPhone.id; foundByPhone++ }
+        }
+
+        // ── 2. Если не нашли — ищем по ФИО + дате рождения (если есть ДР) ──
+        //   Без ДР матч по одному только ФИО рискован (однофамильцы),
+        //   но если ДР не пришла в CSV — ограничиваемся ФИО.
+        if (!patientId && patientNameRaw) {
+          const nameNorm = normalizeName(patientNameRaw)
+          let q = supabase
+            .from('patients')
+            .select('id, full_name, birth_date')
+            .eq('clinic_id', clinicId)
+            .ilike('full_name', patientNameRaw) // ilike без wildcards = case-insensitive exact
+            .is('deleted_at', null)
+            .limit(5)
+          if (birthIso) q = q.eq('birth_date', birthIso)
+          const { data: byName, error: nErr } = await q
+          if (nErr) throw new Error(`поиск по имени: ${nErr.message}`)
+          const match = (byName ?? []).find(p => normalizeName(p.full_name) === nameNorm)
+          if (match) { patientId = match.id; foundByName++ }
+        }
+
+        // ── 3. Не нашли — создаём нового пациента, если есть ФИО или телефон ──
+        if (!patientId && (patientNameRaw || phoneNorm)) {
+          const fullName = patientNameRaw || `Без имени (${phoneNorm || '—'})`
+          const { data: newPat, error: insPErr } = await supabase
+            .from('patients')
+            .insert({
+              clinic_id: clinicId,
+              full_name: fullName,
+              phones: phoneNorm ? [phoneNorm] : [],
+              birth_date: birthIso,
+              city: cityRaw || null,
+              gender: 'other', // обязательное поле в схеме; при желании админ поправит
+            })
+            .select('id')
+            .single()
+          if (insPErr) throw new Error(`создание пациента: ${insPErr.message}`)
+          patientId = newPat.id
+          patientsCreated++
+        }
+
+        // ── 4. Собираем payload сделки ────────────────────────────────
         const tags = (r['tags'] ?? '').split(/[;,]/).map(x => x.trim()).filter(Boolean)
-        const amount = r['amount'] ? Number(r['amount'].replace(/[^\d.,-]/g, '').replace(',', '.')) : null
-        const payload: Record<string, unknown> = {
+        const amountRaw = r['amount']
+        const amount = amountRaw
+          ? Number(amountRaw.replace(/[^\d.,-]/g, '').replace(',', '.'))
+          : null
+        // Воронка — берём выбранную пользователем в UI импорта
+        // (таблица маппинга «CSV-этап → этап воронки» привязана именно
+        // к этой воронке). Отдельную колонку «воронка» из CSV больше
+        // не учитываем — пользователь сам явно выбирает, куда лить.
+        const pipelineRaw = (r['pipeline'] ?? '').trim()
+        if (pipelineRaw) {
+          const needle = normalizeName(pipelineRaw)
+          const known = pipelines.some(p => normalizeName(p.name) === needle)
+          if (!known) unknownPipelines.add(pipelineRaw)
+        }
+        const effectivePipelineId = targetPipelineId
+
+        // Этап: берём явный маппинг из UI. Если в маппинге null —
+        // значит «в первый этап воронки» (stageFallback).
+        const stageRaw = (r['stage'] ?? '').trim()
+        let matchedStageName: string | null = null
+        let stageId: string | null = null
+        if (stageRaw) {
+          const mapped = stageMap[stageRaw] ?? null
+          if (mapped) {
+            const hit = allStages.find(s => s.id === mapped)
+            stageId = mapped
+            matchedStageName = hit?.name ?? null
+            stageMatched++
+          } else {
+            unknownStages.add(stageRaw)
+            stageFallback++
+          }
+        }
+        // Fallback — первый этап выбранной воронки.
+        if (!stageId) {
+          const localStages = allStages.filter(s => s.pipeline_id === effectivePipelineId)
+          stageId = localStages[0]?.id ?? defaultStageId
+        }
+        // Legacy колонка deals.stage (TEXT NOT NULL) — нужна до миграции
+        // на чистые pipeline_stages. Берём имя сопоставленного этапа,
+        // иначе исходное значение из CSV, иначе имя fallback-этапа,
+        // иначе 'new'.
+        const fallbackStageName =
+          allStages.find(s => s.id === stageId)?.name ??
+          stageRaw ??
+          'new'
+        const legacyStage = matchedStageName || stageRaw || fallbackStageName || 'new'
+
+        // Маппинг ответственного.
+        // amoCRM экспортирует часто только имя («Жанат», «Сулу»), а в
+        // нашей БД — full_name «Алимаева Жанат». Поэтому матчим по
+        // токенам: каждое слово CSV ищем как любую часть полного имени
+        // (имя/фамилия/отчество). Совпадение — если ВСЕ слова из CSV
+        // нашлись среди слов full_name. Если в CSV одно слово и
+        // совпадает строго один пользователь — берём его; иначе
+        // считаем неизвестным (чтобы не назначить «Жанат» на чужого).
+        let responsibleId: string | null = null
+        const responsibleRaw = (r['responsible'] ?? '').trim()
+        if (responsibleRaw) {
+          if (clinicUsers.length > 0) {
+            const csvTokens = normalizeName(responsibleRaw).split(' ').filter(Boolean)
+            const candidates = clinicUsers.filter(u => {
+              if (!u.full_name) return false
+              const dbTokens = new Set(normalizeName(u.full_name).split(' ').filter(Boolean))
+              return csvTokens.every(t => dbTokens.has(t))
+            })
+            if (candidates.length === 1) {
+              responsibleId = candidates[0].id
+              responsibleMatched++
+            } else {
+              unknownResponsibles.add(responsibleRaw)
+            }
+          } else {
+            unknownResponsibles.add(responsibleRaw)
+          }
+        }
+
+        // Имя сделки: если в CSV пусто — генерируем «Сделка #<external_id>»;
+        // если и external_id нет — падаем на ФИО пациента.
+        const effectiveName =
+          dealName ||
+          (externalId ? `Сделка #${externalId}` : '') ||
+          patientNameRaw ||
+          null
+        // pipeline_id берём из самого этапа — иначе можем получить
+        // несогласованную пару (pipeline_id одной воронки + stage_id
+        // другой), и канбан отфильтрует такую сделку. После всех
+        // fallback'ов stageId всегда валиден.
+        const finalPipelineId =
+          allStages.find(s => s.id === stageId)?.pipeline_id ?? effectivePipelineId
+        const dealPayload: Record<string, unknown> = {
           clinic_id: clinicId,
-          pipeline_id: pipelineId,
-          stage_id: defaultStageId,
-          name: name || null,
-          contact_phone: r['phone'] || null,
-          contact_city: r['city'] || null,
+          pipeline_id: finalPipelineId,
+          stage_id: stageId,
+          name: effectiveName,
+          patient_id: patientId,
+          responsible_user_id: responsibleId,
+          contact_phone: phoneNorm || (r['phone'] ?? null) || null,
+          contact_city: cityRaw || null,
           notes: r['notes'] || null,
           tags: tags.length ? tags : [],
           amount: amount != null && !Number.isNaN(amount) ? amount : null,
           funnel: 'leads',
+          stage: legacyStage,
           status: 'open',
         }
-        const { error } = await supabase.from('deals').insert(payload)
-        if (error) { errors.push(`${name || r['phone'] || '—'}: ${error.message}`); skipped++ }
-        else created++
+        // created_at ставим ТОЛЬКО при вставке новой сделки — чтобы
+        // при повторном импорте (update по external_id) не затереть
+        // реальный момент создания в нашей системе.
+        if (createdAtIso) dealPayload.created_at = createdAtIso
+
+        // ── 5. Upsert по external_id, если он указан в CSV ────────────
+        if (externalId) {
+          const { data: existing, error: selErr } = await supabase
+            .from('deals')
+            .select('id, deleted_at')
+            .eq('clinic_id', clinicId)
+            .eq('external_id', externalId)
+            .limit(1)
+            .maybeSingle()
+          if (selErr && selErr.code !== 'PGRST116') {
+            throw new Error(`поиск сделки по external_id: ${selErr.message}`)
+          }
+          if (existing && existing.deleted_at) {
+            // Сделка с таким external_id когда-то была, но менеджер её
+            // удалил (soft-delete). По требованию — НЕ восстанавливаем,
+            // и новую с тем же external_id вставить не можем (уникальный
+            // partial-индекс). Просто пропускаем.
+            dealsSkippedDeleted++
+            continue
+          }
+          if (existing) {
+            // Обновляем существующую сделку. stage_id/pipeline_id тоже
+            // тянем из CSV — у amoCRM-импорта это источник истины
+            // (этапы могут быть в другой воронке клиники; сценарий
+            // «добавили недостающие этапы и перезапустили импорт»).
+            const { error: upErr } = await supabase
+              .from('deals')
+              .update({
+                name: dealPayload.name,
+                patient_id: patientId,
+                contact_phone: dealPayload.contact_phone,
+                contact_city: dealPayload.contact_city,
+                notes: dealPayload.notes,
+                tags: dealPayload.tags,
+                amount: dealPayload.amount,
+                pipeline_id: finalPipelineId,
+                stage_id: stageId,
+                stage: legacyStage,
+                responsible_user_id: responsibleId,
+              })
+              .eq('id', existing.id)
+            if (upErr) throw new Error(`обновление сделки: ${upErr.message}`)
+            dealsUpdated++
+            continue
+          }
+          // Сделки с таким external_id ещё нет — создаём с ним.
+          dealPayload.external_id = externalId
+        }
+
+        // ── 6. Вставка новой сделки ───────────────────────────────────
+        const { error: insDErr } = await supabase.from('deals').insert(dealPayload)
+        if (insDErr) throw new Error(`создание сделки: ${insDErr.message}`)
+        dealsCreated++
       } catch (e: unknown) {
-        errors.push(String(e))
         skipped++
+        const msg = e instanceof Error ? e.message : String(e)
+        const who = (r['name'] || r['patient'] || r['phone'] || '—').trim()
+        errors.push(`${who}: ${msg}`)
       }
     }
-    setReport({ created, skipped, errors: errors.slice(0, 10) })
+
+    // Sanity-check: где фактически лежат импортированные сделки.
+    // Группируем по pipeline_id и резолвим имя воронки. Если результат
+    // не совпадает с ожиданием пользователя — сразу видно, в какую
+    // воронку реально приземлилось.
+    const dbDistribution: { pipeline: string; count: number }[] = []
+    if (importedExternalIds.length > 0) {
+      // Supabase ограничивает .in() ~1000 элементов — у нас обычно меньше.
+      const { data: verifyData } = await supabase
+        .from('deals')
+        .select('pipeline_id')
+        .eq('clinic_id', clinicId)
+        .is('deleted_at', null)
+        .in('external_id', importedExternalIds.slice(0, 1000))
+      const counts = new Map<string, number>()
+      for (const row of verifyData ?? []) {
+        const pid = (row as { pipeline_id: string | null }).pipeline_id ?? '—'
+        counts.set(pid, (counts.get(pid) ?? 0) + 1)
+      }
+      for (const [pid, count] of counts) {
+        const name = allPipelines.find(p => p.id === pid)?.name ?? `(${pid.slice(0, 8)}…)`
+        dbDistribution.push({ pipeline: name, count })
+      }
+      dbDistribution.sort((a, b) => b.count - a.count)
+    }
+
+    setReport({
+      total: rows.length,
+      foundByPhone,
+      foundByName,
+      patientsCreated,
+      dealsCreated,
+      dealsUpdated,
+      dealsSkippedDeleted,
+      stageMatched,
+      stageFallback,
+      responsibleMatched,
+      skipped,
+      unrecognizedHeaders,
+      unknownStages: Array.from(unknownStages),
+      unknownResponsibles: Array.from(unknownResponsibles),
+      unknownPipelines: Array.from(unknownPipelines),
+      errors: errors.slice(0, 15),
+      dbDistribution,
+    })
     setBusy(false)
+    setProgress(null)
   }
 
   return (
@@ -3760,7 +6082,11 @@ function ImportDealsModal({
           <div>
             <p className="text-gray-600 mb-2">
               Загрузите CSV (разделитель «;» или «,»). Первая строка — заголовки. Распознаются:
-              <span className="font-mono text-xs text-gray-500"> название, пациент, телефон, город, сумма, заметка, теги</span>.
+              <span className="font-mono text-xs text-gray-500"> id_amoCRM, ответственный, название, теги, этап, воронка, пациент, телефон, дата_рождения, город, date</span>.
+            </p>
+            <p className="text-xs text-gray-500 mb-2">
+              Пациенты ищутся сначала по телефону, затем по ФИО. Если не найдены — создаются автоматически.
+              Если в CSV указан <span className="font-mono">id_amoCRM</span>, повторный импорт обновит существующую сделку, а не создаст дубликат.
             </p>
             <input
               type="file"
@@ -3772,6 +6098,104 @@ function ImportDealsModal({
           {fileName && (
             <div className="text-xs text-gray-500">
               Файл: <span className="text-gray-800">{fileName}</span> · распознано строк: <b>{rows.length}</b>
+            </div>
+          )}
+          {detectedHeaders.length > 0 && !report && (() => {
+            const canonical = ['name', 'patient', 'phone', 'amount', 'external_id', 'city', 'notes', 'tags', 'stage', 'pipeline', 'responsible', 'birth_date', 'created_at']
+            const mappedSet = new Set(detectedHeaders.map(h => h.mapped))
+            const missingCritical = ['name', 'patient', 'phone'].filter(k => !mappedSet.has(k))
+            return (
+              <div className="text-xs border border-gray-100 rounded-md p-2 bg-gray-50">
+                <div className="text-gray-700 font-medium mb-1">Распознанные колонки:</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+                  {detectedHeaders.map((h, i) => {
+                    const isCanonical = canonical.includes(h.mapped)
+                    return (
+                      <div key={i} className="flex items-center gap-1 text-gray-600">
+                        <span className="truncate max-w-[140px]" title={h.raw}>«{h.raw}»</span>
+                        <span className="text-gray-400">→</span>
+                        <span className={isCanonical ? 'text-green-700 font-mono' : 'text-gray-400 italic'}>
+                          {isCanonical ? h.mapped : 'игнорируется'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {missingCritical.length > 0 && (
+                  <div className="mt-2 text-amber-700">
+                    Не найдены колонки: <b>{missingCritical.join(', ')}</b>.
+                    Строки без этих полей будут пропущены.
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+          {rows.length > 0 && !report && allPipelines.length > 0 && (
+            <div className="border border-gray-100 rounded-md p-3 space-y-2">
+              <div className="text-xs text-gray-700 font-medium">
+                Воронка для импорта
+              </div>
+              <select
+                value={targetPipelineId}
+                onChange={e => setTargetPipelineId(e.target.value)}
+                className="w-full border border-gray-200 rounded px-2 py-1.5 text-sm"
+              >
+                {allPipelines.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              {uniqueCsvStages.length > 0 && (
+                <>
+                  <div className="text-xs text-gray-700 font-medium pt-2">
+                    Маппинг этапов CSV → этапы воронки
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Названия в CRM часто сокращены («Назн 1 конс»), а в CSV —
+                    полные («НАЗНАЧЕНО ПЕРВИЧНАЯ КОНСУЛЬТАЦИЯ»). Сопоставьте
+                    вручную — маппинг запомнится только на этот импорт.
+                  </div>
+                  <div className="max-h-56 overflow-y-auto border border-gray-100 rounded">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 text-gray-500">
+                        <tr>
+                          <th className="px-2 py-1 text-left">Из CSV</th>
+                          <th className="px-2 py-1 text-left">→ Этап воронки</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {uniqueCsvStages.map(raw => {
+                          const pipelineStages = allStagesState.filter(
+                            s => s.pipeline_id === targetPipelineId
+                          )
+                          const value = stageMap[raw] ?? ''
+                          return (
+                            <tr key={raw} className="border-t border-gray-100">
+                              <td className="px-2 py-1 text-gray-700 truncate max-w-[220px]" title={raw}>
+                                «{raw}»
+                              </td>
+                              <td className="px-2 py-1">
+                                <select
+                                  value={value}
+                                  onChange={e => setStageMap(prev => ({
+                                    ...prev,
+                                    [raw]: e.target.value || null,
+                                  }))}
+                                  className="w-full border border-gray-200 rounded px-1 py-0.5"
+                                >
+                                  <option value="">— первый этап —</option>
+                                  {pipelineStages.map(s => (
+                                    <option key={s.id} value={s.id}>{s.name}</option>
+                                  ))}
+                                </select>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </div>
           )}
           {rows.length > 0 && !report && (
@@ -3803,12 +6227,81 @@ function ImportDealsModal({
           )}
           {report && (
             <div className="bg-gray-50 border border-gray-100 rounded-md p-3 text-xs space-y-1">
-              <div>Создано: <b className="text-green-700">{report.created}</b></div>
-              <div>Пропущено: <b className="text-amber-700">{report.skipped}</b></div>
+              <div>Всего строк обработано: <b>{report.total}</b></div>
+              <div className="h-1" />
+              <div className="text-gray-500 font-medium">Пациенты</div>
+              <div>— найдено по телефону: <b className="text-gray-800">{report.foundByPhone}</b></div>
+              <div>— найдено по имени: <b className="text-gray-800">{report.foundByName}</b></div>
+              <div>— создано новых: <b className="text-blue-700">{report.patientsCreated}</b></div>
+              <div className="h-1" />
+              <div className="text-gray-500 font-medium">Сделки</div>
+              <div>— создано: <b className="text-green-700">{report.dealsCreated}</b></div>
+              <div>— обновлено (по external_id): <b className="text-green-700">{report.dealsUpdated}</b></div>
+              <div>— пропущено удалённых (soft-deleted): <b className="text-gray-700">{report.dealsSkippedDeleted}</b></div>
+              <div>— пропущено с ошибкой: <b className="text-amber-700">{report.skipped}</b></div>
+              {(report.stageMatched > 0 || report.stageFallback > 0 || report.responsibleMatched > 0) && (
+                <>
+                  <div className="text-gray-500 mt-2">Дополнительно</div>
+                  {report.stageMatched > 0 && (
+                    <div>— этап сопоставлен: <b className="text-green-700">{report.stageMatched}</b></div>
+                  )}
+                  {report.stageFallback > 0 && (
+                    <div>
+                      — отправлено в первый этап (этап из CSV не найден):{' '}
+                      <b className="text-amber-700">{report.stageFallback}</b>
+                    </div>
+                  )}
+                  {report.responsibleMatched > 0 && (
+                    <div>— ответственный сопоставлен: <b className="text-green-700">{report.responsibleMatched}</b></div>
+                  )}
+                </>
+              )}
+              {report.dbDistribution.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">В БД сейчас (по факту):</div>
+                  <div className="text-xs text-gray-800">
+                    {report.dbDistribution.map((d, i) => (
+                      <div key={i}>— <b>{d.pipeline}</b>: {d.count}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {report.unknownStages.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">Неизвестные этапы ({report.unknownStages.length}):</div>
+                  <div className="text-xs text-amber-700 break-words">
+                    {report.unknownStages.map(s => `«${s}»`).join(', ')}
+                  </div>
+                </div>
+              )}
+              {report.unknownResponsibles.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">Неизвестные ответственные ({report.unknownResponsibles.length}):</div>
+                  <div className="text-xs text-amber-700 break-words">
+                    {report.unknownResponsibles.map(s => `«${s}»`).join(', ')}
+                  </div>
+                </div>
+              )}
+              {report.unknownPipelines.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">Неизвестные воронки ({report.unknownPipelines.length}):</div>
+                  <div className="text-xs text-amber-700 break-words">
+                    {report.unknownPipelines.map(s => `«${s}»`).join(', ')}
+                  </div>
+                </div>
+              )}
+              {report.unrecognizedHeaders.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-gray-500">Нераспознанные колонки ({report.unrecognizedHeaders.length}):</div>
+                  <div className="text-xs text-gray-500 font-mono break-words">
+                    {report.unrecognizedHeaders.map(h => `«${h}»`).join(', ')}
+                  </div>
+                </div>
+              )}
               {report.errors.length > 0 && (
                 <div>
-                  <div className="text-gray-500 mt-2">Ошибки (первые 10):</div>
-                  <ul className="list-disc pl-4 text-red-700">
+                  <div className="text-gray-500 mt-2">Детализация ошибок (первые 15):</div>
+                  <ul className="list-disc pl-4 text-red-700 space-y-0.5">
                     {report.errors.map((e, i) => <li key={i}>{e}</li>)}
                   </ul>
                 </div>
@@ -3826,7 +6319,9 @@ function ImportDealsModal({
               disabled={busy || rows.length === 0}
               className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
             >
-              {busy ? 'Импортируем…' : `Импортировать ${rows.length}`}
+              {busy
+                ? (progress ? `Импортируем ${progress.done} / ${progress.total}…` : 'Импортируем…')
+                : `Импортировать ${rows.length}`}
             </button>
           ) : (
             <button

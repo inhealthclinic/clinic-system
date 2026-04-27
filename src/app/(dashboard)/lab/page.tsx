@@ -166,12 +166,28 @@ function pickRange(
     return true
   })
   if (eligible.length === 0) return null
+  // Медицинский приоритет: беременность > возраст > пол.
+  // Педиатрические диапазоны сильно отличаются от взрослых, поэтому
+  // группа с age-границами должна побеждать обычную «Мужчины/Женщины».
+  // Группа с И полом, И возрастом (напр. «Девочки до 18») — самая
+  // специфичная среди non-pregnancy и выигрывает у обеих.
   const score = (r: RefRange) =>
-    (r.sex ? 2 : 0) +
-    (r.pregnant != null ? 2 : 0) +
-    (r.age_min != null ? 1 : 0) +
-    (r.age_max != null ? 1 : 0)
-  return eligible.slice().sort((a, b) => score(b) - score(a))[0]
+    (r.pregnant != null ? 8 : 0) +
+    (r.age_min != null ? 2 : 0) +
+    (r.age_max != null ? 2 : 0) +
+    (r.sex ? 1 : 0)
+  // Тай-брейк: при равном счёте берём более узкий возрастной коридор
+  // (напр. «0–1» выигрывает у «0–18» для младенца).
+  const width = (r: RefRange) => {
+    const lo = r.age_min ?? 0
+    const hi = r.age_max ?? 200
+    return hi - lo
+  }
+  return eligible.slice().sort((a, b) => {
+    const ds = score(b) - score(a)
+    if (ds !== 0) return ds
+    return width(a) - width(b)
+  })[0]
 }
 
 interface PatientHit {
@@ -213,8 +229,10 @@ const STATUS_RU: Record<string, string> = {
 
 /* ─── Status progression ─────────────────────────────────── */
 const NEXT_STATUS: Record<string, { status: string; label: string; cls: string }> = {
-  ordered:      { status: 'agreed',       label: 'Согласовать',    cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
-  agreed:       { status: 'sample_taken', label: 'Образец взят',   cls: 'bg-teal-600 hover:bg-teal-700 text-white' },
+  // Упрощённый флоу: ordered → in_progress (одной кнопкой «В работу»).
+  // agreed / sample_taken сохраняем для легаси-данных — они тоже едут прямо в in_progress.
+  ordered:      { status: 'in_progress',  label: 'В работу',       cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
+  agreed:       { status: 'in_progress',  label: 'В работу',       cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
   sample_taken: { status: 'in_progress',  label: 'В работу',       cls: 'bg-blue-600 hover:bg-blue-700 text-white' },
   in_progress:  { status: 'ready',        label: '✓ Готово',       cls: 'bg-green-600 hover:bg-green-700 text-white' },
   ready:        { status: 'verified',     label: 'Верифицировать', cls: 'bg-purple-600 hover:bg-purple-700 text-white' },
@@ -712,10 +730,11 @@ function OrderDrawer({ order, onClose, onUpdated }: {
       alert(`Не удалось сохранить образец: ${insErr.message}`)
       return
     }
-    // Move status forward only if order is still in pre-sample phase
+    // Move status forward only if order is still in pre-work phase.
+    // В упрощённом флоу сразу прыгаем в in_progress (шаг sample_taken убран).
     if (!['sample_taken','in_progress','ready','verified','delivered'].includes(order.status)) {
       await supabase.from('lab_orders')
-        .update({ status: 'sample_taken', sample_taken_at: now })
+        .update({ status: 'in_progress', sample_taken_at: now })
         .eq('id', order.id)
     }
     setTakingSample(false)
@@ -1167,12 +1186,14 @@ function OrderDrawer({ order, onClose, onUpdated }: {
 
         {/* Footer */}
         <div className="p-5 border-t border-gray-100 space-y-2">
-          {/* Material taken — доступно пока заказ не верифицирован/выдан.
-              Можно брать несколько проб разных типов. */}
-          {!['verified','delivered'].includes(order.status) && (
+          {/* В упрощённом флоу отдельной кнопки «Материал взят» нет —
+              проба автоматически логируется при переходе в работу.
+              Кнопку «Добавить пробу» оставляем только если уже есть пробы,
+              чтобы можно было зафиксировать несколько типов материала. */}
+          {samples.length > 0 && !['verified','delivered'].includes(order.status) && (
             <button onClick={() => setSampleModalOpen(true)} disabled={takingSample}
-              className="w-full py-2.5 rounded-lg text-sm font-medium bg-teal-600 hover:bg-teal-700 text-white disabled:opacity-60 transition-colors">
-              {samples.length > 0 ? '➕ Добавить пробу' : '🩸 Материал взят'}
+              className="w-full py-2.5 rounded-lg text-sm font-medium bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 disabled:opacity-60 transition-colors">
+              ➕ Добавить пробу
             </button>
           )}
           {next && (
@@ -1691,6 +1712,10 @@ export default function LabPage() {
           ))}
         </div>
         <div className="flex-1" />
+        <Link href="/lab/worklist"
+          className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
+          🧪 Worklist
+        </Link>
         <Link href="/lab/references"
           className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg transition-colors">
           📏 Референсы

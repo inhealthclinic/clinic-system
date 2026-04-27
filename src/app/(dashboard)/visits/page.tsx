@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { exportCsv } from '@/lib/export/csv'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -463,13 +464,31 @@ export default function VisitsPage() {
           )}
           <p className="text-sm text-gray-400">{visits.length} визитов</p>
         </div>
-        <button onClick={() => setShowWalkIn(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors flex items-center gap-2">
-          <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
-          Быстрый приём
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportCsv(`visits-${dateToISO(selectedDate)}`, filtered, [
+              { key: 'Пациент',  value: v => v.patient?.full_name ?? '' },
+              { key: 'Телефон',  value: v => v.patient?.phones?.[0] ?? '' },
+              { key: 'Врач',     value: v => v.doctor ? `${v.doctor.last_name} ${v.doctor.first_name}` : '' },
+              { key: 'Статус',   value: v => STATUS_LABEL[v.status] ?? v.status },
+              { key: 'Начат',    value: v => v.started_at ? new Date(v.started_at).toLocaleString('ru-RU') : '' },
+              { key: 'Завершён', value: v => v.completed_at ? new Date(v.completed_at).toLocaleString('ru-RU') : '' },
+              { key: 'Оплачен',  value: v => v.finance_settled ? 'да' : 'нет' },
+              { key: 'Создан',   value: v => new Date(v.created_at).toLocaleString('ru-RU') },
+            ])}
+            disabled={filtered.length === 0}
+            className="border border-gray-200 hover:bg-gray-50 disabled:opacity-40 text-gray-700 text-sm font-medium px-3 py-2.5 rounded-lg transition-colors"
+            title="Экспорт видимых визитов в CSV">
+            ⬇ CSV
+          </button>
+          <button onClick={() => setShowWalkIn(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors flex items-center gap-2">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            Быстрый приём
+          </button>
+        </div>
       </div>
 
       {/* Filter tabs */}

@@ -38,7 +38,7 @@ function chatIdToPhone(chatId: string): string {
   return chatId.split('@')[0].replace(/\D/g, '')
 }
 
-type DealRef = { id: string; clinic_id: string; name?: string | null }
+type DealRef = { id: string; clinic_id: string; name?: string | null; status?: string }
 
 /**
  * Если у сделки ещё нет «настоящего» имени (только номер / плейсхолдер
@@ -68,26 +68,40 @@ async function maybeBackfillDealName(
   }
 }
 
-async function findDealByPhone(phone: string): Promise<DealRef | null> {
+/**
+ * Возвращает открытую сделку по номеру телефона (приоритет).
+ * Если открытой нет — возвращает последнюю закрытую в поле `closed`
+ * чтобы вызывающий код мог создать новую сделку со ссылкой на историю.
+ */
+async function findDealByPhone(
+  phone: string,
+): Promise<{ open: DealRef | null; closed: DealRef | null }> {
   const db = admin()
-  if (!phone || phone.length < 7) return null
+  const none = { open: null, closed: null }
+  if (!phone || phone.length < 7) return none
   const tail = phone.slice(-10)
 
   const { data } = await db
     .from('deals')
     .select('id, clinic_id, status, name')
     .or(`contact_phone.ilike.%${tail}%`)
+    .is('deleted_at', null)
     .order('updated_at', { ascending: false })
-    .limit(5)
+    .limit(10)
 
   if (data && data.length > 0) {
-    const pick = data.find((d: { status: string }) => d.status === 'open') ?? data[0]
-    return { id: pick.id, clinic_id: pick.clinic_id, name: pick.name }
+    const open   = data.find((d: { status: string }) => d.status === 'open') ?? null
+    const closed = data.find((d: { status: string }) => d.status !== 'open') ?? null
+    if (open || closed) {
+      return {
+        open:   open   ? { id: open.id,   clinic_id: open.clinic_id,   name: open.name,   status: open.status }   : null,
+        closed: closed ? { id: closed.id, clinic_id: closed.clinic_id, name: closed.name, status: closed.status } : null,
+      }
+    }
   }
 
   // patients.phones — text[]. PostgREST containment `cs.{value}` требует
-  // точного совпадения элемента, поэтому прогоняем несколько вариантов
-  // нормализации номера.
+  // точного совпадения элемента, поэтому прогоняем несколько вариантов.
   const variants = Array.from(new Set([phone, `+${phone}`, tail, `+${tail}`]))
   const orExpr = variants.map((v) => `phones.cs.{${v}}`).join(',')
   const { data: pats } = await db
@@ -102,15 +116,20 @@ async function findDealByPhone(phone: string): Promise<DealRef | null> {
       .from('deals')
       .select('id, clinic_id, status, name')
       .in('patient_id', patientIds)
+      .is('deleted_at', null)
       .order('updated_at', { ascending: false })
-      .limit(5)
+      .limit(10)
     if (deals && deals.length > 0) {
-      const pick = deals.find((d: { status: string }) => d.status === 'open') ?? deals[0]
-      return { id: pick.id, clinic_id: pick.clinic_id, name: pick.name }
+      const open   = deals.find((d: { status: string }) => d.status === 'open') ?? null
+      const closed = deals.find((d: { status: string }) => d.status !== 'open') ?? null
+      return {
+        open:   open   ? { id: open.id,   clinic_id: open.clinic_id,   name: open.name,   status: open.status }   : null,
+        closed: closed ? { id: closed.id, clinic_id: closed.clinic_id, name: closed.name, status: closed.status } : null,
+      }
     }
   }
 
-  return null
+  return none
 }
 
 /** Создать «Входящий лид» в первой стадии первой воронки. */
@@ -141,6 +160,15 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
     console.error('[greenapi] stage has no linked clinic via pipelines')
     return null
   }
+
+  // Бот включён в настройках клиники? clinics.settings — JSONB, читаем плоско.
+  // Если настройка отсутствует — bot_enabled считаем false (бот по умолчанию OFF).
+  const { data: clinicRow } = await db
+    .from('clinics')
+    .select('settings')
+    .eq('id', clinicId)
+    .maybeSingle()
+  const botEnabled = (clinicRow?.settings as { bot_enabled?: boolean } | null)?.bot_enabled === true
 
   // Если в WA у собеседника задано имя — используем его без префикса.
   // Иначе ставим номер (чтобы в списке сделок сразу было видно, с кем чат).
@@ -183,12 +211,15 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
     name: dealName,
     contact_phone: phone,
     status: 'open',
+    // Включаем бота сразу при insert — cron подхватит на ближайшем тике (≤5 мин).
+    // Если bot_enabled=false на уровне клиники, ставим false: меньше работы для cron.
+    bot_active: botEnabled,
     ...(waSourceId ? { source_id: waSourceId } : {}),
   }
 
   let { data: deal, error } = await db.from('deals').insert(payload).select('id, clinic_id, name').single()
 
-  if (error && /contact_phone|source|column/.test(error.message)) {
+  if (error && /contact_phone|source|column|bot_active/.test(error.message)) {
     console.warn('[greenapi] deals insert failed on extra cols, retry minimal:', error.message)
     const minimal = {
       clinic_id: clinicId,
@@ -209,6 +240,121 @@ async function createInboundDeal(phone: string, waName: string | null): Promise<
   return { id: deal.id, clinic_id: deal.clinic_id, name: deal.name }
 }
 
+/**
+ * Авто-подтверждение приёма: если пациент в ответ на 24ч/2ч-напоминание
+ * пишет "+" / "да" / "ok" / "yes" — ближайший pending-визит переводится
+ * в confirmed, менеджеру не нужно звонить.
+ *
+ * Логика защиты от ложных срабатываний:
+ *   • смотрим только короткие (<=8 символов) сообщения,
+ *   • только в окне ближайших 48ч до приёма (чтобы «ок» из обычного
+ *     диалога не подтвердил визит на завтра),
+ *   • только статус pending (confirmed уже подтверждён, cancelled
+ *     не воскрешаем).
+ */
+const CONFIRM_WORDS = /^\s*[+✓✅]?\s*(да|yes|ok|okay|ок|оке|конечно|буду|приду|подтверждаю|confirmed?)\s*[!.]?\s*$/i
+
+async function tryAutoConfirmAppointment(
+  phone: string,
+  text: string,
+  clinicId: string,
+): Promise<string | null> {
+  if (text.length > 20) return null
+  if (!CONFIRM_WORDS.test(text) && text.trim() !== '+') return null
+
+  const db = admin()
+  const tail = phone.slice(-10)
+  const variants = Array.from(new Set([phone, `+${phone}`, tail, `+${tail}`]))
+  const orExpr = variants.map((v) => `phones.cs.{${v}}`).join(',')
+  const { data: pats } = await db
+    .from('patients')
+    .select('id')
+    .eq('clinic_id', clinicId)
+    .or(orExpr)
+    .limit(5)
+  if (!pats || pats.length === 0) return null
+
+  const now = new Date()
+  const in48h = new Date(now.getTime() + 48 * 3600_000)
+  const todayIso = now.toISOString().slice(0, 10)
+  const tomorrowIso = in48h.toISOString().slice(0, 10)
+
+  const { data: appts } = await db
+    .from('appointments')
+    .select('id, date, time_start, status')
+    .in('patient_id', pats.map((p: { id: string }) => p.id))
+    .eq('status', 'pending')
+    .gte('date', todayIso)
+    .lte('date', tomorrowIso)
+    .order('date', { ascending: true })
+    .order('time_start', { ascending: true })
+    .limit(1)
+  if (!appts || appts.length === 0) return null
+
+  const a = appts[0]
+  const at = new Date(`${a.date}T${a.time_start}`)
+  if (at < now || at > in48h) return null
+
+  const { error } = await db
+    .from('appointments')
+    .update({ status: 'confirmed' })
+    .eq('id', a.id)
+    .eq('status', 'pending')
+  if (error) {
+    console.warn('[greenapi] auto-confirm update failed:', error.message)
+    return null
+  }
+  console.log('[greenapi] auto-confirmed appointment', a.id, 'via reply from', phone)
+  return a.id
+}
+
+/**
+ * Скачать медиа-файл по downloadUrl из Green-API и переложить в наш Storage,
+ * чтобы плеер в чате не зависел от CDN Green-API (там короткий TTL, бывает 403).
+ * Возвращает { url, mime, size, name } или null если облом.
+ */
+async function ingestIncomingFile(
+  clinicId: string,
+  dealId: string,
+  downloadUrl: string,
+  mime: string | undefined,
+  suggestedName: string | undefined,
+): Promise<{ url: string; mime: string; size: number; name: string } | null> {
+  try {
+    const r = await fetch(downloadUrl)
+    if (!r.ok) {
+      console.warn('[greenapi] file fetch failed', r.status, downloadUrl)
+      return null
+    }
+    const buf = Buffer.from(await r.arrayBuffer())
+    const ct = mime || r.headers.get('content-type') || 'application/octet-stream'
+    const ext = ct.includes('ogg')   ? 'ogg'
+              : ct.includes('webm')  ? 'ogg'
+              : ct.includes('mp4')   ? 'm4a'
+              : ct.includes('mpeg')  ? 'mp3'
+              : ct.includes('jpeg')  ? 'jpg'
+              : ct.includes('png')   ? 'png'
+              : ct.includes('pdf')   ? 'pdf'
+              : 'bin'
+    const fname = suggestedName || `in-${Date.now()}.${ext}`
+    const path = `deals/${clinicId}/${dealId}/in-${Date.now()}.${ext}`
+    const db = admin()
+    const { error } = await db.storage.from('crm-attachments').upload(path, buf, {
+      contentType: ct,
+      upsert: false,
+    })
+    if (error) {
+      console.warn('[greenapi] storage upload failed:', error.message)
+      return null
+    }
+    const { data: pub } = db.storage.from('crm-attachments').getPublicUrl(path)
+    return { url: pub.publicUrl, mime: ct, size: buf.length, name: fname }
+  } catch (e) {
+    console.warn('[greenapi] ingestIncomingFile error:', e)
+    return null
+  }
+}
+
 async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   const db = admin()
   const phone = chatIdToPhone(wh.senderData.chatId)
@@ -221,19 +367,73 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   )
   if (!text) return
 
-  let deal = await findDealByPhone(phone)
-  if (!deal) {
-    console.log('[greenapi] no matching deal, creating inbound lead')
-    deal = await createInboundDeal(phone, waName)
-    if (!deal) {
+  const { open: openDeal, closed: closedDeal } = await findDealByPhone(phone)
+
+  let deal: DealRef
+  let isReopened = false
+
+  if (openDeal) {
+    // Открытая сделка есть — пишем в неё
+    deal = openDeal
+    console.log('[greenapi] matched open deal', deal.id, 'name', deal.name)
+    await maybeBackfillDealName(deal.id, deal.name, phone, waName)
+  } else if (closedDeal) {
+    // Все сделки закрыты (won/lost) — повторное обращение:
+    // создаём новую в первой стадии ("Неразобранное") и сохраняем ссылку на историю
+    console.log('[greenapi] closed deal found', closedDeal.id, '— creating new inbound deal for returning contact')
+    const newDeal = await createInboundDeal(phone, waName)
+    if (!newDeal) {
       console.error('[greenapi] createInboundDeal returned null — no pipeline_stages?')
       return
     }
-    console.log('[greenapi] created deal', deal.id, 'clinic', deal.clinic_id, 'name', deal.name)
+    deal = newDeal
+    isReopened = true
+    console.log('[greenapi] created new deal', deal.id, 'linked to previous', closedDeal.id)
+
+    // Лог: повторное обращение — ссылка на предыдущую сделку
+    const prevName = closedDeal.name || closedDeal.id
+    const prevStatus = closedDeal.status === 'won' ? 'завершена (успех)' : closedDeal.status === 'lost' ? 'потеряна' : 'закрыта'
+    await db.from('deal_messages').insert({
+      deal_id: deal.id,
+      clinic_id: deal.clinic_id,
+      direction: 'out' as const,
+      channel: 'internal' as const,
+      body: `📋 Повторное обращение. Предыдущая сделка: «${prevName}» (${prevStatus}). ID: ${closedDeal.id}`,
+      author_id: null,
+    }).then(({ error }) => {
+      if (error) console.warn('[greenapi] failed to log reopened note:', error.message)
+    })
   } else {
-    console.log('[greenapi] matched existing deal', deal.id, 'name', deal.name)
-    // Если раньше имени не было (была автогенерация), а сейчас пришло — обновим.
-    await maybeBackfillDealName(deal.id, deal.name, phone, waName)
+    // Новый контакт — создаём сделку
+    console.log('[greenapi] no matching deal, creating inbound lead')
+    const newDeal = await createInboundDeal(phone, waName)
+    if (!newDeal) {
+      console.error('[greenapi] createInboundDeal returned null — no pipeline_stages?')
+      return
+    }
+    deal = newDeal
+    console.log('[greenapi] created deal', deal.id, 'clinic', deal.clinic_id, 'name', deal.name)
+  }
+  void isReopened // used above for logging
+
+  // Если это медиа (аудио/картинка/видео/документ) — скачиваем и сохраняем
+  // в Storage, чтобы плеер/превью работали в чате CRM.
+  type Attachment = { kind: 'voice' | 'image' | 'video' | 'file'; url: string; mime: string; size: number; name: string }
+  const md = wh.messageData
+  const fmd = md.fileMessageData
+  let attachment: Attachment | null = null
+  if (fmd?.downloadUrl) {
+    const kind: Attachment['kind'] =
+      md.typeMessage === 'audioMessage'    ? 'voice' :
+      md.typeMessage === 'imageMessage'    ? 'image' :
+      md.typeMessage === 'videoMessage'    ? 'video' :
+                                              'file'
+    const ingested = await ingestIncomingFile(
+      deal.clinic_id, deal.id, fmd.downloadUrl, fmd.mimeType, fmd.fileName,
+    )
+    if (ingested) {
+      attachment = { kind, ...ingested }
+    }
   }
 
   // Пробуем полную вставку со статусом, если колонки ещё нет (миграция 040 не
@@ -247,6 +447,7 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
     external_id: wh.idMessage,
     external_sender: waName ?? phone,
     created_at: new Date(wh.timestamp * 1000).toISOString(),
+    ...(attachment ? { attachments: [attachment] } : {}),
   }
 
   let { error } = await db.from('deal_messages').insert({ ...basePayload, status: 'delivered' })
@@ -263,6 +464,35 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
     }
   } else {
     console.log('[greenapi] message saved, deal', deal.id)
+  }
+
+  // Авто-подтверждение: если это короткий положительный ответ на напоминание,
+  // находим ближайший pending-приём пациента и переводим в confirmed. Ошибки
+  // глотаем — это побочный эффект, пусть не валит обработку сообщения.
+  try {
+    const confirmedId = await tryAutoConfirmAppointment(phone, text, deal.clinic_id)
+    if (confirmedId) {
+      // Лог в interactions, чтобы менеджер видел в истории сделки,
+      // что подтверждение пришло автоматом.
+      await db.from('crm_interactions').insert({
+        clinic_id: deal.clinic_id,
+        deal_id: deal.id,
+        type: 'whatsapp',
+        direction: 'inbound',
+        summary: `Авто-подтверждение приёма по ответу "${text.slice(0, 40)}"`,
+      })
+    }
+  } catch (e) {
+    console.warn('[greenapi] auto-confirm flow failed (non-fatal):', e)
+  }
+
+  // Диалоговый Salesbot: подаём входящий текст в активный run сделки
+  // (или стартуем default-flow клиники, если run ещё не создан).
+  try {
+    const { routeInboundForDeal } = await import('@/lib/automation/salesbot-flow')
+    await routeInboundForDeal(db, deal.id, text)
+  } catch (e) {
+    console.warn('[greenapi] salesbot-flow routing failed (non-fatal):', e)
   }
 }
 
@@ -281,16 +511,40 @@ async function handleOutgoingStatus(wh: OutgoingStatusWebhook) {
     .from('deal_messages')
     .update({
       status: mapped,
+      // Прочитано клиентом → ставим read_at для триггера on_read.
+      ...(mapped === 'read' ? { read_at: new Date().toISOString() } : {}),
       error_text: mapped === 'failed' ? `GreenAPI: ${wh.status}` : null,
     })
     .eq('external_id', wh.idMessage)
 }
 
 export async function POST(req: NextRequest) {
-  // 1. Проверяем secret
-  const secret = process.env.GREENAPI_WEBHOOK_TOKEN
+  // 1. Проверяем secret. Токен может лежать в env (старый путь) или в БД
+  // (clinics.whatsapp_webhook_token — новый путь, per-clinic).
+  // Принимаем валидным любой из вариантов: токен из env ИЛИ совпадение
+  // с одной из клиник в БД.
   const token = req.nextUrl.searchParams.get('t') ?? req.headers.get('x-green-api-token')
-  if (secret && token !== secret) {
+  const envSecret = process.env.GREENAPI_WEBHOOK_TOKEN
+  let authorized = false
+  if (envSecret && token === envSecret) {
+    authorized = true
+  } else if (token) {
+    try {
+      const sb = admin()
+      const { data } = await sb
+        .from('clinics')
+        .select('id')
+        .eq('whatsapp_webhook_token', token)
+        .limit(1)
+        .maybeSingle()
+      if (data?.id) authorized = true
+    } catch {
+      // ignore — упадём в 403
+    }
+  }
+  // Если ни env, ни в БД токен не задан — пропускаем (для первичной настройки),
+  // но только если env-secret тоже пустой и в БД нет ни одной записи с токеном.
+  if (!authorized) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   }
 
@@ -313,8 +567,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[greenapi webhook] error:', err)
-    // Возвращаем 200 чтобы GreenAPI не ретраил штормом;
-    // внутренние ошибки логируем и разбираем отдельно.
+    // Возвращаем 200 чтобы GreenAPI не ретраил штормом, но событие
+    // НЕ должно потеряться: пишем в webhook_errors (мигр. 082),
+    // админ увидит непрочитанные в /settings/audit или прямым SELECT.
+    try {
+      const sb = admin()
+      const errMsg = err instanceof Error ? err.message : String(err)
+      const errCode = (err as { code?: string })?.code ?? null
+      const externalId =
+        (wh as { idMessage?: string })?.idMessage ??
+        (wh as { senderData?: { idMessage?: string } })?.senderData?.idMessage ??
+        null
+      await sb.from('webhook_errors').insert({
+        source: 'greenapi',
+        event_type: wh.typeWebhook ?? null,
+        external_id: externalId,
+        error_message: errMsg,
+        error_code: errCode,
+        payload: wh as object,
+        context: null,
+      })
+    } catch (logErr) {
+      // Если даже лог-инсёрт упал — последняя надежда console.error,
+      // оттуда Vercel logs. Большего сделать в этой точке нельзя.
+      console.error('[greenapi webhook] failed to log error:', logErr)
+    }
     return NextResponse.json({ ok: false, error: String(err) })
   }
 }

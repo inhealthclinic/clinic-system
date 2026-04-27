@@ -1,5 +1,21 @@
 'use client'
 
+/**
+ * /lab/references — настройка референсов для лабораторных услуг.
+ *
+ * Слева — список услуг верхнего уровня (parent_service_id IS NULL).
+ * Панели (is_panel=true) показываются отдельным стилем: по клику в
+ * правой области открывается список их детей-аналитов с inline-правкой
+ * ref_min / ref_max / unit / critical_low / critical_high.
+ *
+ * Для обычных услуг (не-панелей) сохранено прежнее поведение:
+ * форма дефолтного референса + таблица демографических диапазонов
+ * (reference_ranges).
+ *
+ * Кнопка «✨ Пресет: ОАК+СОЭ» вызывает RPC seed_oak_panel(clinic) —
+ * создаёт панель и 25 дочерних аналитов или связывает существующих.
+ */
+
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
@@ -7,6 +23,10 @@ import { useAuthStore } from '@/lib/stores/authStore'
 /* ─── Types ──────────────────────────────────────────────────────────── */
 interface Service {
   id: string
+  clinic_id: string
+  parent_service_id: string | null
+  is_panel: boolean
+  sort_order: number
   name: string
   category: string | null
   is_lab: boolean
@@ -44,6 +64,7 @@ const PRESETS: Record<Preset, { label: string; emoji: string; apply: (r: Partial
 }
 
 const inp = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition'
+const inpSm = 'w-full border border-gray-200 rounded-md px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 focus:border-transparent outline-none'
 const lbl = 'block text-xs font-medium text-gray-500 mb-1'
 
 /* ─── Helpers ────────────────────────────────────────────────────────── */
@@ -65,11 +86,11 @@ function describeRange(r: RefRange): string {
 
 /* ─── Page ───────────────────────────────────────────────────────────── */
 export default function LabReferencesPage() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id ?? ''
 
-  const [services, setServices]       = useState<Service[]>([])
+  const [allServices, setAllServices] = useState<Service[]>([])
   const [selectedId, setSelectedId]   = useState<string | null>(null)
   const [ranges, setRanges]           = useState<RefRange[]>([])
   const [loading, setLoading]         = useState(true)
@@ -79,22 +100,44 @@ export default function LabReferencesPage() {
   const [form, setForm]               = useState<Partial<RefRange>>({})
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
+  // Локальный буфер правок по детям панели, чтобы кнопки «Сохранить» были быстрые.
+  const [childEdits, setChildEdits]   = useState<Record<string, Partial<Service>>>({})
+  // reference_ranges для всех детей выбранной панели (key = service_id)
+  const [childRanges, setChildRanges] = useState<Record<string, RefRange[]>>({})
+  // Режим отображения Min/Max в таблице панели
+  const [panelMode, setPanelMode] = useState<'default' | 'M' | 'F'>('default')
+  // Буфер правок для M/F в таблице панели (key = service_id)
+  const [sexEdits, setSexEdits] = useState<Record<string, { min?: string; max?: string }>>({})
 
-  const selected = useMemo(() => services.find(s => s.id === selectedId) ?? null, [services, selectedId])
+  const selected    = useMemo(() => allServices.find(s => s.id === selectedId) ?? null, [allServices, selectedId])
+  const topServices = useMemo(() => allServices.filter(s => !s.parent_service_id), [allServices])
+  const children    = useMemo(
+    () => selected?.is_panel
+      ? allServices
+          .filter(s => s.parent_service_id === selected.id)
+          .sort((a, b) => {
+            const ao = a.sort_order ?? 0
+            const bo = b.sort_order ?? 0
+            if (ao !== bo) return ao - bo
+            return a.name.localeCompare(b.name, 'ru')
+          })
+      : [],
+    [allServices, selected]
+  )
 
-  /* ─── Load services ─── */
+  /* ─── Load all services (with parent info) ─── */
   const loadServices = useCallback(async () => {
     if (!clinicId) return
     setLoading(true)
     const { data } = await supabase
       .from('services')
-      .select('id, name, category, is_lab, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
+      .select('id, clinic_id, parent_service_id, is_panel, sort_order, name, category, is_lab, default_unit, reference_min, reference_max, reference_text, critical_low, critical_high')
       .eq('clinic_id', clinicId)
       .eq('is_lab', true)
       .eq('is_active', true)
       .order('category', { nullsFirst: true })
       .order('name')
-    setServices((data ?? []) as Service[])
+    setAllServices((data ?? []) as Service[])
     setLoading(false)
   }, [clinicId, supabase])
 
@@ -108,8 +151,26 @@ export default function LabReferencesPage() {
     setRanges((data ?? []) as RefRange[])
   }, [selectedId, supabase])
 
+  /* Загружаем диапазоны всех детей панели одним запросом */
+  const loadChildRanges = useCallback(async () => {
+    if (!selected?.is_panel) { setChildRanges({}); return }
+    const childIds = allServices.filter(s => s.parent_service_id === selected.id).map(s => s.id)
+    if (childIds.length === 0) { setChildRanges({}); return }
+    const { data } = await supabase
+      .from('reference_ranges')
+      .select('*')
+      .in('service_id', childIds)
+      .order('sex')
+    const grouped: Record<string, RefRange[]> = {}
+    for (const r of (data ?? []) as RefRange[]) {
+      (grouped[r.service_id] ||= []).push(r)
+    }
+    setChildRanges(grouped)
+  }, [selected, allServices, supabase])
+
   useEffect(() => { loadServices() }, [loadServices])
   useEffect(() => { loadRanges() }, [loadRanges])
+  useEffect(() => { loadChildRanges() }, [loadChildRanges])
 
   /* ─── Save default reference on service ─── */
   const saveDefault = async () => {
@@ -131,7 +192,7 @@ export default function LabReferencesPage() {
     }
   }
 
-  /* ─── Form handlers ─── */
+  /* ─── Form handlers (демографические диапазоны) ─── */
   const openForm = (r?: RefRange) => {
     if (r) {
       setEditingId(r.id)
@@ -180,8 +241,66 @@ export default function LabReferencesPage() {
     loadRanges()
   }
 
+  /* ─── Inline-правка дочерних аналитов панели ─── */
+  const setChildField = (id: string, patch: Partial<Service>) => {
+    setChildEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }
+  const saveChild = async (id: string) => {
+    const patch = childEdits[id]
+    if (!patch) return
+    setSaving(true)
+    const clean: Record<string, unknown> = {}
+    for (const k of ['default_unit','reference_min','reference_max','critical_low','critical_high','reference_text'] as const) {
+      if (k in patch) {
+        const v = patch[k]
+        clean[k] = v === '' || v === undefined ? null : v
+      }
+    }
+    const { error: err } = await supabase.from('services').update(clean).eq('id', id)
+    setSaving(false)
+    if (err) { setError(err.message); return }
+    setError('')
+    setChildEdits(prev => {
+      const n = { ...prev }; delete n[id]; return n
+    })
+    await loadServices()
+  }
+
+  /* ─── Сохранение одной строки M или F ─── */
+  const saveSexRow = async (childId: string, sex: 'M' | 'F') => {
+    const patch = sexEdits[childId]
+    if (!patch) return
+    const child = allServices.find(s => s.id === childId)
+    if (!child) return
+    const num = (v: string | undefined) => v == null || v.trim() === '' ? null : Number(v)
+    const min = num(patch.min)
+    const max = num(patch.max)
+    setSaving(true)
+    // Сносим старую строку для этого пола у этого аналита и вставляем новую
+    await supabase.from('reference_ranges')
+      .delete()
+      .eq('service_id', childId)
+      .eq('sex', sex)
+    if (min != null || max != null) {
+      const { error: err } = await supabase.from('reference_ranges').insert({
+        service_id: childId,
+        label: sex === 'M' ? 'Мужчины' : 'Женщины',
+        sex,
+        age_min: 18, age_max: null,
+        pregnant: sex === 'F' ? false : null,
+        min_value: min, max_value: max,
+        unit: child.default_unit,
+      })
+      if (err) { setError(err.message); setSaving(false); return }
+    }
+    setError('')
+    setSexEdits(prev => { const n = { ...prev }; delete n[childId]; return n })
+    setSaving(false)
+    await loadChildRanges()
+  }
+
   /* ─── Filter + group ─── */
-  const visible = services.filter(s =>
+  const visible = topServices.filter(s =>
     !search.trim() ||
     s.name.toLowerCase().includes(search.toLowerCase()) ||
     (s.category ?? '').toLowerCase().includes(search.toLowerCase())
@@ -222,14 +341,23 @@ export default function LabReferencesPage() {
                 <div className="px-4 py-2 bg-gray-50 border-y border-gray-100">
                   <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">{cat}</span>
                 </div>
-                {items.map(s => (
-                  <button key={s.id} onClick={() => setSelectedId(s.id)}
-                    className={`w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 transition-colors ${
-                      selectedId === s.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
-                    }`}>
-                    {s.name}
-                  </button>
-                ))}
+                {items.map(s => {
+                  const childCount = allServices.filter(c => c.parent_service_id === s.id).length
+                  return (
+                    <button key={s.id} onClick={() => setSelectedId(s.id)}
+                      className={`w-full text-left px-4 py-2.5 text-sm hover:bg-blue-50 transition-colors flex items-center gap-2 ${
+                        selectedId === s.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
+                      }`}>
+                      {s.is_panel && <span className="text-purple-500 text-xs">📦</span>}
+                      <span className="flex-1 truncate">{s.name}</span>
+                      {s.is_panel && childCount > 0 && (
+                        <span className="text-[10px] text-gray-400 bg-gray-100 rounded-full px-1.5 py-0.5">
+                          {childCount}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
               </div>
             ))
           )}
@@ -242,8 +370,165 @@ export default function LabReferencesPage() {
           <div className="bg-white rounded-xl border border-gray-100 p-12 text-center">
             <p className="text-sm text-gray-400">Выберите анализ слева</p>
           </div>
+        ) : selected.is_panel ? (
+          /* ───── PANEL: table of children ───── */
+          <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <span className="text-purple-500">📦</span>
+                <h3 className="text-sm font-semibold text-gray-900">{selected.name}</h3>
+                <span className="text-xs text-gray-400">панель · {children.length} показателей</span>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                Переключайте режим и заполняйте колонку целиком. Клик по названию — подробная правка групп.
+              </p>
+              <div className="mt-3 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+                {([
+                  ['default', 'По умолчанию'],
+                  ['M',       '♂ Мужчины'],
+                  ['F',       '♀ Женщины'],
+                ] as const).map(([v, lab]) => (
+                  <button key={v} onClick={() => setPanelMode(v)}
+                    className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                      panelMode === v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}>
+                    {lab}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {children.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-400">
+                Внутри панели ещё нет показателей.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 text-left text-[10px] uppercase tracking-wider text-gray-500">
+                      <th className="px-3 py-2 font-semibold">Показатель</th>
+                      <th className="px-2 py-2 font-semibold w-24">Ед.</th>
+                      <th className="px-2 py-2 font-semibold w-20">Min</th>
+                      <th className="px-2 py-2 font-semibold w-20">Max</th>
+                      <th className="px-2 py-2 font-semibold w-32">Референсы</th>
+                      <th className="px-2 py-2 font-semibold w-20 text-red-500">Crit low</th>
+                      <th className="px-2 py-2 font-semibold w-20 text-red-500">Crit high</th>
+                      <th className="px-2 py-2 font-semibold w-20"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {children.map(c => {
+                      const edit = childEdits[c.id] ?? {}
+                      const dirtyDef = Object.keys(edit).length > 0
+                      const val = <K extends keyof Service>(k: K): Service[K] =>
+                        (k in edit ? (edit[k] as Service[K]) : c[k])
+                      const onChange = <K extends keyof Service>(k: K) =>
+                        (e: React.ChangeEvent<HTMLInputElement>) => {
+                          const raw = e.target.value
+                          const v = k === 'default_unit'
+                            ? (raw || null) as Service[K]
+                            : (raw === '' ? null : Number(raw)) as Service[K]
+                          setChildField(c.id, { [k]: v } as Partial<Service>)
+                        }
+                      const rrs = childRanges[c.id] ?? []
+                      const sexRow = panelMode === 'M' ? rrs.find(r => r.sex === 'M')
+                                   : panelMode === 'F' ? rrs.find(r => r.sex === 'F')
+                                   : null
+                      const sexEdit = sexEdits[c.id]
+                      const dirtySex = !!sexEdit && (sexEdit.min !== undefined || sexEdit.max !== undefined)
+                      const sexMinVal = sexEdit?.min !== undefined
+                        ? sexEdit.min
+                        : (sexRow?.min_value != null ? String(sexRow.min_value) : '')
+                      const sexMaxVal = sexEdit?.max !== undefined
+                        ? sexEdit.max
+                        : (sexRow?.max_value != null ? String(sexRow.max_value) : '')
+                      const isDef = panelMode === 'default'
+                      const dirty = isDef ? dirtyDef : (dirtyDef || dirtySex)
+                      return (
+                        <tr key={c.id} className={dirty ? 'bg-yellow-50' : ''}>
+                          <td className="px-3 py-1.5">
+                            <button
+                              onClick={() => setSelectedId(c.id)}
+                              className="text-left text-gray-900 hover:text-blue-600 hover:underline">
+                              {c.name.replace(/\s*\((?:ОАК|ОАМ|кал)\)\s*$/i, '')}
+                            </button>
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input className={inpSm}
+                              value={(val('default_unit') as string | null) ?? ''}
+                              onChange={onChange('default_unit')} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            {isDef ? (
+                              <input type="number" step="any" className={inpSm}
+                                value={(val('reference_min') as number | null) ?? ''}
+                                onChange={onChange('reference_min')} />
+                            ) : (
+                              <input type="number" step="any" className={inpSm}
+                                value={sexMinVal}
+                                onChange={e => setSexEdits(prev => ({ ...prev, [c.id]: { ...prev[c.id], min: e.target.value } }))} />
+                            )}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            {isDef ? (
+                              <input type="number" step="any" className={inpSm}
+                                value={(val('reference_max') as number | null) ?? ''}
+                                onChange={onChange('reference_max')} />
+                            ) : (
+                              <input type="number" step="any" className={inpSm}
+                                value={sexMaxVal}
+                                onChange={e => setSexEdits(prev => ({ ...prev, [c.id]: { ...prev[c.id], max: e.target.value } }))} />
+                            )}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input className={inpSm}
+                              placeholder="напр. отсутствуют"
+                              value={(val('reference_text') as string | null) ?? ''}
+                              onChange={e => setChildField(c.id, { reference_text: e.target.value || null })} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" step="any" className={inpSm}
+                              value={(val('critical_low') as number | null) ?? ''}
+                              onChange={onChange('critical_low')} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" step="any" className={inpSm}
+                              value={(val('critical_high') as number | null) ?? ''}
+                              onChange={onChange('critical_high')} />
+                          </td>
+                          <td className="px-2 py-1.5 text-right">
+                            {dirty && (
+                              <button
+                                onClick={async () => {
+                                  if (isDef) return saveChild(c.id)
+                                  if (dirtyDef) await saveChild(c.id)
+                                  if (dirtySex) await saveSexRow(c.id, panelMode as 'M' | 'F')
+                                }}
+                                disabled={saving}
+                                className="text-[11px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-2 py-1 rounded">
+                                {saving ? '...' : 'Сохр.'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {error && <p className="text-xs text-red-600 px-5 py-2 bg-red-50 border-t border-red-100">{error}</p>}
+          </div>
         ) : (
+          /* ───── REGULAR SERVICE ───── */
           <>
+            {selected.parent_service_id && (
+              <button
+                onClick={() => setSelectedId(selected.parent_service_id)}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+                ← Назад к панели
+              </button>
+            )}
             {/* Default reference */}
             <div className="bg-white rounded-xl border border-gray-100 p-5">
               <div className="mb-3">
@@ -257,7 +542,7 @@ export default function LabReferencesPage() {
                   <label className={lbl}>Min</label>
                   <input type="number" step="any" className={inp}
                     value={selected.reference_min ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, reference_min: e.target.value === '' ? null : Number(e.target.value) } : s))}
                     placeholder="3.5" />
                 </div>
@@ -265,26 +550,25 @@ export default function LabReferencesPage() {
                   <label className={lbl}>Max</label>
                   <input type="number" step="any" className={inp}
                     value={selected.reference_max ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, reference_max: e.target.value === '' ? null : Number(e.target.value) } : s))}
                     placeholder="5.5" />
                 </div>
                 <div>
                   <label className={lbl}>Ед. изм.</label>
                   <input className={inp} value={selected.default_unit ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, default_unit: e.target.value || null } : s))}
                     placeholder="г/л" />
                 </div>
                 <div>
                   <label className={lbl}>Текст. описание</label>
                   <input className={inp} value={selected.reference_text ?? ''}
-                    onChange={e => setServices(prev => prev.map(s =>
+                    onChange={e => setAllServices(prev => prev.map(s =>
                       s.id === selected.id ? { ...s, reference_text: e.target.value || null } : s))}
                     placeholder="отриц., &lt;1:10…" />
                 </div>
               </div>
-              {/* Critical (panic) values */}
               <div className="mt-4 pt-4 border-t border-red-100">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-base">‼</span>
@@ -298,7 +582,7 @@ export default function LabReferencesPage() {
                     <label className={lbl}>Critical low</label>
                     <input type="number" step="any" className={inp}
                       value={selected.critical_low ?? ''}
-                      onChange={e => setServices(prev => prev.map(s =>
+                      onChange={e => setAllServices(prev => prev.map(s =>
                         s.id === selected.id ? { ...s, critical_low: e.target.value === '' ? null : Number(e.target.value) } : s))}
                       placeholder="напр., 2.0" />
                   </div>
@@ -306,7 +590,7 @@ export default function LabReferencesPage() {
                     <label className={lbl}>Critical high</label>
                     <input type="number" step="any" className={inp}
                       value={selected.critical_high ?? ''}
-                      onChange={e => setServices(prev => prev.map(s =>
+                      onChange={e => setAllServices(prev => prev.map(s =>
                         s.id === selected.id ? { ...s, critical_high: e.target.value === '' ? null : Number(e.target.value) } : s))}
                       placeholder="напр., 10.0" />
                   </div>
@@ -370,7 +654,7 @@ export default function LabReferencesPage() {
         )}
       </div>
 
-      {/* ── Form modal ── */}
+      {/* ── Form modal for demographic range ── */}
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowForm(false)} />
@@ -382,7 +666,6 @@ export default function LabReferencesPage() {
               <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
             </div>
 
-            {/* Presets */}
             <div className="flex flex-wrap gap-2 mb-4">
               {(Object.keys(PRESETS) as Preset[]).map(p => (
                 <button key={p} onClick={() => applyPreset(p)}
