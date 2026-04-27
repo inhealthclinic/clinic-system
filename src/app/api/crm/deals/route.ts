@@ -44,14 +44,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Сервер не настроен' }, { status: 503 })
   }
 
-  // 1) Авторизация по Bearer (тот же приём, что и в /api/settings/whatsapp).
+  // 1) Декодируем JWT локально (без сетевого вызова к Supabase Auth).
   const authHeader = req.headers.get('authorization') ?? ''
   if (!authHeader.toLowerCase().startsWith('bearer ')) {
     return NextResponse.json({ error: 'Нужна авторизация' }, { status: 401 })
   }
   const jwt = authHeader.slice('bearer '.length).trim()
-  const { data: userInfo, error: userErr } = await admin.auth.getUser(jwt)
-  if (userErr || !userInfo?.user) {
+  let userId: string
+  try {
+    const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString())
+    if (!payload?.sub || payload.exp < Date.now() / 1000) throw new Error('invalid')
+    userId = payload.sub as string
+  } catch {
     return NextResponse.json({ error: 'Сессия недействительна' }, { status: 401 })
   }
 
@@ -59,7 +63,7 @@ export async function GET(req: NextRequest) {
   const { data: profile, error: profileErr } = await admin
     .from('user_profiles')
     .select('id, clinic_id')
-    .eq('id', userInfo.user.id)
+    .eq('id', userId)
     .maybeSingle()
   if (profileErr) {
     return NextResponse.json({ error: profileErr.message }, { status: 500 })
