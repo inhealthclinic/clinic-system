@@ -3839,10 +3839,14 @@ function DealModal({
                                       <span>· {m.external_sender}</span>
                                     )}
                                   </div>
-                                  {/* Голосовое: рендерим <audio>, если в attachments[0].kind==='voice'.
-                                      Иначе — обычный текст. */}
+                                  {/* Медиа: voice → плеер, image → <img>, video → <video>,
+                                      file → ссылка-плашка. Подпись/текст из body показываем под медиа. */}
                                   {(() => {
-                                    const att = (m.attachments?.[0] as { kind?: string; url?: string; duration_s?: number | null } | undefined)
+                                    const att = (m.attachments?.[0] as {
+                                      kind?: string; url?: string; mime?: string;
+                                      size?: number; name?: string; duration_s?: number | null
+                                    } | undefined)
+                                    const caption = (m.body ?? '').replace(/^(🖼 изображение|🎬 видео|🎙 аудио|📎 документ[^\n]*)\n?/, '').trim()
                                     if (att?.kind === 'voice' && att.url) {
                                       return (
                                         <VoiceBubble
@@ -3850,6 +3854,63 @@ function DealModal({
                                           duration_s={att.duration_s ?? null}
                                           direction={m.direction as 'in' | 'out'}
                                         />
+                                      )
+                                    }
+                                    if (att?.kind === 'image' && att.url) {
+                                      return (
+                                        <div className="space-y-1">
+                                          <a href={att.url} target="_blank" rel="noopener noreferrer" className="block">
+                                            <img
+                                              src={att.url}
+                                              alt={att.name ?? 'image'}
+                                              className="rounded-md max-w-[260px] max-h-[260px] object-cover border border-black/10"
+                                              loading="lazy"
+                                            />
+                                          </a>
+                                          {caption && <div className="whitespace-pre-wrap break-words">{caption}</div>}
+                                        </div>
+                                      )
+                                    }
+                                    if (att?.kind === 'video' && att.url) {
+                                      return (
+                                        <div className="space-y-1">
+                                          <video
+                                            src={att.url}
+                                            controls
+                                            className="rounded-md max-w-[280px] max-h-[280px] bg-black"
+                                            preload="metadata"
+                                          />
+                                          {caption && <div className="whitespace-pre-wrap break-words">{caption}</div>}
+                                        </div>
+                                      )
+                                    }
+                                    if (att?.kind === 'file' && att.url) {
+                                      const sizeKb = att.size ? Math.round(att.size / 1024) : null
+                                      return (
+                                        <div className="space-y-1">
+                                          <a
+                                            href={att.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            download={att.name ?? undefined}
+                                            className={`flex items-center gap-2 px-2.5 py-2 rounded-md border ${
+                                              m.direction === 'out'
+                                                ? 'bg-blue-500/30 border-blue-300 text-white hover:bg-blue-500/40'
+                                                : 'bg-white border-gray-200 hover:bg-gray-50'
+                                            }`}
+                                          >
+                                            <span className="text-lg">📎</span>
+                                            <span className="flex-1 min-w-0">
+                                              <span className="block text-sm truncate">{att.name ?? 'файл'}</span>
+                                              {sizeKb != null && (
+                                                <span className={`block text-[10px] ${m.direction === 'out' ? 'text-blue-100' : 'text-gray-500'}`}>
+                                                  {sizeKb} КБ{att.mime ? ' · ' + att.mime : ''}
+                                                </span>
+                                              )}
+                                            </span>
+                                          </a>
+                                          {caption && <div className="whitespace-pre-wrap break-words">{caption}</div>}
+                                        </div>
                                       )
                                     }
                                     return <div className="whitespace-pre-wrap break-words">{m.body}</div>
