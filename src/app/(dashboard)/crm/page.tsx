@@ -11,6 +11,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { crmCache } from '@/lib/crmPrefetch'
 import { notify, confirmAction } from '@/lib/ui/notify'
 import { CreateAppointmentModal } from '@/components/appointments/CreateAppointmentModal'
 import { DealFieldsSettingsModal } from '@/components/crm/DealFieldsSettingsModal'
@@ -132,16 +133,6 @@ function fmtDuration(seconds: number | null): string {
   return `${seconds} с`
 }
 
-// ─── module-level SPA cache (persists between navigations, resets on refresh) ─
-
-interface CrmSnapshot {
-  deals: DealRow[]; pipelines: Pipeline[]; stages: Stage[]
-  counts: StageCount[]; conversions: Conversion[]
-  reasons: LossReason[]; sources: LeadSource[]
-  users: UserLite[]; doctors: DoctorLite[]
-}
-const _spaCache: Record<string, CrmSnapshot> = {}
-
 // ─── page ────────────────────────────────────────────────────────────────────
 
 export default function CRMKanbanPage() {
@@ -180,17 +171,17 @@ export default function CRMKanbanPage() {
     return () => { clearInterval(hbTimer); clearInterval(fetchTimer) }
   }, [clinicId, profile?.id, supabase])
 
-  // Инициализируем из SPA-кэша синхронно — не нужен даже один render с spinner'ом
-  const snap = clinicId ? _spaCache[clinicId] : undefined
-  const [pipelines, setPipelines] = useState<Pipeline[]>(snap?.pipelines ?? [])
-  const [stages, setStages] = useState<Stage[]>(snap?.stages ?? [])
-  const [deals, setDeals] = useState<DealRow[]>(snap?.deals ?? [])
-  const [counts, setCounts] = useState<StageCount[]>(snap?.counts ?? [])
-  const [conversions, setConversions] = useState<Conversion[]>(snap?.conversions ?? [])
-  const [reasons, setReasons] = useState<LossReason[]>(snap?.reasons ?? [])
-  const [sources, setSources] = useState<LeadSource[]>(snap?.sources ?? [])
-  const [users, setUsers] = useState<UserLite[]>(snap?.users ?? [])
-  const [doctors, setDoctors] = useState<DoctorLite[]>(snap?.doctors ?? [])
+  // Инициализируем из prefetch-кэша синхронно — нет spinner'а если данные уже загружены
+  const snap = clinicId ? crmCache[clinicId] : undefined
+  const [pipelines, setPipelines] = useState<Pipeline[]>((snap?.pipelines ?? []) as Pipeline[])
+  const [stages, setStages] = useState<Stage[]>((snap?.stages ?? []) as Stage[])
+  const [deals, setDeals] = useState<DealRow[]>((snap?.deals ?? []) as DealRow[])
+  const [counts, setCounts] = useState<StageCount[]>((snap?.counts ?? []) as StageCount[])
+  const [conversions, setConversions] = useState<Conversion[]>((snap?.conversions ?? []) as Conversion[])
+  const [reasons, setReasons] = useState<LossReason[]>((snap?.reasons ?? []) as LossReason[])
+  const [sources, setSources] = useState<LeadSource[]>((snap?.sources ?? []) as LeadSource[])
+  const [users, setUsers] = useState<UserLite[]>((snap?.users ?? []) as UserLite[])
+  const [doctors, setDoctors] = useState<DoctorLite[]>((snap?.doctors ?? []) as DoctorLite[])
   const [apptTypes, setApptTypes] = useState<ApptType[]>([])
   const [loading, setLoading] = useState(!snap)
 
@@ -497,9 +488,9 @@ export default function CRMKanbanPage() {
   const load = useCallback(async () => {
     if (!clinicId) return
 
-    // SPA-кэш уже применён синхронно через useState initializer.
+    // prefetch-кэш уже применён синхронно через useState initializer.
     // Если кэша нет — показываем спиннер, иначе обновляем тихо в фоне.
-    if (!_spaCache[clinicId]) setLoading(true)
+    if (!crmCache[clinicId]) setLoading(true)
     // ── Сделки тянем через server-side роут (service role, обход RLS) ────
     // У части реальных сессий `current_clinic_id()` в проде отдаёт NULL —
     // например при просроченном refresh-токене или когда auth.uid() не
@@ -581,8 +572,8 @@ export default function CRMKanbanPage() {
       setCounts(countsData)
       setConversions(conversionsData)
 
-      // Сохраняем в SPA-кэш — мгновенно при следующем переходе на страницу
-      _spaCache[clinicId] = {
+      // Обновляем кэш свежими данными
+      crmCache[clinicId] = {
         deals: enriched, pipelines: ps, stages: stagesData,
         counts: countsData, conversions: conversionsData,
         reasons: (r.data ?? []) as LossReason[], sources: (ls.data ?? []) as LeadSource[],

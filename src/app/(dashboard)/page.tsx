@@ -1,9 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/stores/authStore'
+import { prefetchCrm } from '@/lib/crmPrefetch'
 
 /* ─── Types ───────────────────────────────────────────────── */
 interface DashStats {
@@ -110,7 +111,7 @@ function StatCard({ label, value, sub, color = 'blue', href }: {
 
 /* ─── Page ────────────────────────────────────────────────── */
 export default function DashboardPage() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const [stats, setStats]             = useState<DashStats>(INITIAL)
   const [loading, setLoading]         = useState(true)
@@ -207,6 +208,16 @@ export default function DashboardPage() {
   }, [today])
 
   useEffect(() => { load() }, [load])
+
+  // Предзагружаем CRM-данные пока пользователь на дашборде
+  useEffect(() => {
+    if (!profile?.clinic_id) return
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.access_token) {
+        prefetchCrm(profile.clinic_id, session.access_token, supabase)
+      }
+    })
+  }, [profile?.clinic_id, supabase])
 
   const dateLabel = now.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })
 
