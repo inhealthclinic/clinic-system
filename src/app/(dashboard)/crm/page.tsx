@@ -141,6 +141,35 @@ export default function CRMKanbanPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
+  // ── Online presence ────────────────────────────────────────────────────────
+  interface OnlineUser { id: string; name: string; role: string; avatar?: string }
+  const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([])
+  const [presenceOpen, setPresenceOpen] = useState(false)
+
+  useEffect(() => {
+    if (!clinicId || !profile?.id) return
+    const me: OnlineUser = {
+      id: profile.id,
+      name: [profile.first_name, profile.last_name].filter(Boolean).join(' ') || 'Сотрудник',
+      role: profile.role?.name ?? '',
+    }
+    const ch = supabase.channel(`presence:crm:${clinicId}`, { config: { presence: { key: profile.id } } })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(ch as any)
+      .on('presence', { event: 'sync' }, () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = (ch as any).presenceState() as Record<string, OnlineUser[]>
+        const users = Object.values(state).flat().filter((u): u is OnlineUser => !!u?.id)
+        // дедупликация по id
+        const seen = new Set<string>()
+        setOnlineUsers(users.filter(u => { if (seen.has(u.id)) return false; seen.add(u.id); return true }))
+      })
+      .subscribe(async (status: string) => {
+        if (status === 'SUBSCRIBED') await (ch as any).track(me)
+      })
+    return () => { supabase.removeChannel(ch) }
+  }, [clinicId, profile?.id, profile?.first_name, profile?.last_name, profile?.role?.name, supabase])
+
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [stages, setStages] = useState<Stage[]>([])
   const [deals, setDeals] = useState<DealRow[]>([])
@@ -775,6 +804,41 @@ export default function CRMKanbanPage() {
       )}
       {/* Header — только действия, без заголовка */}
       <div className="flex items-center justify-end mb-3 flex-wrap gap-2">
+        {/* Онлайн-сотрудники */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setPresenceOpen(v => !v)}
+            onBlur={() => setTimeout(() => setPresenceOpen(false), 150)}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50"
+            title="Кто сейчас в системе"
+          >
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="font-medium text-gray-700">{onlineUsers.length}</span>
+          </button>
+          {presenceOpen && (
+            <div className="absolute right-0 top-full mt-1 z-30 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+              <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                Сейчас в системе
+              </div>
+              {onlineUsers.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-gray-400">Никого нет</div>
+              ) : onlineUsers.map(u => (
+                <div key={u.id} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50">
+                  <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center flex-shrink-0">
+                    {u.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase() || '?'}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">{u.name}</div>
+                    {u.role && <div className="text-xs text-gray-400 truncate">{u.role}</div>}
+                  </div>
+                  <span className="ml-auto w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <Link href="/crm/analytics" className="text-sm px-3 py-1.5 rounded-md border border-gray-200 hover:bg-gray-50">
           Аналитика
         </Link>
