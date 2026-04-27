@@ -4173,26 +4173,25 @@ function DealModal({
                         {/* Input + send */}
                         <div className="flex gap-2 p-3">
                           {recording ? (
-                            // Режим записи: бегущий «эквалайзер» — наглядно, что мик активен.
-                            <div className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50">
+                            // Сам бар — кнопка «стоп + превью». X — отмена.
+                            // На мобильном нет места для двух кнопок справа, поэтому стоп = тап по бару.
+                            <button
+                              onClick={() => stopRecording(true)}
+                              title="Нажмите чтобы остановить и прослушать"
+                              className="flex-1 flex items-center gap-3 border border-red-200 rounded px-3 py-1.5 bg-red-50 active:bg-red-100 text-left"
+                            >
                               <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
                               <span className="text-sm text-red-700 font-mono tabular-nums">
                                 {String(Math.floor(recordSecs / 60)).padStart(2, '0')}:{String(recordSecs % 60).padStart(2, '0')}
                               </span>
                               <span className="flex items-end gap-[3px] h-5 flex-1 min-w-0">
-                                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(i => (
-                                  <span
-                                    key={i}
-                                    className="w-[3px] bg-red-500/80 rounded-full animate-voice-bar"
-                                    style={{
-                                      animationDelay: `${(i % 7) * 0.09}s`,
-                                      animationDuration: `${0.7 + (i % 5) * 0.12}s`,
-                                    }}
-                                  />
+                                {[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19].map(i => (
+                                  <span key={i} className="w-[3px] bg-red-500/80 rounded-full animate-voice-bar"
+                                    style={{ animationDelay: `${(i%7)*0.09}s`, animationDuration: `${0.7+(i%5)*0.12}s` }} />
                                 ))}
                               </span>
-                              <span className="text-xs text-red-600/70 shrink-0">запись…</span>
-                            </div>
+                              <span className="text-xs text-red-600 font-medium shrink-0">⏹ стоп</span>
+                            </button>
                           ) : pendingVoice ? (
                             // Превью записанного голосового — можно прослушать перед отправкой.
                             <div className="flex-1 flex items-center gap-2 border border-blue-200 rounded px-3 py-1.5 bg-blue-50">
@@ -4224,22 +4223,13 @@ function DealModal({
                           {/* Микрофон — только в режиме чата (whatsapp). */}
                           {composerMode === 'chat' && (
                             recording ? (
-                              <>
-                                <button
-                                  onClick={() => stopRecording(false)}
-                                  title="Отменить запись"
-                                  className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
-                                >
-                                  ✕
-                                </button>
-                                <button
-                                  onClick={() => stopRecording(true)}
-                                  title="Остановить запись (можно будет прослушать)"
-                                  className="self-end px-4 py-1.5 text-sm rounded bg-red-600 hover:bg-red-700 text-white"
-                                >
-                                  ⏹ Стоп
-                                </button>
-                              </>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); stopRecording(false) }}
+                                title="Отменить запись"
+                                className="self-end px-3 py-1.5 text-sm rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                              >
+                                ✕
+                              </button>
                             ) : pendingVoice ? (
                               <>
                                 <button
