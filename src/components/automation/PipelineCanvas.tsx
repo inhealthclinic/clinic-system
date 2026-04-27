@@ -67,6 +67,7 @@ export interface Stage {
   stage_role: 'normal' | 'won' | 'lost' | 'closed'
   is_system: boolean; is_editable: boolean; is_deletable: boolean
   counts_in_kpi: boolean
+  default_responsible_user_id?: string | null
 }
 
 // ─── автоматизации ───────────────────────────────────────────────────────────
@@ -179,6 +180,19 @@ export default function PipelineCanvas({
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
   const clinicId = profile?.clinic_id
+
+  // пользователи клиники для выбора ответственного
+  const [clinicUsers, setClinicUsers] = useState<{ id: string; name: string }[]>([])
+  useEffect(() => {
+    if (!clinicId) return
+    supabase.from('user_profiles').select('id, first_name, last_name').eq('clinic_id', clinicId)
+      .then(({ data }) => {
+        setClinicUsers((data ?? []).map(u => ({
+          id: u.id as string,
+          name: [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Сотрудник',
+        })))
+      })
+  }, [clinicId, supabase])
 
   // автоматизации
   const [autoLoading, setAutoLoading] = useState(true)
@@ -469,6 +483,20 @@ export default function PipelineCanvas({
                       <span className="text-gray-500">Активен</span>
                       <input type="checkbox" checked={s.is_active}
                         onChange={e => onUpdateStage(s.id, { is_active: e.target.checked })} />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-gray-500 shrink-0">Ответственный</span>
+                      <select
+                        value={s.default_responsible_user_id ?? ''}
+                        onChange={e => onUpdateStage(s.id, { default_responsible_user_id: e.target.value || null })}
+                        className="text-xs border border-gray-200 rounded px-1.5 py-0.5 max-w-[140px] truncate"
+                        title="Автоназначать при входе в этап"
+                      >
+                        <option value="">— не задан —</option>
+                        {clinicUsers.map(u => (
+                          <option key={u.id} value={u.id}>{u.name}</option>
+                        ))}
+                      </select>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-gray-500 font-mono">{s.code}</span>
