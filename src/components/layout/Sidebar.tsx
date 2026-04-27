@@ -222,10 +222,13 @@ export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname()
   const { profile, reset } = useAuthStore()
   const router = useRouter()
-  // Бейджик «непрочитанные входящие по моим сделкам» — для всех ролей
-  // одинаково: показываем только непрочитанные на сделках, где пользователь
-  // ответственный (responsible_user_id). Если нечего отвечать — строки нет.
-  const { count: crmUnread } = useUnreadDealMessages({ scope: 'mine' })
+  // Бейджик «непрочитанные входящие». Для admin/owner — все по клинике
+  // (у них обычно нет «своих» сделок, но им важен общий поток).
+  // Для остальных — только сделки, где они responsible_user_id.
+  const _roleSlug = profile?.role?.slug
+  const _scope: 'mine' | 'all' =
+    _roleSlug === 'owner' || _roleSlug === 'admin' ? 'all' : 'mine'
+  const { count: crmUnread } = useUnreadDealMessages({ scope: _scope })
   // Бейджик «новые заказы в лабораторию» на пункте Лаборатория.
   const { count: labPending } = useLabPendingOrders()
 
@@ -327,26 +330,34 @@ export function Sidebar({ onClose }: SidebarProps) {
         </div>
       </nav>
 
-      {/* Компактная строка непрочитанных — над блоком профиля. Кликабельна,
-          ведёт на CRM, где менеджер сразу увидит карточки с бейджами. */}
-      {crmUnread > 0 && (
-        <Link
-          href="/crm"
-          onClick={onClose}
-          className="mx-3 mb-2 flex items-center gap-2 px-3 py-1.5 rounded-md bg-green-50 hover:bg-green-100 border border-green-200 text-green-800 transition-colors"
-          title={`${crmUnread} непрочитанных сообщений в CRM`}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="flex-shrink-0">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          <span className="text-xs font-medium truncate flex-1">
-            {crmUnread} {crmUnread === 1 ? 'непрочитанное' : crmUnread < 5 ? 'непрочитанных' : 'непрочитанных'}
-          </span>
+      {/* Компактная строка непрочитанных — над блоком профиля. Всегда видна
+          и кликабельна (ведёт на /crm). При наличии непрочитанных — зелёная
+          с цифрой; иначе — приглушённая «Нет новых», чтобы кнопка не
+          исчезала и оператор всегда мог быстро прыгнуть в CRM. */}
+      <Link
+        href="/crm"
+        onClick={onClose}
+        className={`mx-3 mb-2 flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
+          crmUnread > 0
+            ? 'bg-green-50 hover:bg-green-100 border-green-200 text-green-800'
+            : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-600'
+        }`}
+        title={crmUnread > 0 ? `${crmUnread} непрочитанных сообщений в CRM` : 'Открыть CRM'}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="flex-shrink-0">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        <span className="text-xs font-medium truncate flex-1">
+          {crmUnread > 0
+            ? `${crmUnread} ${crmUnread === 1 ? 'непрочитанное' : 'непрочитанных'}`
+            : 'Нет новых сообщений'}
+        </span>
+        {crmUnread > 0 && (
           <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
             {crmUnread > 99 ? '99+' : crmUnread}
           </span>
-        </Link>
-      )}
+        )}
+      </Link>
 
       {/* User */}
       {profile && (
