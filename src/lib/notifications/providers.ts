@@ -50,13 +50,13 @@ export async function sendSms(to: string, body: string): Promise<SendResult> {
 // уже есть в src/lib/greenapi.ts, здесь просто оборачиваем в единый
 // SendResult.
 
-export async function sendWhatsApp(to: string, body: string): Promise<SendResult> {
-  if (!process.env.GREENAPI_INSTANCE_ID || !process.env.GREENAPI_API_TOKEN) {
-    return { ok: false, error: 'greenapi not configured' }
-  }
+export async function sendWhatsApp(to: string, body: string, clinicId: string | null): Promise<SendResult> {
   try {
-    const { sendWhatsAppText } = await import('@/lib/greenapi')
-    const { idMessage } = await sendWhatsAppText(to, body)
+    const { sendWhatsAppText, isGreenApiConfigured } = await import('@/lib/greenapi')
+    if (!(await isGreenApiConfigured(clinicId))) {
+      return { ok: false, error: 'greenapi not configured for clinic' }
+    }
+    const { idMessage } = await sendWhatsAppText(to, body, clinicId)
     return { ok: true, providerId: idMessage }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'network error' }
@@ -69,8 +69,9 @@ export async function send(
   channel: 'sms' | 'whatsapp',
   to: string,
   body: string,
+  clinicId: string | null,
 ): Promise<SendResult> {
   if (channel === 'sms') return sendSms(to, body)
-  if (channel === 'whatsapp') return sendWhatsApp(to, body)
+  if (channel === 'whatsapp') return sendWhatsApp(to, body, clinicId)
   return { ok: false, error: `unknown channel: ${channel}` }
 }

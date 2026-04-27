@@ -140,7 +140,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // 5. Green-API
   try {
-    const { idMessage } = await sendWhatsAppFileByUrl(phone, fileUrl, attachment.name)
+    const { idMessage } = await sendWhatsAppFileByUrl(phone, fileUrl, attachment.name, undefined, deal.clinic_id)
     await supabase
       .from('deal_messages')
       .update({ status: 'sent', external_id: idMessage })

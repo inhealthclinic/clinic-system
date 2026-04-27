@@ -113,7 +113,7 @@ export async function GET(req: NextRequest) {
   let state: string | null = null
   let stateError: string | null = null
   try {
-    const s = await getStateInstance()
+    const s = await getStateInstance(auth.clinicId)
     state = s.stateInstance
   } catch (e) {
     stateError = e instanceof Error ? e.message : 'Не удалось запросить состояние'
@@ -122,7 +122,7 @@ export async function GET(req: NextRequest) {
   let qr: { type: string; message: string } | null = null
   if (state && state !== 'authorized') {
     try {
-      qr = await getQr()
+      qr = await getQr(auth.clinicId)
     } catch (e) {
       qr = { type: 'error', message: e instanceof Error ? e.message : 'Не удалось получить QR' }
     }
@@ -186,7 +186,7 @@ export async function POST(req: NextRequest) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
-    invalidateGreenApiCredsCache()
+    invalidateGreenApiCredsCache(auth.clinicId)
   }
 
   // Регистрация webhook (опциональная).
@@ -201,7 +201,7 @@ export async function POST(req: NextRequest) {
       )
     }
     try {
-      const result = await setWebhookSettings(url)
+      const result = await setWebhookSettings(url, auth.clinicId)
       return NextResponse.json({ ok: true, saved: true, webhookUrl: url, result })
     } catch (e) {
       return NextResponse.json(

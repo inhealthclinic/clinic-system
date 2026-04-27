@@ -1,26 +1,42 @@
-// Возвращает состояние WhatsApp-интеграции (Green API).
-// Фронт (карточка сделки в CRM) прячет плашку «WhatsApp ещё не подключён…»,
-// если connected = true.
+// Возвращает состояние WhatsApp-интеграции (Green API) для клиники
+// текущего пользователя. Фронт (карточка сделки в CRM) прячет плашку
+// «WhatsApp ещё не подключён…», если connected = true.
+//
+// Креды per-clinic: достаём clinic_id из user_profiles по сессии.
 
 import { NextResponse } from 'next/server'
-import { getStateInstance } from '@/lib/greenapi'
+import { createClient } from '@/lib/supabase/server'
+import { getStateInstance, isGreenApiConfigured } from '@/lib/greenapi'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
-  const hasEnv =
-    !!process.env.GREENAPI_INSTANCE_ID && !!process.env.GREENAPI_API_TOKEN
+  const supabase = await createClient()
+  const { data: auth } = await supabase.auth.getUser()
+  if (!auth.user) {
+    return NextResponse.json({ connected: false, state: null, reason: 'unauthorized' })
+  }
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('clinic_id')
+    .eq('id', auth.user.id)
+    .maybeSingle()
+  const clinicId = profile?.clinic_id ?? null
+  if (!clinicId) {
+    return NextResponse.json({ connected: false, state: null, reason: 'no_clinic' })
+  }
 
-  if (!hasEnv) {
+  const configured = await isGreenApiConfigured(clinicId)
+  if (!configured) {
     return NextResponse.json({
       connected: false,
       state: null,
-      reason: 'missing_env',
+      reason: 'missing_creds',
     })
   }
 
   try {
-    const { stateInstance } = await getStateInstance()
+    const { stateInstance } = await getStateInstance(clinicId)
     return NextResponse.json({
       connected: stateInstance === 'authorized',
       state: stateInstance,

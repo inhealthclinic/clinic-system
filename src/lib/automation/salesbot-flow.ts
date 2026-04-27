@@ -304,7 +304,7 @@ async function deliverStep(
 
   if (body && phone && phone.length >= 10) {
     try {
-      const r = await sendWhatsAppText(phone, body)
+      const r = await sendWhatsAppText(phone, body, deal.clinic_id)
       await sb.from('deal_messages').insert({
         deal_id: deal.id,
         clinic_id: deal.clinic_id,

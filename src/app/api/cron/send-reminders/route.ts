@@ -155,7 +155,7 @@ export async function GET(req: NextRequest) {
     let providerId: string | undefined
 
     for (const ch of channels) {
-      const res = await send(ch, phone, body)
+      const res = await send(ch, phone, body, a.clinic_id)
       usedChannel = ch
       if (res.ok) {
         delivered = true
