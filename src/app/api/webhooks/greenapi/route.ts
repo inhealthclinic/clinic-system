@@ -38,7 +38,7 @@ function chatIdToPhone(chatId: string): string {
   return chatId.split('@')[0].replace(/\D/g, '')
 }
 
-type DealRef = { id: string; clinic_id: string; name?: string | null }
+type DealRef = { id: string; clinic_id: string; name?: string | null; status?: string }
 
 /**
  * Если у сделки ещё нет «настоящего» имени (только номер / плейсхолдер
@@ -68,27 +68,40 @@ async function maybeBackfillDealName(
   }
 }
 
-async function findDealByPhone(phone: string): Promise<DealRef | null> {
+/**
+ * Возвращает открытую сделку по номеру телефона (приоритет).
+ * Если открытой нет — возвращает последнюю закрытую в поле `closed`
+ * чтобы вызывающий код мог создать новую сделку со ссылкой на историю.
+ */
+async function findDealByPhone(
+  phone: string,
+): Promise<{ open: DealRef | null; closed: DealRef | null }> {
   const db = admin()
-  if (!phone || phone.length < 7) return null
+  const none = { open: null, closed: null }
+  if (!phone || phone.length < 7) return none
   const tail = phone.slice(-10)
 
   const { data } = await db
     .from('deals')
     .select('id, clinic_id, status, name')
     .or(`contact_phone.ilike.%${tail}%`)
-    .is('deleted_at', null)               // soft-deleted сделки не возвращаем
+    .is('deleted_at', null)
     .order('updated_at', { ascending: false })
-    .limit(5)
+    .limit(10)
 
   if (data && data.length > 0) {
-    const pick = data.find((d: { status: string }) => d.status === 'open') ?? data[0]
-    return { id: pick.id, clinic_id: pick.clinic_id, name: pick.name }
+    const open   = data.find((d: { status: string }) => d.status === 'open') ?? null
+    const closed = data.find((d: { status: string }) => d.status !== 'open') ?? null
+    if (open || closed) {
+      return {
+        open:   open   ? { id: open.id,   clinic_id: open.clinic_id,   name: open.name,   status: open.status }   : null,
+        closed: closed ? { id: closed.id, clinic_id: closed.clinic_id, name: closed.name, status: closed.status } : null,
+      }
+    }
   }
 
   // patients.phones — text[]. PostgREST containment `cs.{value}` требует
-  // точного совпадения элемента, поэтому прогоняем несколько вариантов
-  // нормализации номера.
+  // точного совпадения элемента, поэтому прогоняем несколько вариантов.
   const variants = Array.from(new Set([phone, `+${phone}`, tail, `+${tail}`]))
   const orExpr = variants.map((v) => `phones.cs.{${v}}`).join(',')
   const { data: pats } = await db
@@ -105,14 +118,18 @@ async function findDealByPhone(phone: string): Promise<DealRef | null> {
       .in('patient_id', patientIds)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false })
-      .limit(5)
+      .limit(10)
     if (deals && deals.length > 0) {
-      const pick = deals.find((d: { status: string }) => d.status === 'open') ?? deals[0]
-      return { id: pick.id, clinic_id: pick.clinic_id, name: pick.name }
+      const open   = deals.find((d: { status: string }) => d.status === 'open') ?? null
+      const closed = deals.find((d: { status: string }) => d.status !== 'open') ?? null
+      return {
+        open:   open   ? { id: open.id,   clinic_id: open.clinic_id,   name: open.name,   status: open.status }   : null,
+        closed: closed ? { id: closed.id, clinic_id: closed.clinic_id, name: closed.name, status: closed.status } : null,
+      }
     }
   }
 
-  return null
+  return none
 }
 
 /** Создать «Входящий лид» в первой стадии первой воронки. */
@@ -350,20 +367,54 @@ async function handleIncomingMessage(wh: IncomingMessageWebhook) {
   )
   if (!text) return
 
-  let deal = await findDealByPhone(phone)
-  if (!deal) {
-    console.log('[greenapi] no matching deal, creating inbound lead')
-    deal = await createInboundDeal(phone, waName)
-    if (!deal) {
+  const { open: openDeal, closed: closedDeal } = await findDealByPhone(phone)
+
+  let deal: DealRef
+  let isReopened = false
+
+  if (openDeal) {
+    // Открытая сделка есть — пишем в неё
+    deal = openDeal
+    console.log('[greenapi] matched open deal', deal.id, 'name', deal.name)
+    await maybeBackfillDealName(deal.id, deal.name, phone, waName)
+  } else if (closedDeal) {
+    // Все сделки закрыты (won/lost) — повторное обращение:
+    // создаём новую в первой стадии ("Неразобранное") и сохраняем ссылку на историю
+    console.log('[greenapi] closed deal found', closedDeal.id, '— creating new inbound deal for returning contact')
+    const newDeal = await createInboundDeal(phone, waName)
+    if (!newDeal) {
       console.error('[greenapi] createInboundDeal returned null — no pipeline_stages?')
       return
     }
-    console.log('[greenapi] created deal', deal.id, 'clinic', deal.clinic_id, 'name', deal.name)
+    deal = newDeal
+    isReopened = true
+    console.log('[greenapi] created new deal', deal.id, 'linked to previous', closedDeal.id)
+
+    // Лог: повторное обращение — ссылка на предыдущую сделку
+    const prevName = closedDeal.name || closedDeal.id
+    const prevStatus = closedDeal.status === 'won' ? 'завершена (успех)' : closedDeal.status === 'lost' ? 'потеряна' : 'закрыта'
+    await db.from('deal_messages').insert({
+      deal_id: deal.id,
+      clinic_id: deal.clinic_id,
+      direction: 'out' as const,
+      channel: 'internal' as const,
+      body: `📋 Повторное обращение. Предыдущая сделка: «${prevName}» (${prevStatus}). ID: ${closedDeal.id}`,
+      author_id: null,
+    }).then(({ error }) => {
+      if (error) console.warn('[greenapi] failed to log reopened note:', error.message)
+    })
   } else {
-    console.log('[greenapi] matched existing deal', deal.id, 'name', deal.name)
-    // Если раньше имени не было (была автогенерация), а сейчас пришло — обновим.
-    await maybeBackfillDealName(deal.id, deal.name, phone, waName)
+    // Новый контакт — создаём сделку
+    console.log('[greenapi] no matching deal, creating inbound lead')
+    const newDeal = await createInboundDeal(phone, waName)
+    if (!newDeal) {
+      console.error('[greenapi] createInboundDeal returned null — no pipeline_stages?')
+      return
+    }
+    deal = newDeal
+    console.log('[greenapi] created deal', deal.id, 'clinic', deal.clinic_id, 'name', deal.name)
   }
+  void isReopened // used above for logging
 
   // Если это медиа (аудио/картинка/видео/документ) — скачиваем и сохраняем
   // в Storage, чтобы плеер/превью работали в чате CRM.
