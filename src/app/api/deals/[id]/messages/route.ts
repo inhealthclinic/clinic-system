@@ -63,11 +63,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const { data: auth } = await supabase.auth.getUser()
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('id')
-    .eq('id', auth.user?.id ?? '')
-    .maybeSingle()
+  // user_profiles.id = auth.users.id (см. 001_core.sql), поэтому берём id из
+  // сессии напрямую. Раньше делали SELECT из user_profiles и при любом сбое
+  // получали author_id=null — фронт принимал такое исходящее за бота, и зелёный
+  // бейдж непрочитанных не сбрасывался после ответа менеджера.
+  const authorId = auth.user?.id ?? null
 
   // 2. Вставляем сообщение
   const initialStatus = channel === 'whatsapp' ? 'pending' : 'sent'
@@ -79,7 +79,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       direction: 'out',
       channel,
       body,
-      author_id: profile?.id ?? null,
+      author_id: authorId,
       status: initialStatus,
     })
     .select()
