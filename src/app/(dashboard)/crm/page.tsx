@@ -1983,6 +1983,8 @@ function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDea
 
   const stageUnread = cards.filter(d => (unreadByDeal[d.id] ?? 0) > 0).length
   const shown = cards.slice(0, visible)
+  const allSelected = bulkMode && cards.length > 0 && cards.every(c => bulkSelected.has(c.id))
+  const someSelected = bulkMode && !allSelected && cards.some(c => bulkSelected.has(c.id))
 
   return (
     <div
@@ -1994,6 +1996,20 @@ function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDea
       onDrop={(e) => onDrop(e, stage.id)}
     >
       <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
+        {bulkMode && (
+          <input
+            type="checkbox"
+            checked={allSelected}
+            ref={(el) => { if (el) el.indeterminate = someSelected }}
+            onChange={(e) => {
+              if (e.target.checked) cards.forEach(c => { if (!bulkSelected.has(c.id)) onToggleSelect(c.id) })
+              else cards.forEach(c => { if (bulkSelected.has(c.id)) onToggleSelect(c.id) })
+            }}
+            className="flex-shrink-0"
+            aria-label="Выбрать все в этом этапе"
+            title="Выбрать все в этом этапе"
+          />
+        )}
         <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
         <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
         {stageUnread > 0 && (
