@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { parseAmoSalesbot } from '@/lib/automation/salesbot-flow'
+import { buildGraphFromAmoExport } from '@/lib/automation/salesbot-graph'
 
 /**
  * POST /api/salesbot-flows/import
@@ -68,10 +69,74 @@ export async function POST(req: NextRequest) {
     .single<{ id: string }>()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  // Визуальный слой (builder). Источник правды для рантайма — steps выше;
+  // ошибки здесь не должны валить импорт — flow уже создан и работает.
+  const graph = buildGraphFromAmoExport(raw)
+  const graphWarnings: string[] = [...graph.warnings]
+  let nodesInserted = 0
+  let edgesInserted = 0
+
+  if (row?.id && graph.nodes.length > 0) {
+    const nodeRows = graph.nodes.map(n => ({
+      flow_id: row.id,
+      external_step_id: n.external_step_id,
+      block_uuid: n.block_uuid,
+      type: n.type,
+      title: n.title,
+      config_json: n.config_json,
+      position_x: n.position_x,
+      position_y: n.position_y,
+      width: n.width,
+      height: n.height,
+    }))
+
+    const { data: insertedNodes, error: nodesErr } = await sb
+      .from('salesbot_nodes')
+      .insert(nodeRows)
+      .select('id, external_step_id')
+    if (nodesErr) {
+      graphWarnings.push(`builder nodes: ${nodesErr.message}`)
+    } else if (insertedNodes) {
+      nodesInserted = insertedNodes.length
+      const stepToId = new Map<number, string>()
+      for (const r of insertedNodes as Array<{ id: string; external_step_id: number | null }>) {
+        if (r.external_step_id != null) stepToId.set(r.external_step_id, r.id)
+      }
+
+      const edgeRows = graph.edges
+        .map(e => {
+          const src = stepToId.get(e.source_step)
+          const tgt = stepToId.get(e.target_step)
+          if (!src || !tgt) return null
+          return {
+            flow_id: row.id,
+            source_node_id: src,
+            target_node_id: tgt,
+            source_handle: e.source_handle,
+            label: e.label,
+          }
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null)
+
+      if (edgeRows.length > 0) {
+        const { error: edgesErr, count } = await sb
+          .from('salesbot_edges')
+          .insert(edgeRows, { count: 'exact' })
+        if (edgesErr) graphWarnings.push(`builder edges: ${edgesErr.message}`)
+        else edgesInserted = count ?? edgeRows.length
+      }
+    }
+  }
+
   return NextResponse.json({
     id: row?.id,
     steps_count: Object.keys(parsed.steps).length,
     start_step: parsed.start,
     warnings: parsed.warnings,
+    builder: {
+      nodes: nodesInserted,
+      edges: edgesInserted,
+      warnings: graphWarnings,
+    },
   })
 }
