@@ -2005,6 +2005,7 @@ function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDea
               if (e.target.checked) cards.forEach(c => { if (!bulkSelected.has(c.id)) onToggleSelect(c.id) })
               else cards.forEach(c => { if (bulkSelected.has(c.id)) onToggleSelect(c.id) })
             }}
+            style={{ width: 16, height: 16, accentColor: '#2563eb' }}
             className="flex-shrink-0"
             aria-label="Выбрать все в этом этапе"
             title="Выбрать все в этом этапе"
@@ -2072,6 +2073,7 @@ function DealCard({ deal, unread = 0, lastMsgAt, onDragStart, onClick, bulkMode 
             type="checkbox"
             checked={selected}
             readOnly
+            style={{ width: 16, height: 16, accentColor: '#2563eb' }}
             className="mt-0.5 flex-shrink-0 pointer-events-none"
             aria-label="Выбрать сделку"
           />
