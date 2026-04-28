@@ -1997,19 +1997,40 @@ function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDea
     >
       <div className="px-3 py-2 border-b border-gray-200 flex items-center gap-2 sticky top-0 bg-gray-50 rounded-t-lg z-[1]">
         {bulkMode && (
-          <input
-            type="checkbox"
-            checked={allSelected}
-            ref={(el) => { if (el) el.indeterminate = someSelected }}
-            onChange={(e) => {
-              if (e.target.checked) cards.forEach(c => { if (!bulkSelected.has(c.id)) onToggleSelect(c.id) })
-              else cards.forEach(c => { if (bulkSelected.has(c.id)) onToggleSelect(c.id) })
-            }}
-            style={{ width: 16, height: 16, accentColor: '#2563eb' }}
-            className="flex-shrink-0"
+          <span
+            role="checkbox"
+            aria-checked={allSelected ? true : someSelected ? 'mixed' : false}
             aria-label="Выбрать все в этом этапе"
             title="Выбрать все в этом этапе"
-          />
+            onClick={(e) => {
+              e.stopPropagation()
+              if (allSelected) cards.forEach(c => { if (bulkSelected.has(c.id)) onToggleSelect(c.id) })
+              else cards.forEach(c => { if (!bulkSelected.has(c.id)) onToggleSelect(c.id) })
+            }}
+            style={{
+              width: 18,
+              height: 18,
+              minWidth: 18,
+              minHeight: 18,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 4,
+              border: (allSelected || someSelected) ? '2px solid #2563eb' : '2px solid #9ca3af',
+              background: (allSelected || someSelected) ? '#2563eb' : '#ffffff',
+              flexShrink: 0,
+              cursor: 'pointer',
+            }}
+          >
+            {allSelected && (
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 8 7 12 13 4" />
+              </svg>
+            )}
+            {someSelected && !allSelected && (
+              <span style={{ width: 8, height: 2, background: 'white', borderRadius: 1 }} />
+            )}
+          </span>
         )}
         <span className="w-2 h-2 rounded-full" style={{ background: stage.color }} />
         <span className="text-sm font-medium text-gray-900 flex-1 truncate">{stage.name}</span>
@@ -2069,14 +2090,31 @@ function DealCard({ deal, unread = 0, lastMsgAt, onDragStart, onClick, bulkMode 
     >
       <div className="flex items-start gap-2">
         {bulkMode && (
-          <input
-            type="checkbox"
-            checked={selected}
-            readOnly
-            style={{ width: 16, height: 16, accentColor: '#2563eb' }}
-            className="mt-0.5 flex-shrink-0 pointer-events-none"
+          <span
+            role="checkbox"
+            aria-checked={selected}
             aria-label="Выбрать сделку"
-          />
+            style={{
+              width: 18,
+              height: 18,
+              minWidth: 18,
+              minHeight: 18,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 4,
+              border: selected ? '2px solid #2563eb' : '2px solid #9ca3af',
+              background: selected ? '#2563eb' : '#ffffff',
+              marginTop: 2,
+              flexShrink: 0,
+            }}
+          >
+            {selected && (
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 8 7 12 13 4" />
+              </svg>
+            )}
+          </span>
         )}
         <div className="text-sm font-medium text-gray-900 truncate flex-1">{title}</div>
         {/* Бейдж бота: зелёный — активен, серый — фоллоуап уже отправлен */}
