@@ -2086,7 +2086,7 @@ function DealCard({ deal, unread = 0, lastMsgAt, onDragStart, onClick, bulkMode 
       draggable={!bulkMode}
       onDragStart={onDragStart}
       onClick={onClick}
-      className={`bg-white border rounded-md p-2 hover:shadow-sm ${bulkMode ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'} ${borderClass}`}
+      className={`border rounded-md p-2 hover:shadow-sm ${bulkMode ? 'cursor-pointer bg-yellow-50' : 'cursor-grab active:cursor-grabbing bg-white'} ${borderClass}`}
     >
       <div className="flex items-start gap-2">
         {bulkMode && (
@@ -2095,22 +2095,22 @@ function DealCard({ deal, unread = 0, lastMsgAt, onDragStart, onClick, bulkMode 
             aria-checked={selected}
             aria-label="Выбрать сделку"
             style={{
-              width: 18,
-              height: 18,
-              minWidth: 18,
-              minHeight: 18,
+              width: 24,
+              height: 24,
+              minWidth: 24,
+              minHeight: 24,
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              borderRadius: 4,
-              border: selected ? '2px solid #2563eb' : '2px solid #9ca3af',
+              borderRadius: 6,
+              border: selected ? '3px solid #2563eb' : '3px solid #ef4444',
               background: selected ? '#2563eb' : '#ffffff',
-              marginTop: 2,
+              marginTop: 0,
               flexShrink: 0,
             }}
           >
             {selected && (
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="3 8 7 12 13 4" />
               </svg>
             )}
