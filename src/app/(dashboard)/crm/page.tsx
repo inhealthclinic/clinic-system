@@ -1118,8 +1118,7 @@ export default function CRMKanbanPage() {
                 onClick={() => {
                   const next = !bulkMode
                   setBulkMode(next)
-                  if (next) setViewMode('table') // массовый выбор — только в таблице
-                  else setBulkSelected(new Set())
+                  if (!next) setBulkSelected(new Set())
                   setMoreMenuOpen(false)
                 }}
               />
@@ -1464,7 +1463,26 @@ export default function CRMKanbanPage() {
                   return (
                     <>
                       {cards.map(d => (
-                        <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={() => {}} onClick={() => openDeal(d)} />
+                        <DealCard
+                          key={d.id}
+                          deal={d}
+                          unread={unreadByDeal[d.id] ?? 0}
+                          lastMsgAt={lastMsgByDeal[d.id]}
+                          onDragStart={() => {}}
+                          onClick={() => {
+                            if (bulkMode) {
+                              setBulkSelected(prev => {
+                                const n = new Set(prev)
+                                if (n.has(d.id)) n.delete(d.id); else n.add(d.id)
+                                return n
+                              })
+                            } else {
+                              openDeal(d)
+                            }
+                          }}
+                          bulkMode={bulkMode}
+                          selected={bulkSelected.has(d.id)}
+                        />
                       ))}
                       {cards.length === 0 && (
                         <div className="text-sm text-gray-400 text-center py-8">Нет сделок в этом этапе</div>
@@ -1499,6 +1517,13 @@ export default function CRMKanbanPage() {
                       onDragLeave={onDragLeave}
                       onDrop={onDrop}
                       debouncedSearch={debouncedSearch}
+                      bulkMode={bulkMode}
+                      bulkSelected={bulkSelected}
+                      onToggleSelect={(id) => setBulkSelected(prev => {
+                        const n = new Set(prev)
+                        if (n.has(id)) n.delete(id); else n.add(id)
+                        return n
+                      })}
                     />
                   )
                 })}
@@ -1921,7 +1946,7 @@ function linkify(text: string, outgoing: boolean) {
 
 const PAGE = 50
 
-function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDeal, stage, count, isOver, onDragOver, onDragLeave, onDrop, debouncedSearch }: {
+function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDeal, stage, count, isOver, onDragOver, onDragLeave, onDrop, debouncedSearch, bulkMode, bulkSelected, onToggleSelect }: {
   cards: DealRow[]
   unreadByDeal: Record<string, number>
   lastMsgByDeal: Record<string, string>
@@ -1934,6 +1959,9 @@ function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDea
   onDragLeave: (id: string) => void
   onDrop: (e: React.DragEvent, id: string) => void
   debouncedSearch: string
+  bulkMode: boolean
+  bulkSelected: Set<string>
+  onToggleSelect: (id: string) => void
 }) {
   const [visible, setVisible] = useState(PAGE)
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -1980,7 +2008,16 @@ function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDea
       </div>
       <div className="p-2 space-y-2 min-h-[40px] overflow-y-auto max-h-[calc(100vh-260px)]">
         {shown.map(d => (
-          <DealCard key={d.id} deal={d} unread={unreadByDeal[d.id] ?? 0} lastMsgAt={lastMsgByDeal[d.id]} onDragStart={(e) => onDragStart(e, d)} onClick={() => openDeal(d)} />
+          <DealCard
+            key={d.id}
+            deal={d}
+            unread={unreadByDeal[d.id] ?? 0}
+            lastMsgAt={lastMsgByDeal[d.id]}
+            onDragStart={(e) => onDragStart(e, d)}
+            onClick={() => bulkMode ? onToggleSelect(d.id) : openDeal(d)}
+            bulkMode={bulkMode}
+            selected={bulkSelected.has(d.id)}
+          />
         ))}
         {cards.length === 0 && <div className="text-xs text-gray-300 text-center py-4">—</div>}
         <div ref={sentinelRef} className="h-1" />
@@ -1991,22 +2028,38 @@ function KanbanColumn({ cards, unreadByDeal, lastMsgByDeal, onDragStart, openDea
 
 // ─── DealCard ─────────────────────────────────────────────────────────────────
 
-function DealCard({ deal, unread = 0, lastMsgAt, onDragStart, onClick }: {
+function DealCard({ deal, unread = 0, lastMsgAt, onDragStart, onClick, bulkMode = false, selected = false }: {
   deal: DealRow
   unread?: number
   lastMsgAt?: string
   onDragStart: (e: React.DragEvent) => void
   onClick: () => void
+  bulkMode?: boolean
+  selected?: boolean
 }) {
   const title = deal.name || deal.patient?.full_name || '(без названия)'
+  const borderClass = selected
+    ? 'border-blue-400 ring-2 ring-blue-200 bg-blue-50'
+    : unread > 0
+      ? 'border-green-300 ring-1 ring-green-100'
+      : 'border-gray-200'
   return (
     <div
-      draggable
+      draggable={!bulkMode}
       onDragStart={onDragStart}
       onClick={onClick}
-      className={`bg-white border rounded-md p-2 cursor-grab active:cursor-grabbing hover:shadow-sm ${unread > 0 ? 'border-green-300 ring-1 ring-green-100' : 'border-gray-200'}`}
+      className={`bg-white border rounded-md p-2 hover:shadow-sm ${bulkMode ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'} ${borderClass}`}
     >
       <div className="flex items-start gap-2">
+        {bulkMode && (
+          <input
+            type="checkbox"
+            checked={selected}
+            readOnly
+            className="mt-0.5 flex-shrink-0 pointer-events-none"
+            aria-label="Выбрать сделку"
+          />
+        )}
         <div className="text-sm font-medium text-gray-900 truncate flex-1">{title}</div>
         {/* Бейдж бота: зелёный — активен, серый — фоллоуап уже отправлен */}
         {deal.bot_active && (
