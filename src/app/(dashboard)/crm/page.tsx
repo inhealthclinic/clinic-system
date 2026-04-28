@@ -1857,6 +1857,17 @@ export default function CRMKanbanPage() {
           allTags={Array.from(new Set(deals.flatMap(d => d.tags ?? []))).sort((a, b) => a.localeCompare(b, 'ru'))}
           onClose={() => closeDeal()}
           onSaved={(wasNew) => { if (wasNew) closeDeal(); load() }}
+          onOutboundSent={(dealId) => {
+            // Сбрасываем зелёный бейдж непрочитанных сразу после отправки —
+            // не ждём Realtime/15-сек поллинг (на которых легко словить лаг,
+            // если автор прилетит позже триггера или Realtime через VPN).
+            setUnreadByDeal(prev => {
+              if (!prev[dealId]) return prev
+              const next = { ...prev }
+              delete next[dealId]
+              return next
+            })
+          }}
         />
       )}
 
@@ -2351,7 +2362,7 @@ const EVENT_COLOR: Record<string, string> = {
 function DealModal({
   deal, pipelines, stages, sources, users, doctors, reasons, apptTypes,
   allTags,
-  onClose, onSaved,
+  onClose, onSaved, onOutboundSent,
 }: {
   deal: DealRow
   pipelines: Pipeline[]
@@ -2364,6 +2375,7 @@ function DealModal({
   allTags: string[]
   onClose: () => void
   onSaved: (wasNew: boolean) => void
+  onOutboundSent?: (dealId: string) => void
 }) {
   const supabase = useMemo(() => createClient(), [])
   const { profile } = useAuthStore()
@@ -2908,6 +2920,7 @@ function DealModal({
       if (m) {
         setMessages(prev => (prev.some(x => x.id === m.id) ? prev : [...prev, m]))
       }
+      onOutboundSent?.(form.id)
     } finally {
       setSending(false)
     }
